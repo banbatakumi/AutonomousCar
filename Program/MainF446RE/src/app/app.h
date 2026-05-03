@@ -6,6 +6,7 @@
 #include "adc.h"
 #include "digitalinout.h"
 #include "drive.h"
+#include "ld06.h"
 #include "main.h"
 #include "mymath.h"
 #include "pwm_out.h"
