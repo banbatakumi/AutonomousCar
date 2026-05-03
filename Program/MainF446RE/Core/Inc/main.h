@@ -99,6 +99,8 @@ void Error_Handler(void);
 #define ECHO1_GPIO_Port GPIOA
 #define TRIG1_Pin GPIO_PIN_15
 #define TRIG1_GPIO_Port GPIOA
+#define LIDAR_Pin GPIO_PIN_10
+#define LIDAR_GPIO_Port GPIOC
 #define USER_LED1_Pin GPIO_PIN_4
 #define USER_LED1_GPIO_Port GPIOB
 #define USER_LED2_Pin GPIO_PIN_5

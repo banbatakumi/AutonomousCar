@@ -6,7 +6,7 @@
 #define BRAKE_HEADER 0xFB
 
 #define DIFFERENTIAL 0.5f
-#define MAX_ACCELERATION 3.0f
+#define MAX_ACCELERATION 4.0f
 
 #define SERIAL_SEND_FREQUENCY_HZ 100
 #define SERIAL_SEND_INTERVAL_MS (1000 / SERIAL_SEND_FREQUENCY_HZ)
@@ -44,7 +44,9 @@ static inline void Drive_RecvSerial(Serial* serial, MotorRecvData* recv_data) {
       }
     } else if (index == (DATA_SIZE + 1)) {
       if (recv_byte == FOOTER) {
-        recv_data->flags = recv_buf[0];
+        recv_data->is_enable = recv_data->flags & 0b00000001;
+        recv_data->is_voltage_out_of_range = (recv_data->flags >> 1) & 0b00000001;
+        recv_data->is_overheat = (recv_data->flags >> 2) & 0b00000001;
         recv_data->speed = (int16_t)((recv_buf[1] << 8) | recv_buf[2]) * 0.01f;
         recv_data->mech_theta = (int16_t)((recv_buf[3] << 8) | recv_buf[4]) * 0.001f;
         recv_data->amp_volt = recv_buf[5] * 0.1f;
@@ -100,7 +102,11 @@ void Drive_Serial() {
   if (Timer_ReadMs(&serial_send_interval_timer) > SERIAL_SEND_INTERVAL_MS) {
     Timer_Reset(&serial_send_interval_timer);
     Drive_SendSerialSteer(POSITION_HEADER, (int16_t)(drive.steer * 1000));
-    Drive_SendSerialAcceleration(TORQUE_HEADER, (int16_t)(drive.acceleration_left * 100), (int16_t)(drive.acceleration_right * -100));
+    if (drive.do_brake) {
+      Drive_SendSerialAcceleration(BRAKE_HEADER, (int16_t)(drive.brake_strength * 100), (int16_t)(drive.brake_strength * 100));
+    } else {
+      Drive_SendSerialAcceleration(TORQUE_HEADER, (int16_t)(drive.acceleration_left * 100), (int16_t)(drive.acceleration_right * -100));
+    }
   }
 }
 
@@ -111,27 +117,6 @@ void Drive_Init() {
   Timer_Init(&steer_setup_timer);
   Timer_Init(&serial_send_interval_timer);
   while (Drive_SetupSteer() == false);
-}
-
-void Drive_SetAcceleration(float acceleration_left, float acceleration_right) {
-  drive.acceleration_left = Constrain(acceleration_left, -MAX_ACCELERATION, MAX_ACCELERATION);
-  drive.acceleration_right = Constrain(acceleration_right, -MAX_ACCELERATION, MAX_ACCELERATION);
-}
-
-void Drive_SetSteer(float steer) {
-  steer = -Constrain(steer, -1.0f, 1.0f);
-  double mapped_rad = steer_config.min_rad + (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
-  drive.steer = mapped_rad;
-}
-
-void Drive_Set(float acceleration, float steer) {
-  // 電子ディファレンシャル制御
-  if (steer > 0) {
-    Drive_SetAcceleration(acceleration, acceleration * (1.0f - steer * DIFFERENTIAL));
-  } else {
-    Drive_SetAcceleration(acceleration * (1.0f + steer * DIFFERENTIAL), acceleration);
-  }
-  Drive_SetSteer(steer);
 }
 
 bool Drive_SetupSteer() {
@@ -152,4 +137,25 @@ bool Drive_SetupSteer() {
     return true;
   }
   return false;
+}
+
+void Drive_Set(float acceleration, float steer) {
+  drive.do_brake = false;
+  // 電子ディファレンシャル制御
+  if (steer > 0) {
+    drive.acceleration_left = Constrain(acceleration, -MAX_ACCELERATION, MAX_ACCELERATION);
+    drive.acceleration_right = Constrain(acceleration * (1.0f - steer * DIFFERENTIAL), -MAX_ACCELERATION, MAX_ACCELERATION);
+  } else {
+    drive.acceleration_left = Constrain(acceleration * (1.0f + steer * DIFFERENTIAL), -MAX_ACCELERATION, MAX_ACCELERATION);
+    drive.acceleration_right = Constrain(acceleration, -MAX_ACCELERATION, MAX_ACCELERATION);
+  }
+
+  steer = -Constrain(steer, -1.0f, 1.0f);
+  double mapped_rad = steer_config.min_rad + (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
+  drive.steer = mapped_rad;
+}
+
+void Drive_Brake(float deceleration) {
+  drive.do_brake = true;
+  drive.brake_strength = Constrain(deceleration, 0, MAX_ACCELERATION);
 }

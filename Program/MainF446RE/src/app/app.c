@@ -15,7 +15,6 @@ Timer timer;
 Ultrasonic ultrasonic_front;
 Ultrasonic ultrasonic_right;
 Ultrasonic ultrasonic_left;
-
 Ultrasonic ultrasonic_back;
 
 #define ADC2VOLT 0.0008058608059
@@ -37,10 +36,10 @@ void Setup() {
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
 
-  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin, ECHO1_GPIO_Port, ECHO1_Pin, 0.7);
-  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin, ECHO2_GPIO_Port, ECHO2_Pin, 0.7);
-  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port, ECHO3_Pin, 0.7);
-  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port, ECHO4_Pin, 0.7);
+  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin, ECHO1_GPIO_Port, ECHO1_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin, ECHO2_GPIO_Port, ECHO2_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port, ECHO3_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port, ECHO4_Pin, 0.8);
 
   Drive_Init();
 
@@ -81,8 +80,14 @@ void MainApp() {
     //   Drive_Set(1.5, (float)(left_distance - right_distance) / 75.0f);
     // }
 
-    Drive_Set(1.5, 0);
+    Drive_Brake(3);
+    if (Timer_ReadMs(&timer) < 1000) {
+      Drive_Set(3, 0);
+    }
 
+    if (DigitalIn_Read(&button1)) {
+      Timer_Reset(&timer);
+    }
     // 制御周期
     while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
       DigitalOut_Write(&user_led1, 1);
