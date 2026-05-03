@@ -47,34 +47,24 @@ void Setup() {
 
 void MainApp() {
   while (1) {
-    // Ultrasonic_Read(&ultrasonic_front);
-    // Ultrasonic_Read(&ultrasonic_right);
-    // Ultrasonic_Read(&ultrasonic_left);
+    Ultrasonic_Read(&ultrasonic_front);
+    Ultrasonic_Read(&ultrasonic_right);
+    Ultrasonic_Read(&ultrasonic_left);
     Ultrasonic_Read(&ultrasonic_back);
-    // uint16_t front_distance = Ultrasonic_Get(&ultrasonic_front);
-    // uint16_t right_distance = Ultrasonic_Get(&ultrasonic_right);
-    // uint16_t left_distance = Ultrasonic_Get(&ultrasonic_left);
+    uint16_t front_distance = Ultrasonic_Get(&ultrasonic_front);
+    uint16_t right_distance = Ultrasonic_Get(&ultrasonic_right);
+    uint16_t left_distance = Ultrasonic_Get(&ultrasonic_left);
     uint16_t back_distance = Ultrasonic_Get(&ultrasonic_back);
 
-    // printf("Distances (cm) - Front: %d, Right: %d, Left: %d, Back: %d\n", front_distance, right_distance, left_distance, back_distance);
-
-    float acceleration = 0.0f;
-    float steer = 0.0f;
-
-    // if (front_distance < 50) {
-    //   acceleration = -1.5f;
-    //   steer = 1.3f;
-    // } else {
-    //   acceleration = 1.5f;
-    //   steer = Constrain((200 - left_distance) * 0.01, 0.1f, 1.8f);
-    // }
+    float acceleration = 3;
+    float steer = 1;
 
     if (Timer_ReadMs(&serial_send_interval_timer) >= 100) {
-      printf("Back distance: %d cm\n", back_distance);
-      Drive_SetAcceleration(acceleration);
-      Drive_SetSteer(steer);
+      Drive(acceleration, steer);
       Timer_Reset(&serial_send_interval_timer);
     }
+
+    // 制御周期
     while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
       DigitalOut_Write(&user_led1, 1);
     }

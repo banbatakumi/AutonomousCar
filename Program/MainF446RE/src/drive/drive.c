@@ -30,7 +30,7 @@ void Drive_Init() {
   while (Drive_SetupSteer() == false);
 }
 
-void Drive_SetAcceleration(float acceleration) {
+void Drive_SetAcceleration(float acceleration_left, float acceleration_right) {
   const uint8_t HEADER = 0xFF;
   const uint8_t FOOTER = 0xAA;
   static uint8_t tx_buf_left[5];
@@ -38,14 +38,14 @@ void Drive_SetAcceleration(float acceleration) {
 
   tx_buf_left[0] = HEADER;
   tx_buf_left[1] = TORQUE_HEADER;
-  tx_buf_left[2] = ((int16_t)(acceleration * 100) >> 8) & 0xFF;
-  tx_buf_left[3] = (int16_t)(acceleration * 100) & 0xFF;
+  tx_buf_left[2] = ((int16_t)(acceleration_left * 100) >> 8) & 0xFF;
+  tx_buf_left[3] = (int16_t)(acceleration_left * 100) & 0xFF;
   tx_buf_left[4] = FOOTER;
 
   tx_buf_right[0] = HEADER;
   tx_buf_right[1] = TORQUE_HEADER;
-  tx_buf_right[2] = ((int16_t)(-acceleration * 100) >> 8) & 0xFF;
-  tx_buf_right[3] = (int16_t)(-acceleration * 100) & 0xFF;
+  tx_buf_right[2] = ((int16_t)(-acceleration_right * 100) >> 8) & 0xFF;
+  tx_buf_right[3] = (int16_t)(-acceleration_right * 100) & 0xFF;
   tx_buf_right[4] = FOOTER;
 
   Serial_Write(&serial_left, tx_buf_left, sizeof(tx_buf_left));
@@ -53,7 +53,19 @@ void Drive_SetAcceleration(float acceleration) {
 }
 
 void Drive_SetSteer(float steer) {
-  Drive_SendSerialSteer(POSITION_HEADER, (int16_t)(steer * 1000));
+  steer = -Constrain(steer, -1.0f, 1.0f);
+  double mapped_rad = steer_config.min_rad + (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
+  Drive_SendSerialSteer(POSITION_HEADER, (int16_t)(mapped_rad * 1000));
+}
+
+void Drive(float acceleration, float steer) {
+  // 電子ディファレンシャル制御
+  if (steer > 0) {
+    Drive_SetAcceleration(acceleration, acceleration * (1.0f - steer * DIFFERENTIAL));
+  } else {
+    Drive_SetAcceleration(acceleration * (1.0f + steer * DIFFERENTIAL), acceleration);
+  }
+  Drive_SetSteer(steer);
 }
 
 bool Drive_SetupSteer() {
