@@ -8,8 +8,6 @@ PwmOut user_led4;
 DigitalIn button1;
 DigitalIn button2;
 
-Timer serial_send_interval_timer;
-
 Timer control_interval_timer;
 
 Timer timer;
@@ -20,8 +18,15 @@ Ultrasonic ultrasonic_left;
 
 Ultrasonic ultrasonic_back;
 
+#define ADC2VOLT 0.0008058608059
+
 #define CONTRO_FREQUENCY_HZ 10000
 #define CONTROL_INTERVAL_US (1000000 / CONTRO_FREQUENCY_HZ)
+
+uint16_t adc_value[5];
+
+double voltage_signal;
+double voltage_power;
 
 void Setup() {
   printf("Setup started\n");
@@ -32,37 +37,51 @@ void Setup() {
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
 
-  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin, ECHO1_GPIO_Port, ECHO1_Pin, 0.6);
-  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin, ECHO2_GPIO_Port, ECHO2_Pin, 0.6);
-  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port, ECHO3_Pin, 0.6);
-  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port, ECHO4_Pin, 0.6);
+  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin, ECHO1_GPIO_Port, ECHO1_Pin, 0.7);
+  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin, ECHO2_GPIO_Port, ECHO2_Pin, 0.7);
+  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port, ECHO3_Pin, 0.7);
+  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port, ECHO4_Pin, 0.7);
 
   Drive_Init();
 
-  Timer_Init(&serial_send_interval_timer);
+  // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)&adc_value, sizeof(adc_value));
+  // for (uint8_t i = 0; i < sizeof(adc_value); i++) {
+  //   while (!(adc_value[i] > 0));  // ADCの値が代入されるまで待つ
+  // }
+
   Timer_Init(&timer);
   Timer_Init(&control_interval_timer);
   printf("Setup finished\n");
 }
 
+void GetSensors() {
+  Ultrasonic_Read(&ultrasonic_front);
+  Ultrasonic_Read(&ultrasonic_right);
+  Ultrasonic_Read(&ultrasonic_left);
+  Ultrasonic_Read(&ultrasonic_back);
+
+  voltage_signal = adc_value[4] * ADC2VOLT * 10;
+  voltage_power = adc_value[3] * ADC2VOLT * 10;
+}
+
 void MainApp() {
   while (1) {
-    Ultrasonic_Read(&ultrasonic_front);
-    Ultrasonic_Read(&ultrasonic_right);
-    Ultrasonic_Read(&ultrasonic_left);
-    Ultrasonic_Read(&ultrasonic_back);
+    GetSensors();
+    Drive_Serial();
     uint16_t front_distance = Ultrasonic_Get(&ultrasonic_front);
     uint16_t right_distance = Ultrasonic_Get(&ultrasonic_right);
     uint16_t left_distance = Ultrasonic_Get(&ultrasonic_left);
     uint16_t back_distance = Ultrasonic_Get(&ultrasonic_back);
 
-    float acceleration = 3;
-    float steer = 1;
+    // if (front_distance < 10) {
+    //   Drive_Set(-2, left_distance > right_distance ? -1 : 1);
+    // } else if (back_distance < 10) {
+    //   Drive_Set(2, left_distance > right_distance ? 1 : -1);
+    // } else {
+    //   Drive_Set(1.5, (float)(left_distance - right_distance) / 75.0f);
+    // }
 
-    if (Timer_ReadMs(&serial_send_interval_timer) >= 100) {
-      Drive(acceleration, steer);
-      Timer_Reset(&serial_send_interval_timer);
-    }
+    Drive_Set(1.5, 0);
 
     // 制御周期
     while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
