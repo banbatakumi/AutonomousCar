@@ -8,6 +8,8 @@
 #include "lpf.h"
 #include "timer.h"
 
+#define DISTANSE_ADJUSTMENT 20  // センサーの誤差を補正するための係数（実測値に合わせて調整）
+
 /**
  * Ultrasonic sensor driver
  * Measures distance using a trigger pin and echo pin
@@ -16,6 +18,7 @@ typedef struct {
   DigitalOut trigger;
   DigitalIn echo;
   Timer timer;
+  Timer dt_timer;
   LPF filter;
   uint16_t distance;
   uint16_t pulse_count;
