@@ -60,10 +60,12 @@ void Setup() {
 }
 
 void GetSensors() {
-  Ultrasonic_Read(&ultrasonic_front);
-  Ultrasonic_Read(&ultrasonic_right);
-  Ultrasonic_Read(&ultrasonic_left);
-  Ultrasonic_Read(&ultrasonic_back);
+  Ultrasonic_Update(&ultrasonic_front);
+  Ultrasonic_Update(&ultrasonic_right);
+  Ultrasonic_Update(&ultrasonic_left);
+  Ultrasonic_Update(&ultrasonic_back);
+
+  LD06_Update(&lidar);
 
   voltage_signal = adc_value[4] * ADC2VOLT * 10;
   voltage_power = adc_value[3] * ADC2VOLT * 10;
@@ -71,12 +73,12 @@ void GetSensors() {
 
 void MainApp() {
   while (1) {
-    // GetSensors();
-    // Drive_Serial();
-    // uint16_t front_distance = Ultrasonic_Get(&ultrasonic_front);
-    // uint16_t right_distance = Ultrasonic_Get(&ultrasonic_right);
-    // uint16_t left_distance = Ultrasonic_Get(&ultrasonic_left);
-    // uint16_t back_distance = Ultrasonic_Get(&ultrasonic_back);
+    GetSensors();
+    Drive_Serial();
+    uint16_t front_distance = Ultrasonic_Get(&ultrasonic_front);
+    uint16_t right_distance = Ultrasonic_Get(&ultrasonic_right);
+    uint16_t left_distance = Ultrasonic_Get(&ultrasonic_left);
+    uint16_t back_distance = Ultrasonic_Get(&ultrasonic_back);
 
     // if (front_distance < 10) {
     //   Drive_Set(-2, left_distance > right_distance ? -1 : 1);
@@ -94,22 +96,12 @@ void MainApp() {
     // if (DigitalIn_Read(&button1)) {
     //   Timer_Reset(&timer);
     // }
-    if (LD06_Update(&lidar)) {
-      // is_updated が true なら新しいパケットを受信済み
 
-      // 前方の距離を取得する例 (0度が前方として)
-      uint16_t dist_front = lidar.distances_360[0];
-      // 右側の距離を取得する例
-      uint16_t dist_right = lidar.distances_360[90];
-
-      // ... 制御に使用
-      printf("Front distance: %d mm, Right distance: %d mm\n", dist_front, dist_right);
+    // 制御周期
+    while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
+      DigitalOut_Write(&user_led1, 1);
     }
-    // // 制御周期
-    // while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
-    //   DigitalOut_Write(&user_led1, 1);
-    // }
-    // DigitalOut_Write(&user_led1, 0);
-    // Timer_Reset(&control_interval_timer);
+    DigitalOut_Write(&user_led1, 0);
+    Timer_Reset(&control_interval_timer);
   }
 }

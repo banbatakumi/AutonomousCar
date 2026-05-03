@@ -2,6 +2,7 @@
 #include "ld06.h"
 
 DigitalOut motor;
+#define ANGLE_OFFSET 90.0f
 
 // マニュアル記載のCRC8用計算テーブル
 static const uint8_t CrcTable[256] = {
@@ -105,13 +106,23 @@ bool LD06_Update(LD06* lidar) {
               lidar->points[i].distance = (lidar->rx_buf[base_idx + 1] << 8) | lidar->rx_buf[base_idx];
               lidar->points[i].confidence = lidar->rx_buf[base_idx + 2];
 
+              // 元のLiDARの角度
               float angle = start_angle + step * i;
-              if (angle >= 360.0f) {
+
+              // 【追加】ここでロボット基準の角度に変換（オフセットを加算）
+              angle += ANGLE_OFFSET;
+
+              // 角度を 0.0 ~ 359.9 の範囲に正規化する
+              while (angle >= 360.0f) {
                 angle -= 360.0f;
               }
+              while (angle < 0.0f) {
+                angle += 360.0f;
+              }
+
               lidar->points[i].angle = angle;
 
-              // ユーザーが扱いやすいように 0~359度のマップ(配列)も更新する (四捨五入して整数化)
+              // ロボット基準に直った角度で、0~359度のマップ(配列)を更新
               int angle_idx = (int)(angle + 0.5f) % 360;
               lidar->distances_360[angle_idx] = lidar->points[i].distance;
               lidar->confidences_360[angle_idx] = lidar->points[i].confidence;

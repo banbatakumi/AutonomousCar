@@ -11,7 +11,7 @@ void Ultrasonic_Init(Ultrasonic* obj, GPIO_TypeDef* trig_port, uint16_t trig_pin
   obj->pulse_count = 0;
 }
 
-void Ultrasonic_Read(Ultrasonic* obj) {
+void Ultrasonic_Update(Ultrasonic* obj) {
   double dt_ms = Timer_ReadUs(&obj->dt_timer) * 0.001;
   Timer_Reset(&obj->dt_timer);
   static double dt_ms_prev = 0;

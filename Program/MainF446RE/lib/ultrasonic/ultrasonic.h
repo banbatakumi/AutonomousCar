@@ -40,7 +40,7 @@ void Ultrasonic_Init(Ultrasonic* obj, GPIO_TypeDef* trig_port, uint16_t trig_pin
  * Read the ultrasonic sensor (call periodically)
  * @param obj Pointer to Ultrasonic structure
  */
-void Ultrasonic_Read(Ultrasonic* obj);
+void Ultrasonic_Update(Ultrasonic* obj);
 
 /**
  * Get the last measured distance
