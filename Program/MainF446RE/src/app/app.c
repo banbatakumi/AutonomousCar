@@ -10,8 +10,6 @@ DigitalIn button2;
 
 Timer control_interval_timer;
 
-Timer timer;
-
 Ultrasonic ultrasonic_front;
 Ultrasonic ultrasonic_right;
 Ultrasonic ultrasonic_left;
@@ -39,10 +37,14 @@ void Setup() {
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
 
-  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin, ECHO1_GPIO_Port, ECHO1_Pin, 0.8);
-  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin, ECHO2_GPIO_Port, ECHO2_Pin, 0.8);
-  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port, ECHO3_Pin, 0.8);
-  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port, ECHO4_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin,
+                  ECHO1_GPIO_Port, ECHO1_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin,
+                  ECHO2_GPIO_Port, ECHO2_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port,
+                  ECHO3_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port,
+                  ECHO4_Pin, 0.8);
 
   Drive_Init();
 
@@ -54,7 +56,6 @@ void Setup() {
   Serial_Init(&serial3, &huart3, 2048);
   LD06_Init(&lidar, &serial3);
 
-  Timer_Init(&timer);
   Timer_Init(&control_interval_timer);
   printf("Setup finished\n");
 }
@@ -79,23 +80,6 @@ void MainApp() {
     uint16_t right_distance = Ultrasonic_Get(&ultrasonic_right);
     uint16_t left_distance = Ultrasonic_Get(&ultrasonic_left);
     uint16_t back_distance = Ultrasonic_Get(&ultrasonic_back);
-
-    // if (front_distance < 10) {
-    //   Drive_Set(-2, left_distance > right_distance ? -1 : 1);
-    // } else if (back_distance < 10) {
-    //   Drive_Set(2, left_distance > right_distance ? 1 : -1);
-    // } else {
-    //   Drive_Set(1.5, (float)(left_distance - right_distance) / 75.0f);
-    // }
-
-    // Drive_Brake(3);
-    // if (Timer_ReadMs(&timer) < 1000) {
-    //   Drive_Set(3, 0);
-    // }
-
-    // if (DigitalIn_Read(&button1)) {
-    //   Timer_Reset(&timer);
-    // }
 
     // 制御周期
     while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
