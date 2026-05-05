@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "lpf.h"
 #include "main.h"
 #include "mymath.h"
 #include "serial.h"
@@ -23,14 +24,20 @@ typedef struct {
   bool is_enable;
   bool is_voltage_out_of_range;
   bool is_overheat;
-} MotorRecvData;
+} RecvData;
 
 typedef struct {
   float acceleration_left;
   float acceleration_right;
   float steer;
+  LPF lpf_steer;
   bool do_brake;
   float brake_strength;
+} SendData;
+
+typedef struct {
+  float speed;
+  LPF lpf_speed;
 } Drive;
 
 void Drive_Init();
@@ -42,4 +49,6 @@ void Drive_Set(float acceleration, float steer);
 
 void Drive_Brake(float deceleration);
 
-#endif  // DRIVE_H_
+float Drive_GetSpeed();
+
+#endif // DRIVE_H_
