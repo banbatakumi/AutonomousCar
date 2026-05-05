@@ -1,12 +1,10 @@
 #include "drive.h"
+#include "flash.h"
 
 #define SPEED_HEADER 0xFE
 #define POSITION_HEADER 0xFD
 #define TORQUE_HEADER 0xFC
 #define BRAKE_HEADER 0xFB
-
-#define DIFFERENTIAL 0.5f
-#define MAX_ACCELERATION 4.0f
 
 #define WHEEL_DIAMETER 0.055f // m
 
@@ -118,6 +116,12 @@ void Drive_Serial() {
 
   if (Timer_ReadMs(&serial_send_interval_timer) > SERIAL_SEND_INTERVAL_MS) {
     Timer_Reset(&serial_send_interval_timer);
+    if (drive.is_free) {
+      Serial_Reset(&serial_left);
+      Serial_Reset(&serial_right);
+      Serial_Reset(&serial_steer);
+      return; // フリー状態: 送信停止でモーター待機
+    }
     Drive_SendSerialSteer(POSITION_HEADER, (int16_t)(send_data.steer * 1000));
     if (send_data.do_brake) {
       Drive_SendSerialAcceleration(BRAKE_HEADER,
@@ -131,7 +135,7 @@ void Drive_Serial() {
   }
 }
 
-void Drive_Init() {
+void Drive_Init(bool do_steer_setup) {
   Serial_Init(&serial_left, &huart2, 256);
   Serial_Init(&serial_right, &huart4, 256);
   Serial_Init(&serial_steer, &huart5, 256);
@@ -139,8 +143,30 @@ void Drive_Init() {
   Timer_Init(&serial_send_interval_timer);
   LPF_Init(&drive.lpf_speed, 0.75, 0);
   LPF_Init(&send_data.lpf_steer, 0.9, 0);
-  while (Drive_SetupSteer() == false)
-    ;
+  drive.current_acceleration = 0.0f;
+  Timer_Init(&drive.accel_timer);
+  drive.current_target_velocity = 0.0f;
+  Timer_Init(&drive.velocity_timer);
+  PID_Init(&drive.pid_velocity, 2.5f, 2.5f, 0.0f, -MAX_ACCELERATION,
+           MAX_ACCELERATION);
+  Timer_Init(&drive.steer_timer);
+  drive.is_free = false;
+
+  if (do_steer_setup) {
+    // ボタン1押下起動: ステアセットアップ実行 → Flashに保存
+    printf("Steer setup: calibrating...\n");
+    while (Drive_SetupSteer() == false)
+      ;
+    Flash_WriteData(FLASH_USER_START_ADDR, &steer_config,
+                    sizeof(SteerConfig));
+    printf("Steer config saved to flash\n");
+  } else {
+    // 通常起動: Flashから読み出し
+    Flash_ReadData(FLASH_USER_START_ADDR, &steer_config,
+                   sizeof(SteerConfig));
+    printf("Steer config loaded from flash: min_rad=%.3f, max_rad=%.3f\n",
+           steer_config.min_rad, steer_config.max_rad);
+  }
 }
 
 bool Drive_SetupSteer() {
@@ -164,8 +190,7 @@ bool Drive_SetupSteer() {
   return false;
 }
 
-void Drive_Set(float acceleration, float steer) {
-  send_data.do_brake = false;
+static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
   // 電子ディファレンシャル制御
   if (steer > 0) {
     send_data.acceleration_left =
@@ -186,12 +211,98 @@ void Drive_Set(float acceleration, float steer) {
   double mapped_rad =
       steer_config.min_rad +
       (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
-  send_data.steer = mapped_rad;
+
+  // ステアリング回転速度制限 [rad/s]
+  float steer_dt = Timer_Read(&drive.steer_timer);
+  Timer_Reset(&drive.steer_timer);
+  if (steer_dt > 0.0f && steer_dt < 0.5f) {
+    double max_delta = MAX_STEER_SPEED * steer_dt;
+    double delta = mapped_rad - send_data.steer;
+    if (delta > max_delta)
+      delta = max_delta;
+    if (delta < -max_delta)
+      delta = -max_delta;
+    send_data.steer += delta;
+  } else {
+    send_data.steer = mapped_rad;
+  }
+}
+
+void Drive_Set(float max_acceleration, float acceleration_rate, float steer) {
+  send_data.do_brake = false;
+  drive.is_free = false;
+
+  // dt計算（加速度ランプ用）
+  float dt = Timer_Read(&drive.accel_timer);
+  Timer_Reset(&drive.accel_timer);
+  if (dt > 0.5f)
+    dt = 0.0f; // 初回 or 長時間停止後のガード
+
+  // 現在のアクセルを目標値に向けてランプアップ/ダウン
+  if (drive.current_acceleration < max_acceleration) {
+    drive.current_acceleration += acceleration_rate * dt;
+    if (drive.current_acceleration > max_acceleration)
+      drive.current_acceleration = max_acceleration;
+  } else if (drive.current_acceleration > max_acceleration) {
+    drive.current_acceleration -= acceleration_rate * dt;
+    if (drive.current_acceleration < max_acceleration)
+      drive.current_acceleration = max_acceleration;
+  }
+
+  Drive_ApplyAccelerationAndSteer(drive.current_acceleration, steer);
+}
+
+void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
+  send_data.do_brake = false;
+  drive.is_free = false;
+
+  // dt計算（速度ランプ用）
+  float dt = Timer_Read(&drive.velocity_timer);
+  Timer_Reset(&drive.velocity_timer);
+  if (dt > 0.5f)
+    dt = 0.0f; // 初回 or 長時間停止後のガード
+
+  // 現在の目標速度をtarget_velocityに向けてacceleration [m/s²] でランプ
+  if (drive.current_target_velocity < target_velocity) {
+    drive.current_target_velocity += acceleration * dt;
+    if (drive.current_target_velocity > target_velocity)
+      drive.current_target_velocity = target_velocity;
+  } else if (drive.current_target_velocity > target_velocity) {
+    drive.current_target_velocity -= acceleration * dt;
+    if (drive.current_target_velocity < target_velocity)
+      drive.current_target_velocity = target_velocity;
+  }
+
+  // PIDでランプ後の目標速度に追従
+  float accel_output = PID_Update(&drive.pid_velocity,
+                                  drive.current_target_velocity, drive.speed);
+  Drive_ApplyAccelerationAndSteer(accel_output, steer);
 }
 
 void Drive_Brake(float deceleration) {
   send_data.do_brake = true;
   send_data.brake_strength = Constrain(deceleration, 0, MAX_ACCELERATION);
+  drive.current_acceleration = 0.0f;
+  drive.current_target_velocity = 0.0f;
+  drive.is_free = false;
+  PID_Reset(&drive.pid_velocity);
+}
+
+void Drive_Free() {
+  drive.is_free = true;
+  drive.current_acceleration = 0.0f;
+  drive.current_target_velocity = 0.0f;
+  PID_Reset(&drive.pid_velocity);
 }
 
 float Drive_GetSpeed() { return drive.speed; }
+
+static bool Drive_RecvDataHasError(const RecvData *data) {
+  return data->is_voltage_out_of_range || data->is_overheat;
+}
+
+bool Drive_HasError() {
+  return Drive_RecvDataHasError(&left_protocol.data) ||
+         Drive_RecvDataHasError(&right_protocol.data) ||
+         Drive_RecvDataHasError(&steer_protocol.data);
+}

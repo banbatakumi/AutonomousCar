@@ -1,5 +1,10 @@
 #include "app.h"
 
+#include "algo_forward.h"
+#include "algorithm.h"
+#include "drive.h"
+#include "mode.h"
+
 DigitalOut user_led1;
 DigitalOut user_led2;
 PwmOut user_led3;
@@ -18,15 +23,37 @@ Ultrasonic ultrasonic_back;
 Serial serial3;
 LD06 lidar;
 
-#define ADC2VOLT 0.0008058608059
+#define ADC2VOLT (3.3 / 4095.0)
+#define VOLTAGE_DIVIDER_RATIO ((10.0 + 1.0) / 1.0)
+#define MIN_VOLTAGE 8.0
+#define MAX_VOLTAGE 11.0
+#define HEARTBEAT_MIN_PERIOD_MS 300
+#define HEARTBEAT_MAX_PERIOD_MS 1200
 
 #define CONTRO_FREQUENCY_HZ 10000
 #define CONTROL_INTERVAL_US (1000000 / CONTRO_FREQUENCY_HZ)
+#define ADC_VALUE_COUNT 5
 
-uint16_t adc_value[5];
+uint16_t adc_value[ADC_VALUE_COUNT];
 
 double voltage_signal;
 double voltage_power;
+
+static void UpdateHeartbeatLed(void) {
+  double voltage = Constrain(voltage_signal, MIN_VOLTAGE, MAX_VOLTAGE);
+  double voltage_ratio = (voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE);
+  uint32_t period_ms = HEARTBEAT_MIN_PERIOD_MS + (uint32_t)((HEARTBEAT_MAX_PERIOD_MS - HEARTBEAT_MIN_PERIOD_MS) * voltage_ratio);
+  uint32_t t = HAL_GetTick() % period_ms;
+  float duty;
+
+  if (t < period_ms / 2) {
+    duty = (float)t / (float)(period_ms / 2);
+  } else {
+    duty = (float)(period_ms - t) / (float)(period_ms / 2);
+  }
+
+  PwmOut_Write(&user_led3, duty);
+}
 
 void Setup() {
   printf("Setup started\n");
@@ -34,29 +61,25 @@ void Setup() {
   DigitalOut_Init(&user_led2, USER_LED2_GPIO_Port, USER_LED2_Pin);
   PwmOut_Init(&user_led3, &htim4, TIM_CHANNEL_1);
   PwmOut_Init(&user_led4, &htim4, TIM_CHANNEL_2);
+
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
 
-  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin,
-                  ECHO1_GPIO_Port, ECHO1_Pin, 0.8);
-  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin,
-                  ECHO2_GPIO_Port, ECHO2_Pin, 0.8);
-  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port,
-                  ECHO3_Pin, 0.8);
-  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port,
-                  ECHO4_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_front, TRIG1_GPIO_Port, TRIG1_Pin, ECHO1_GPIO_Port, ECHO1_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_right, TRIG2_GPIO_Port, TRIG2_Pin, ECHO2_GPIO_Port, ECHO2_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_left, TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port, ECHO3_Pin, 0.8);
+  Ultrasonic_Init(&ultrasonic_back, TRIG4_GPIO_Port, TRIG4_Pin, ECHO4_GPIO_Port, ECHO4_Pin, 0.8);
 
-  Drive_Init();
+  Drive_Init(DigitalIn_Read(&button1));
 
-  // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)&adc_value, sizeof(adc_value));
-  // for (uint8_t i = 0; i < sizeof(adc_value); i++) {
-  //   while (!(adc_value[i] > 0));  // ADCの値が代入されるまで待つ
-  // }
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_value, ADC_VALUE_COUNT);
+  __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_HT | DMA_IT_TC);
 
   Serial_Init(&serial3, &huart3, 2048);
   LD06_Init(&lidar, &serial3);
 
   Timer_Init(&control_interval_timer);
+  Mode_Init(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
   printf("Setup finished\n");
 }
 
@@ -68,76 +91,41 @@ void GetSensors() {
 
   LD06_Update(&lidar);
 
-  voltage_signal = adc_value[4] * ADC2VOLT * 10;
-  voltage_power = adc_value[3] * ADC2VOLT * 10;
+  voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
+  voltage_power = adc_value[3] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
 }
 
 void MainApp() {
   while (1) {
     GetSensors();
     Drive_Serial();
+    UpdateHeartbeatLed();
+    PwmOut_Write(&user_led4, Drive_HasError() ? 1.0f : 0.0f);
 
-    // --- 1. 両側壁の距離取得 (左右のセンタリング用) ---
-    int left_dist = 0, right_dist = 0;
-    int count_l = 0, count_r = 0;
+    // モード切替の処理（button1, button2を使用）
+    Mode_Update(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
 
-    // 左(90度付近)の平均距離
-    for (int i = 45; i <= 90; i++) {
-      if (lidar.distances_360[i] > 0) {
-        left_dist += lidar.distances_360[i];
-        count_l++;
-      }
-    }
-    // 右(270度付近)の平均距離
-    for (int i = 270; i <= 315; i++) {
-      if (lidar.distances_360[i] > 0) {
-        right_dist += lidar.distances_360[i];
-        count_r++;
-      }
-    }
-    if (count_l > 0)
-      left_dist /= count_l;
-    if (count_r > 0)
-      right_dist /= count_r;
+    switch (Mode_Get()) {
+      case MODE_STANDBY:
+        // 待機モード：モータを停止
+        Drive_Free();
+        DigitalOut_Write(&user_led2, 0);  // 待機中はLED2を消灯
+        break;
 
-    // --- 2. 目標ステアリング(steer)の計算 ---
-    float error = (float)(left_dist - right_dist);
-    float Kp = 0.002f;
+      case MODE_RUN:
+        // 走行モード：従来の自動走行ロジック
+        DigitalOut_Write(&user_led2, 1);  // 走行中はLED2を点灯
+        Algorithm_Run(&lidar);
+        break;
 
-    // errorがプラス(左が遠い)の時に、左(-45°側)へ行くか右(45°側)へ行くかは
-    // 機体の仕様に合わせて符号を調整してください。
-    float steer = Kp * error;
-    steer = Constrain(steer, -1.0f, 1.0f);
+      case MODE_FORWARD_ONLY:
+        // 一旦前進だけのモード
+        DigitalOut_Write(&user_led2, 1);  // 点灯させて動作中であることを示す
+        Algorithm_ForwardOnly(&lidar);
+        break;
 
-    // --- 3. 進行方向(タイヤが向いている方向)の距離確認 ---
-    // steer (-1.0 〜 1.0) を角度 (-45.0° 〜 45.0°) に変換
-    float look_ahead_angle = steer * 45.0f;
-    int base_angle = (int)look_ahead_angle;
-
-    int front_dist = 0;
-    int count_f = 0;
-
-    // 進行方向の角度を中心に ±5度 の距離を確認する
-    for (int i = base_angle - 10; i <= base_angle + 10; i++) {
-      // 角度がマイナスになった場合を考慮して360で丸める (-45° -> 315°)
-      int idx = (i + 360) % 360;
-      if (lidar.distances_360[idx] > 0) {
-        front_dist += lidar.distances_360[idx];
-        count_f++;
-      }
-    }
-    if (count_f > 0)
-      front_dist /= count_f;
-
-    // --- 4. 走行制御 (ブレーキ or 進行) ---
-    float acceleration = 0.0f;
-
-    // "進行方向"に壁が近い場合(例: 300mm以内)はブレーキ
-    if (front_dist > 0 && front_dist < (Drive_GetSpeed() * 100 + 400)) {
-      Drive_Brake(2.0f);
-    } else {
-      acceleration = 1.5f; // 前進
-      Drive_Set(acceleration, steer);
+      default:
+        break;
     }
 
     // 制御周期
