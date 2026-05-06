@@ -3,7 +3,7 @@
 
 #define DIFFERENTIAL 0.5f
 #define MAX_ACCELERATION 5.0f
-#define MAX_STEER_SPEED 2.0f // rad/s ステアリングの最大回転速度
+#define MAX_STEER_SPEED 2.0f  // rad/s ステアリングの最大回転速度
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,6 +13,7 @@
 #include "main.h"
 #include "mymath.h"
 #include "pid.h"
+#include "pwm_out.h"
 #include "serial.h"
 #include "timer.h"
 
@@ -69,4 +70,4 @@ float Drive_GetSpeed();
 
 bool Drive_HasError();
 
-#endif // DRIVE_H_
+#endif  // DRIVE_H_

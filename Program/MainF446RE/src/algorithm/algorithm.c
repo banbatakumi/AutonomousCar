@@ -1,8 +1,9 @@
 #include "algorithm.h"
+
 #include "drive.h"
 #include "mymath.h"
 
-void Algorithm_Run(LD06 *lidar) {
+void Algorithm_Run(LD06* lidar) {
   // --- 1. 両側壁の距離取得 (左右のセンタリング用) ---
   int left_dist = 0, right_dist = 0;
   int count_l = 0, count_r = 0;
@@ -27,8 +28,8 @@ void Algorithm_Run(LD06 *lidar) {
     right_dist /= count_r;
 
   // --- 2. 目標ステアリング(steer)の計算 ---
-  float error = (float)(left_dist - right_dist);
-  float Kp = 0.002f;
+  float error = (float)(left_dist - 300);
+  float Kp = 0.004f;
 
   // errorがプラス(左が遠い)の時に、左(-45°側)へ行くか右(45°側)へ行くかは
   // 機体の仕様に合わせて符号を調整してください。

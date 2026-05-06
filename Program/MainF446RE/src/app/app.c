@@ -7,8 +7,10 @@
 
 DigitalOut user_led1;
 DigitalOut user_led2;
-PwmOut user_led3;
+DigitalOut user_led3;
 PwmOut user_led4;
+
+PwmOut front_led;
 
 DigitalIn button1;
 DigitalIn button2;
@@ -29,8 +31,8 @@ ImuManager imu_manager;
 #define VOLTAGE_DIVIDER_RATIO ((10.0 + 1.0) / 1.0)
 #define MIN_VOLTAGE 8.0
 #define MAX_VOLTAGE 11.0
-#define HEARTBEAT_MIN_PERIOD_MS 300
-#define HEARTBEAT_MAX_PERIOD_MS 1200
+#define BLINK_PERIOD_US_AT_MIN_VOLTAGE 100U
+#define BLINK_PERIOD_US_AT_MAX_VOLTAGE 1000000U
 
 #define CONTRO_FREQUENCY_HZ 10000
 #define CONTROL_INTERVAL_US (1000000 / CONTRO_FREQUENCY_HZ)
@@ -41,28 +43,68 @@ uint16_t adc_value[ADC_VALUE_COUNT];
 double voltage_signal;
 double voltage_power;
 
-static void UpdateHeartbeatLed(void) {
-  double voltage = Constrain(voltage_signal, MIN_VOLTAGE, MAX_VOLTAGE);
-  double voltage_ratio = (voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE);
-  uint32_t period_ms = HEARTBEAT_MIN_PERIOD_MS + (uint32_t)((HEARTBEAT_MAX_PERIOD_MS - HEARTBEAT_MIN_PERIOD_MS) * voltage_ratio);
-  uint32_t t = HAL_GetTick() % period_ms;
-  float duty;
+static Timer voltage_signal_led_timer;
+static Timer voltage_power_led_timer;
+static bool voltage_signal_led_state = true;
+static bool voltage_power_led_state = true;
 
-  if (t < period_ms / 2) {
-    duty = (float)t / (float)(period_ms / 2);
-  } else {
-    duty = (float)(period_ms - t) / (float)(period_ms / 2);
+// バッテリー低電圧エラーフラグ
+static bool battery_error = false;
+
+static uint32_t VoltageToBlinkPeriodUs(double voltage) {
+  double clamped_voltage = voltage;
+
+  if (clamped_voltage < MIN_VOLTAGE) {
+    clamped_voltage = MIN_VOLTAGE;
+  } else if (clamped_voltage > MAX_VOLTAGE) {
+    clamped_voltage = MAX_VOLTAGE;
   }
 
-  PwmOut_Write(&user_led3, duty);
+  double ratio = (clamped_voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE);
+  double period_us = BLINK_PERIOD_US_AT_MIN_VOLTAGE +
+                     (BLINK_PERIOD_US_AT_MAX_VOLTAGE - BLINK_PERIOD_US_AT_MIN_VOLTAGE) * ratio;
+  return (uint32_t)period_us;
+}
+
+static void UpdateVoltageBlinkLed(DigitalOut* led, Timer* timer, bool* state, double voltage) {
+  uint32_t period_us = VoltageToBlinkPeriodUs(voltage);
+  uint32_t half_period_us = period_us / 2U;
+
+  if (half_period_us == 0U) {
+    half_period_us = 1U;
+  }
+
+  if (Timer_ReadUs(timer) >= half_period_us) {
+    *state = !*state;
+    DigitalOut_Write(led, *state);
+    Timer_Reset(timer);
+  }
+}
+
+// バッテリー電圧をチェック、低電圧時にエラー対応
+static void CheckBatteryVoltage(void) {
+  if (voltage_signal < MIN_VOLTAGE) {
+    // バッテリー低電圧エラー
+    if (!battery_error) {
+      printf("Battery voltage critical: %.2fV (minimum: %.2fV)\n", voltage_signal, MIN_VOLTAGE);
+      battery_error = true;
+    }
+    // ロボット全体を停止
+    Drive_Free();
+  } else if (voltage_signal >= MIN_VOLTAGE + 0.5) {
+    // ヒステリシス: 0.5V余裕を持たせてエラーをクリア
+    battery_error = false;
+  }
 }
 
 void Setup() {
   printf("Setup started\n");
   DigitalOut_Init(&user_led1, USER_LED1_GPIO_Port, USER_LED1_Pin);
   DigitalOut_Init(&user_led2, USER_LED2_GPIO_Port, USER_LED2_Pin);
-  PwmOut_Init(&user_led3, &htim4, TIM_CHANNEL_1);
+  DigitalOut_Init(&user_led3, USER_LED3_GPIO_Port, USER_LED3_Pin);
   PwmOut_Init(&user_led4, &htim4, TIM_CHANNEL_2);
+
+  PwmOut_Init(&front_led, &htim3, TIM_CHANNEL_1);
 
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
@@ -83,8 +125,14 @@ void Setup() {
   IMU_Manager_Init(&imu_manager, &hi2c1, DigitalIn_Read(&button2));
 
   Timer_Init(&control_interval_timer);
+  Timer_Init(&voltage_signal_led_timer);
+  Timer_Init(&voltage_power_led_timer);
+  DigitalOut_Write(&user_led2, voltage_power_led_state);
+  DigitalOut_Write(&user_led3, voltage_signal_led_state);
   Mode_Init(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
   printf("Setup finished\n");
+
+  PwmOut_Write(&front_led, 0.05f);
 }
 
 void GetSensors() {
@@ -93,23 +141,26 @@ void GetSensors() {
   Ultrasonic_Update(&ultrasonic_left);
   Ultrasonic_Update(&ultrasonic_back);
 
-  LD06_Update(&lidar);
+  if (LD06_Update(&lidar)) {
+  }
 
   voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
   voltage_power = adc_value[3] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
 
   // Update MPU6050 sensor data
-  IMU_Manager_Update(&imu_manager);
-  const MPU6050_Data* imu_data = IMU_Manager_GetData(&imu_manager);
-  printf("[MPU6050] Yaw: %.2f, Pitch: %.2f, Roll: %.2f\n", imu_data->yaw, imu_data->pitch, imu_data->roll);
+  // IMU_Manager_Update(&imu_manager);
+  // const MPU6050_Data* imu_data = IMU_Manager_GetData(&imu_manager);
+  // printf("IMU Yaw: %.2f, Pitch: %.2f, Roll: %.2f\n", imu_data->yaw, imu_data->pitch, imu_data->roll);
 }
 
 void MainApp() {
   while (1) {
     GetSensors();
+    CheckBatteryVoltage();  // バッテリー電圧チェック
     Drive_Serial();
-    UpdateHeartbeatLed();
-    PwmOut_Write(&user_led4, Drive_HasError() ? 1.0f : 0.0f);
+    UpdateVoltageBlinkLed(&user_led3, &voltage_signal_led_timer, &voltage_signal_led_state, voltage_signal);
+    UpdateVoltageBlinkLed(&user_led2, &voltage_power_led_timer, &voltage_power_led_state, voltage_power);
+    PwmOut_Write(&user_led4, (Drive_HasError() || battery_error) ? 1.0f : 0.0f);
 
     // モード切替の処理（button1, button2を使用）
     Mode_Update(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
@@ -118,18 +169,15 @@ void MainApp() {
       case MODE_STANDBY:
         // 待機モード：モータを停止
         Drive_Free();
-        DigitalOut_Write(&user_led2, 0);  // 待機中はLED2を消灯
         break;
 
       case MODE_RUN:
         // 走行モード：従来の自動走行ロジック
-        DigitalOut_Write(&user_led2, 1);  // 走行中はLED2を点灯
         Algorithm_Run(&lidar);
         break;
 
       case MODE_FORWARD_ONLY:
         // 一旦前進だけのモード
-        DigitalOut_Write(&user_led2, 1);  // 点灯させて動作中であることを示す
         Algorithm_ForwardOnly(&lidar);
         break;
 

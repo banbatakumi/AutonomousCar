@@ -79,6 +79,10 @@ typedef struct {
 
   // Last update time
   uint32_t last_update_ms;
+  // Async I2C (IT) support
+  uint8_t rx_buffer[14];
+  volatile uint8_t rx_ready;       // set by I2C Rx complete callback
+  volatile uint8_t async_active;   // indicates an ongoing non-blocking transfer
 } MPU6050_Handle;
 
 /* Function Prototypes */
@@ -157,6 +161,9 @@ uint8_t MPU6050_ScanI2C(I2C_HandleTypeDef* i2c_handle);
  * @return String representation of status
  */
 const char* MPU6050_GetHALStatusString(int status);
+
+// Start a non-blocking read of sensor registers (14 bytes accel/temp/gyro)
+bool MPU6050_StartAsyncRead(MPU6050_Handle* handle);
 
 #ifdef __cplusplus
 }

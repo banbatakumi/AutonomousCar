@@ -1,4 +1,5 @@
 #include "drive.h"
+
 #include "flash.h"
 
 #define SPEED_HEADER 0xFE
@@ -6,7 +7,7 @@
 #define TORQUE_HEADER 0xFC
 #define BRAKE_HEADER 0xFB
 
-#define WHEEL_DIAMETER 0.055f // m
+#define WHEEL_DIAMETER 0.055f  // m
 
 #define SERIAL_SEND_FREQUENCY_HZ 100
 #define SERIAL_SEND_INTERVAL_MS (1000 / SERIAL_SEND_FREQUENCY_HZ)
@@ -14,6 +15,10 @@
 Serial serial_left;
 Serial serial_right;
 Serial serial_steer;
+
+PwmOut brake_led;
+PwmOut winker_left_led;
+PwmOut winker_right_led;
 
 Timer steer_setup_timer;
 
@@ -35,7 +40,7 @@ SendData send_data;
 
 Drive drive;
 
-static void Drive_RecvSerial(Serial *serial, Protocol *protocol) {
+static void Drive_RecvSerial(Serial* serial, Protocol* protocol) {
   const uint8_t HEADER = 0xFF;
   const uint8_t FOOTER = 0xAA;
   const uint8_t DATA_SIZE = 6;
@@ -48,7 +53,7 @@ static void Drive_RecvSerial(Serial *serial, Protocol *protocol) {
       }
     } else if (protocol->index == (DATA_SIZE + 1)) {
       if (recv_byte == FOOTER) {
-        RecvData *data = &protocol->data;
+        RecvData* data = &protocol->data;
         data->flags = protocol->recv_buf[0];
         data->is_enable = data->flags & 0b00000001;
         data->is_voltage_out_of_range = (data->flags >> 1) & 0b00000001;
@@ -114,13 +119,19 @@ void Drive_Serial() {
                 WHEEL_DIAMETER;
   drive.speed = LPF_Update(&drive.lpf_speed, drive.speed);
 
+  if (send_data.do_brake) {
+    PwmOut_Write(&brake_led, 1);
+  } else {
+    PwmOut_Write(&brake_led, 0.05);
+  }
+
   if (Timer_ReadMs(&serial_send_interval_timer) > SERIAL_SEND_INTERVAL_MS) {
     Timer_Reset(&serial_send_interval_timer);
     if (drive.is_free) {
       Serial_Reset(&serial_left);
       Serial_Reset(&serial_right);
       Serial_Reset(&serial_steer);
-      return; // フリー状態: 送信停止でモーター待機
+      return;  // フリー状態: 送信停止でモーター待機
     }
     Drive_SendSerialSteer(POSITION_HEADER, (int16_t)(send_data.steer * 1000));
     if (send_data.do_brake) {
@@ -150,13 +161,25 @@ void Drive_Init(bool do_steer_setup) {
   PID_Init(&drive.pid_velocity, 2.5f, 2.5f, 0.0f, -MAX_ACCELERATION,
            MAX_ACCELERATION);
   Timer_Init(&drive.steer_timer);
-  drive.is_free = false;
+  drive.is_free = true;
+
+  PwmOut_Init(&brake_led, &htim3, TIM_CHANNEL_4);
+  PwmOut_Init(&winker_left_led, &htim3, TIM_CHANNEL_3);
+  PwmOut_Init(&winker_right_led, &htim3, TIM_CHANNEL_2);
+
+  for (int i = 0; i < 3; i++) {
+    PwmOut_Write(&winker_left_led, 0.5);
+    PwmOut_Write(&winker_right_led, 0.5);
+    HAL_Delay(200);
+    PwmOut_Write(&winker_left_led, 0);
+    PwmOut_Write(&winker_right_led, 0);
+    HAL_Delay(200);
+  }
 
   if (do_steer_setup) {
     // ボタン1押下起動: ステアセットアップ実行 → Flashに保存
     printf("Steer setup: calibrating...\n");
-    while (Drive_SetupSteer() == false)
-      ;
+    while (Drive_SetupSteer() == false);
     Flash_WriteData(FLASH_USER_START_ADDR, &steer_config,
                     sizeof(SteerConfig));
     printf("Steer config saved to flash\n");
@@ -236,7 +259,7 @@ void Drive_Set(float max_acceleration, float acceleration_rate, float steer) {
   float dt = Timer_Read(&drive.accel_timer);
   Timer_Reset(&drive.accel_timer);
   if (dt > 0.5f)
-    dt = 0.0f; // 初回 or 長時間停止後のガード
+    dt = 0.0f;  // 初回 or 長時間停止後のガード
 
   // 現在のアクセルを目標値に向けてランプアップ/ダウン
   if (drive.current_acceleration < max_acceleration) {
@@ -260,7 +283,7 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   float dt = Timer_Read(&drive.velocity_timer);
   Timer_Reset(&drive.velocity_timer);
   if (dt > 0.5f)
-    dt = 0.0f; // 初回 or 長時間停止後のガード
+    dt = 0.0f;  // 初回 or 長時間停止後のガード
 
   // 現在の目標速度をtarget_velocityに向けてacceleration [m/s²] でランプ
   if (drive.current_target_velocity < target_velocity) {
@@ -297,7 +320,7 @@ void Drive_Free() {
 
 float Drive_GetSpeed() { return drive.speed; }
 
-static bool Drive_RecvDataHasError(const RecvData *data) {
+static bool Drive_RecvDataHasError(const RecvData* data) {
   return data->is_voltage_out_of_range || data->is_overheat;
 }
 

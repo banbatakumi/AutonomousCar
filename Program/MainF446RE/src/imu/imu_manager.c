@@ -103,6 +103,8 @@ void IMU_Manager_Init(ImuManager* imu, I2C_HandleTypeDef* i2c_handle,
     if (MPU6050_PrimeOrientation(&imu->handle)) {
       printf("[MPU6050] Initial orientation primed from accel\n");
     }
+    // Start non-blocking async reads (I2C IT mode)
+    MPU6050_StartAsyncRead(&imu->handle);
   } else {
     printf("Failed to initialize MPU6050\n");
   }

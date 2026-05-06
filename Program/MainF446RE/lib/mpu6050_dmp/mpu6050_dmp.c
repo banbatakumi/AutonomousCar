@@ -154,6 +154,38 @@ static bool MPU6050_ReadRegs(MPU6050_Handle* handle, uint8_t reg, uint8_t* buffe
   return status == HAL_OK;
 }
 
+// File-scoped pointer to the handle with active async transfer
+static MPU6050_Handle* s_async_handle = NULL;
+
+// Start a non-blocking I2C read (IT mode) for sensor registers
+bool MPU6050_StartAsyncRead(MPU6050_Handle* handle) {
+  if (!handle || !handle->i2c_handle) return false;
+  if (handle->async_active) return false;  // already running
+
+  HAL_StatusTypeDef status = HAL_I2C_Mem_Read_IT(handle->i2c_handle,
+                                                 handle->i2c_addr << 1,
+                                                 MPU6050_REG_ACCEL_XOUT_H,
+                                                 I2C_MEMADD_SIZE_8BIT,
+                                                 handle->rx_buffer,
+                                                 14);
+  if (status == HAL_OK) {
+    handle->async_active = 1;
+    handle->rx_ready = 0;
+    s_async_handle = handle;
+    return true;
+  }
+  return false;
+}
+
+// HAL I2C memory RX complete callback - set rx_ready for the matching handle
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
+  if (s_async_handle && s_async_handle->i2c_handle == hi2c) {
+    s_async_handle->rx_ready = 1;
+    s_async_handle->async_active = 0;
+    // keep s_async_handle for later processing
+  }
+}
+
 /* Combine two bytes into a 16-bit signed integer */
 static int16_t MPU6050_CombineBytes(uint8_t high, uint8_t low) {
   return (int16_t)((high << 8) | low);
@@ -528,10 +560,20 @@ bool MPU6050_Update(MPU6050_Handle* handle, MPU6050_Data* data) {
   if (!handle || !data) {
     return false;
   }
-
   uint8_t buffer[14];
 
-  if (!MPU6050_ReadRegs(handle, MPU6050_REG_ACCEL_XOUT_H, buffer, 14)) {
+  // If an async IT read has completed, use that data. Otherwise, ensure an async
+  // read is scheduled and return without blocking.
+  if (handle->rx_ready) {
+    memcpy(buffer, handle->rx_buffer, 14);
+    handle->rx_ready = 0;
+    // schedule next read immediately
+    MPU6050_StartAsyncRead(handle);
+  } else {
+    // No data ready: start async read if not active and return
+    if (!handle->async_active) {
+      MPU6050_StartAsyncRead(handle);
+    }
     return false;
   }
 
