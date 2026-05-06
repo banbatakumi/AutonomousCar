@@ -117,11 +117,25 @@ void Drive_Serial() {
 
   drive.speed = (right_protocol.data.speed - left_protocol.data.speed) / 2.0f *
                 WHEEL_DIAMETER;
-  drive.speed = LPF_Update(&drive.lpf_speed, drive.speed);
+  drive.speed = MAF_Update(&drive.maf_speed, drive.speed);
 
+  // ブレーキランプの制御
   if (send_data.do_brake) {
-    PwmOut_Write(&brake_led, 1);
+    // 急ブレーキの場合: 高速で点滅
+    if (send_data.brake_strength >= 1.0f && drive.speed > 0.5) {
+      float elapsed_ms = Timer_ReadMs(&drive.brake_led_timer);
+      // 200ms周期で点灯/消灯（100msごと）
+      if (elapsed_ms >= 200) {
+        Timer_Reset(&drive.brake_led_timer);
+        elapsed_ms = 0;
+      }
+      PwmOut_Write(&brake_led, elapsed_ms < 100 ? 1.0f : 0.0f);
+    } else {
+      // 通常ブレーキ: 常に点灯
+      PwmOut_Write(&brake_led, 1.0f);
+    }
   } else {
+    // ブレーキなし: 薄く光っている
     PwmOut_Write(&brake_led, 0.05);
   }
 
@@ -152,8 +166,7 @@ void Drive_Init(bool do_steer_setup) {
   Serial_Init(&serial_steer, &huart5, 256);
   Timer_Init(&steer_setup_timer);
   Timer_Init(&serial_send_interval_timer);
-  LPF_Init(&drive.lpf_speed, 0.75, 0);
-  LPF_Init(&send_data.lpf_steer, 0.9, 0);
+  MAF_Init(&drive.maf_speed, 10);
   drive.current_acceleration = 0.0f;
   Timer_Init(&drive.accel_timer);
   drive.current_target_velocity = 0.0f;
@@ -161,6 +174,7 @@ void Drive_Init(bool do_steer_setup) {
   PID_Init(&drive.pid_velocity, 2.5f, 2.5f, 0.0f, -MAX_ACCELERATION,
            MAX_ACCELERATION);
   Timer_Init(&drive.steer_timer);
+  Timer_Init(&drive.brake_led_timer);
   drive.is_free = true;
 
   PwmOut_Init(&brake_led, &htim3, TIM_CHANNEL_4);
@@ -179,6 +193,7 @@ void Drive_Init(bool do_steer_setup) {
   if (do_steer_setup) {
     // ボタン1押下起動: ステアセットアップ実行 → Flashに保存
     printf("Steer setup: calibrating...\n");
+    Timer_Reset(&steer_setup_timer);
     while (Drive_SetupSteer() == false);
     Flash_WriteData(FLASH_USER_START_ADDR, &steer_config,
                     sizeof(SteerConfig));
@@ -230,10 +245,7 @@ static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
   }
 
   steer = -Constrain(steer, -1.0f, 1.0f);
-  steer = LPF_Update(&send_data.lpf_steer, steer);
-  double mapped_rad =
-      steer_config.min_rad +
-      (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
+  double mapped_rad = steer_config.min_rad + (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
 
   // ステアリング回転速度制限 [rad/s]
   float steer_dt = Timer_Read(&drive.steer_timer);
@@ -241,10 +253,8 @@ static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
   if (steer_dt > 0.0f && steer_dt < 0.5f) {
     double max_delta = MAX_STEER_SPEED * steer_dt;
     double delta = mapped_rad - send_data.steer;
-    if (delta > max_delta)
-      delta = max_delta;
-    if (delta < -max_delta)
-      delta = -max_delta;
+    if (delta > max_delta) delta = max_delta;
+    if (delta < -max_delta) delta = -max_delta;
     send_data.steer += delta;
   } else {
     send_data.steer = mapped_rad;

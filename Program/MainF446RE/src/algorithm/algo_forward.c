@@ -27,8 +27,8 @@ void Algorithm_ForwardOnly(LD06* lidar) {
   }
 
   if (is_braking) {
-    Drive_Brake(1.5f);
+    Drive_Brake(1);
   } else {
-    Drive_Set(4, 2, 0.0f);
+    Drive_Set(5, 4, 0.0f);
   }
 }

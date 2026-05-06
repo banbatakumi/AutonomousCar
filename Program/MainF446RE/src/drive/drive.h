@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include "lpf.h"
+#include "maf.h"
 #include "main.h"
 #include "mymath.h"
 #include "pid.h"
@@ -43,13 +44,14 @@ typedef struct {
 
 typedef struct {
   float speed;
-  LPF lpf_speed;
+  MAF maf_speed;
   float current_acceleration;
   Timer accel_timer;
   float current_target_velocity;
   Timer velocity_timer;
   PID pid_velocity;
   Timer steer_timer;
+  Timer brake_led_timer;
   bool is_free;
 } Drive;
 
