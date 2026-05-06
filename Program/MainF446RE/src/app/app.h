@@ -6,6 +6,8 @@
 #include "adc.h"
 #include "digitalinout.h"
 #include "drive.h"
+#include "i2c.h"
+#include "imu_manager.h"
 #include "ld06.h"
 #include "main.h"
 #include "mymath.h"

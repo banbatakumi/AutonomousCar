@@ -23,6 +23,8 @@ Ultrasonic ultrasonic_back;
 Serial serial3;
 LD06 lidar;
 
+ImuManager imu_manager;
+
 #define ADC2VOLT (3.3 / 4095.0)
 #define VOLTAGE_DIVIDER_RATIO ((10.0 + 1.0) / 1.0)
 #define MIN_VOLTAGE 8.0
@@ -78,6 +80,8 @@ void Setup() {
   Serial_Init(&serial3, &huart3, 2048);
   LD06_Init(&lidar, &serial3);
 
+  IMU_Manager_Init(&imu_manager, &hi2c1, DigitalIn_Read(&button2));
+
   Timer_Init(&control_interval_timer);
   Mode_Init(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
   printf("Setup finished\n");
@@ -93,6 +97,11 @@ void GetSensors() {
 
   voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
   voltage_power = adc_value[3] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
+
+  // Update MPU6050 sensor data
+  IMU_Manager_Update(&imu_manager);
+  const MPU6050_Data* imu_data = IMU_Manager_GetData(&imu_manager);
+  printf("[MPU6050] Yaw: %.2f, Pitch: %.2f, Roll: %.2f\n", imu_data->yaw, imu_data->pitch, imu_data->roll);
 }
 
 void MainApp() {
