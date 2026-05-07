@@ -59,8 +59,12 @@ void GetSensors() {
   if (LD06_Update(&lidar)) {
   }
 
-  voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
-  voltage_power = adc_value[3] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
+  // Read raw ADC values and apply LPF
+  double raw_voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
+  double raw_voltage_power = adc_value[3] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
+  
+  voltage_signal = LPF_Update(&voltage_signal_lpf, raw_voltage_signal);
+  voltage_power = LPF_Update(&voltage_power_lpf, raw_voltage_power);
 
   // Update MPU6050 sensor data
   // IMU_Manager_Update(&imu_manager);
@@ -84,7 +88,7 @@ void MainApp() {
       case MODE_STANDBY:
         // 待機モード：モータを停止
         Drive_Free();
-        PwmOut_Write(&front_led, 0.05);
+        PwmOut_Write(&front_led, 0.01);
         break;
 
       case MODE_RUN:

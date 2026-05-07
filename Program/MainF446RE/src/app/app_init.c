@@ -24,17 +24,23 @@ void Setup() {
   __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_HT | DMA_IT_TC);
 
   Serial_Init(&serial3, &huart3, 2048);
-  LD06_Init(&lidar, &serial3);
+  
+  // Initialize LiDAR motor control (汎用化: LD06に渡す)
+  DigitalOut_Init(&lidar_motor, LIDAR_GPIO_Port, LIDAR_Pin);
+  LD06_Init(&lidar, &serial3, &lidar_motor);
 
   // IMU_Manager_Init(&imu_manager, &hi2c1, DigitalIn_Read(&button2));
 
   Timer_Init(&control_interval_timer);
   Timer_Init(&voltage_signal_led_timer);
   Timer_Init(&voltage_power_led_timer);
+
+  // Initialize LPF for voltage measurements (k_lpf=0.8 for smooth filtering)
+  LPF_Init(&voltage_signal_lpf, 0.8, 0.0);
+  LPF_Init(&voltage_power_lpf, 0.8, 0.0);
+
   DigitalOut_Write(&user_led2, voltage_power_led_state);
   DigitalOut_Write(&user_led3, voltage_signal_led_state);
   Mode_Init(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
   printf("Setup finished\n");
-
-  PwmOut_Write(&front_led, 0.05f);
 }

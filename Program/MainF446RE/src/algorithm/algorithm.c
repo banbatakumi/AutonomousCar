@@ -81,6 +81,6 @@ void Algorithm_Run(LD06* lidar) {
   if (is_braking) {
     Drive_Brake(2.0f);
   } else {
-    Drive_Set(1.5f, 3.0f, steer);
+    Drive_SetVelocity(1.5f, 1.5f, 0);
   }
 }

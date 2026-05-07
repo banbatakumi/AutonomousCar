@@ -1,7 +1,6 @@
 
 #include "ld06.h"
 
-DigitalOut motor;
 #define ANGLE_OFFSET 90.0f
 
 // マニュアル記載のCRC8用計算テーブル
@@ -32,10 +31,10 @@ static uint8_t CalCRC8(const uint8_t* p, uint8_t len) {
   return crc;
 }
 
-void LD06_Init(LD06* lidar, Serial* serial) {
-  DigitalOut_Init(&motor, LIDAR_GPIO_Port, LIDAR_Pin);
-  DigitalOut_Write(&motor, 1);  // LD06の電源ON
+void LD06_Init(LD06* lidar, Serial* serial, DigitalOut* motor_control) {
   lidar->serial = serial;
+  lidar->motor = motor_control;
+  DigitalOut_Write(lidar->motor, 1);  // LD06の電源ON
   lidar->rx_state = 0;
   lidar->speed = 0.0f;
   lidar->timestamp = 0;

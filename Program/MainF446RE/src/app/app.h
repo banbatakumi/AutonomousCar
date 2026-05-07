@@ -9,6 +9,7 @@
 // #include "i2c.h"
 // #include "imu_manager.h"
 #include "ld06.h"
+#include "lpf.h"
 #include "main.h"
 #include "mymath.h"
 #include "pwm_out.h"
@@ -40,6 +41,7 @@ extern Ultrasonic ultrasonic_back;
 
 extern Serial serial3;
 extern LD06 lidar;
+extern DigitalOut lidar_motor;
 
 // extern ImuManager imu_manager;
 
@@ -47,6 +49,9 @@ extern uint16_t adc_value[];
 
 extern double voltage_signal;
 extern double voltage_power;
+
+extern LPF voltage_signal_lpf;
+extern LPF voltage_power_lpf;
 
 extern Timer voltage_signal_led_timer;
 extern Timer voltage_power_led_timer;

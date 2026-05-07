@@ -136,7 +136,7 @@ void Drive_Serial() {
     }
   } else {
     // ブレーキなし: 薄く光っている
-    PwmOut_Write(&brake_led, 0.05);
+    PwmOut_Write(&brake_led, 0.1);
   }
 
   if (Timer_ReadMs(&serial_send_interval_timer) > SERIAL_SEND_INTERVAL_MS) {
@@ -171,7 +171,7 @@ void Drive_Init(bool do_steer_setup) {
   Timer_Init(&drive.accel_timer);
   drive.current_target_velocity = 0.0f;
   Timer_Init(&drive.velocity_timer);
-  PID_Init(&drive.pid_velocity, 2.5f, 2.5f, 0.0f, -MAX_ACCELERATION,
+  PID_Init(&drive.pid_velocity, 2.0f, 1.0f, 0.0f, -MAX_ACCELERATION,
            MAX_ACCELERATION);
   Timer_Init(&drive.steer_timer);
   Timer_Init(&drive.brake_led_timer);

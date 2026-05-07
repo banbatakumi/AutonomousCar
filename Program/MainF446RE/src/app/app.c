@@ -24,12 +24,16 @@ Ultrasonic ultrasonic_back;
 
 Serial serial3;
 LD06 lidar;
+DigitalOut lidar_motor;
 
 // ImuManager imu_manager;
 uint16_t adc_value[ADC_VALUE_COUNT];
 
 double voltage_signal;
 double voltage_power;
+
+LPF voltage_signal_lpf;
+LPF voltage_power_lpf;
 
 Timer voltage_signal_led_timer;
 Timer voltage_power_led_timer;
