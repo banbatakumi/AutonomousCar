@@ -63,13 +63,13 @@ void Algorithm_Run(LD06* lidar) {
   if (front_dist > 0) {
     if (!is_braking) {
       // 走行中：速度に応じてブレーキ開始距離を計算
-      float brake_threshold = Drive_GetSpeed() * 200.0f + 300.0f;
+      float brake_threshold = Drive_GetSpeed() * 200.0f + 400.0f;
       if (front_dist < brake_threshold) {
         is_braking = true;
       }
     } else {
       // ブレーキ中：停止時の閾値(400)より十分離れるまで解除しない
-      if (front_dist > 300.0f && Drive_GetSpeed() < 0.1) {
+      if (front_dist > 400.0f && Drive_GetSpeed() < 0.1) {
         is_braking = false;
       }
     }
@@ -81,6 +81,6 @@ void Algorithm_Run(LD06* lidar) {
   if (is_braking) {
     Drive_Brake(2.0f);
   } else {
-    Drive_SetVelocity(1.5f, 1.5f, 0);
+    Drive_SetVelocity(1, 0.5f, 0);
   }
 }

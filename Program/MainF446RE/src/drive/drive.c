@@ -161,8 +161,8 @@ void Drive_Serial() {
 }
 
 void Drive_Init(bool do_steer_setup) {
-  Serial_Init(&serial_left, &huart2, 256);
-  Serial_Init(&serial_right, &huart4, 256);
+  Serial_Init(&serial_left, &huart4, 256);
+  Serial_Init(&serial_right, &huart2, 256);
   Serial_Init(&serial_steer, &huart5, 256);
   Timer_Init(&steer_setup_timer);
   Timer_Init(&serial_send_interval_timer);
@@ -171,7 +171,7 @@ void Drive_Init(bool do_steer_setup) {
   Timer_Init(&drive.accel_timer);
   drive.current_target_velocity = 0.0f;
   Timer_Init(&drive.velocity_timer);
-  PID_Init(&drive.pid_velocity, 2.0f, 1.0f, 0.0f, -MAX_ACCELERATION,
+  PID_Init(&drive.pid_velocity, 1.0f, 1.0f, 0.0f, -MAX_ACCELERATION,
            MAX_ACCELERATION);
   Timer_Init(&drive.steer_timer);
   Timer_Init(&drive.brake_led_timer);
@@ -292,7 +292,7 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   // dt計算（速度ランプ用）
   float dt = Timer_Read(&drive.velocity_timer);
   Timer_Reset(&drive.velocity_timer);
-  if (dt > 0.5f)
+  if (dt > 0.1f)
     dt = 0.0f;  // 初回 or 長時間停止後のガード
 
   // 現在の目標速度をtarget_velocityに向けてacceleration [m/s²] でランプ
