@@ -1,86 +1,62 @@
 #include "algorithm.h"
 
+#include <stdio.h>
+
 #include "drive.h"
+#include "lidar_utils.h"
 #include "mymath.h"
 
+// 追従パラメータ
+#define TARGET_DIST_MM 500.0f      // 目標距離 [mm]
+#define DEAD_ZONE_MM 10.0f         // 停止維持のデッドゾーン [mm]
+#define SPEED_GAIN 0.01f           // 距離誤差→速度ゲイン [m/s per mm]
+#define MAX_FOLLOW_SPEED 2.5f      // 前進最大速度 [m/s]
+#define MAX_REVERSE_SPEED 1.5f     // 後退最大速度 [m/s]
+#define STEER_GAIN (1.0f / 60.0f)  // ±45°で最大ステア
+#define SEARCH_HALF_DEG 60         // 探索範囲 ±45°
+#define EMERGENCY_DIST_MM 300.0f   // 緊急ブレーキ距離 [mm]
+#define SECTOR_HALF_DEG 5          // セクタ評価幅 ±5°
+#define MIN_VALID_DIST_MM 50.0f    // この距離未満はノイズとして無視
+#define MIN_SECTOR_COUNT 3         // セクタ内の最低有効点数
+
 void Algorithm_Run(LD06* lidar) {
-  // --- 1. 両側壁の距離取得 (左右のセンタリング用) ---
-  int left_dist = 0, right_dist = 0;
-  int count_l = 0, count_r = 0;
+  float dist_mm = 0.0f;
+  int deg = Lidar_FindNearestSector(lidar, 0, SEARCH_HALF_DEG,
+                                    SECTOR_HALF_DEG, MIN_VALID_DIST_MM,
+                                    MIN_SECTOR_COUNT, &dist_mm);
 
-  // 左(90度付近)の平均距離
-  for (int i = 45; i <= 120; i++) {
-    if (lidar->distances_360[i] > 0) {
-      left_dist += lidar->distances_360[i];
-      count_l++;
-    }
+  if (deg == -1) {
+    Drive_Brake(1.0f);
+    printf("Follow: no target in ±%ddeg\n", SEARCH_HALF_DEG);
+    return;
   }
-  // 右(270度付近)の平均距離
-  for (int i = 240; i <= 315; i++) {
-    if (lidar->distances_360[i] > 0) {
-      right_dist += lidar->distances_360[i];
-      count_r++;
-    }
+
+  // 0-359° → -180〜+179° に変換 (正=左, 負=右)
+  int signed_deg = (deg > 180) ? (deg - 360) : deg;
+
+  printf("Follow: deg=%d, dist=%.0fmm\n", signed_deg, dist_mm);
+
+  // 緊急ブレーキ: 近すぎる場合
+  if (dist_mm < EMERGENCY_DIST_MM) {
+    Drive_Brake(1.0f);
+    return;
   }
-  if (count_l > 0)
-    left_dist /= count_l;
-  if (count_r > 0)
-    right_dist /= count_r;
 
-  // --- 2. 目標ステアリング(steer)の計算 ---
-  float error = (float)(left_dist - 300);
-  float Kp = 0.004f;
+  // ステアリング: 角度に比例、±45°で飽和
+  float steer = Constrain((float)signed_deg * STEER_GAIN, -1.0f, 1.0f);
 
-  // errorがプラス(左が遠い)の時に、左(-45°側)へ行くか右(45°側)へ行くかは
-  // 機体の仕様に合わせて符号を調整してください。
-  float steer = Kp * error;
-  steer = Constrain(steer, -1.0f, 1.0f);
+  float dist_error = dist_mm - TARGET_DIST_MM;
 
-  // --- 3. 進行方向(タイヤが向いている方向)の距離確認 ---
-  // steer (-1.0 〜 1.0) を角度 (-45.0° 〜 45.0°) に変換
-  float look_ahead_angle = steer * 45.0f;
-  int base_angle = (int)look_ahead_angle;
-
-  int front_dist = 0;
-  int count_f = 0;
-
-  // 進行方向の角度を中心に ±5度 の距離を確認する
-  for (int i = base_angle - 5; i <= base_angle + 5; i++) {
-    // 角度がマイナスになった場合を考慮して360で丸める (-45° -> 315°)
-    int idx = (i + 360) % 360;
-    if (lidar->distances_360[idx] > 0) {
-      front_dist += lidar->distances_360[idx];
-      count_f++;
-    }
-  }
-  if (count_f > 0)
-    front_dist /= count_f;
-
-  // --- 4. 走行制御 (ブレーキ or 進行) ---
-
-  static bool is_braking = false;
-
-  if (front_dist > 0) {
-    if (!is_braking) {
-      // 走行中：速度に応じてブレーキ開始距離を計算
-      float brake_threshold = Drive_GetSpeed() * 200.0f + 400.0f;
-      if (front_dist < brake_threshold) {
-        is_braking = true;
-      }
-    } else {
-      // ブレーキ中：停止時の閾値(400)より十分離れるまで解除しない
-      if (front_dist > 400.0f && Drive_GetSpeed() < 0.1) {
-        is_braking = false;
-      }
-    }
+  if (dist_error > DEAD_ZONE_MM) {
+    // 目標より遠い: 前進
+    float vel = Constrain(dist_error * SPEED_GAIN, 0.0f, MAX_FOLLOW_SPEED);
+    Drive_SetVelocity(vel, 2.0f, steer);
+  } else if (dist_error < -DEAD_ZONE_MM) {
+    // 目標より近い: 後退
+    float vel = Constrain(dist_error * SPEED_GAIN, -MAX_REVERSE_SPEED, 0.0f);
+    Drive_SetVelocity(vel, 2.0f, steer);
   } else {
-    // 障害物が見えなくなった場合は解除
-    is_braking = false;
-  }
-
-  if (is_braking) {
-    Drive_Brake(2.0f);
-  } else {
-    Drive_SetVelocity(1, 0.5f, 0);
+    // デッドゾーン: 停止保持
+    Drive_Brake(0.5f);
   }
 }

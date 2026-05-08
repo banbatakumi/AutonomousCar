@@ -22,10 +22,10 @@ static int ChooseTurnDirection(const LidarSector* front_left,
   float left_score = 0.0f;
   float right_score = 0.0f;
 
-  if (front_left->count > 0)  left_score  += front_left->avg * 1.4f;
-  if (left->count > 0)        left_score  += left->avg;
+  if (front_left->count > 0) left_score += front_left->avg * 1.4f;
+  if (left->count > 0) left_score += left->avg;
   if (front_right->count > 0) right_score += front_right->avg * 1.4f;
-  if (right->count > 0)       right_score += right->avg;
+  if (right->count > 0) right_score += right->avg;
 
   return (left_score >= right_score) ? 1 : -1;
 }
@@ -50,28 +50,28 @@ void Algorithm_ForwardOnly(LD06* lidar) {
     timers_initialized = true;
   }
 
-  uint32_t state_elapsed_ms    = Timer_ReadMs(&state_timer);
-  uint32_t corner_cooldown_ms  = Timer_ReadMs(&corner_cooldown_timer);
-  uint32_t escape_cooldown_ms  = Timer_ReadMs(&escape_cooldown_timer);
+  uint32_t state_elapsed_ms = Timer_ReadMs(&state_timer);
+  uint32_t corner_cooldown_ms = Timer_ReadMs(&corner_cooldown_timer);
+  uint32_t escape_cooldown_ms = Timer_ReadMs(&escape_cooldown_timer);
 
-  const LidarSector front       = Lidar_GetSector(lidar,   0, 12);
-  const LidarSector front_left  = Lidar_GetSector(lidar,  35, 18);
+  const LidarSector front = Lidar_GetSector(lidar, 0, 12);
+  const LidarSector front_left = Lidar_GetSector(lidar, 35, 18);
   const LidarSector front_right = Lidar_GetSector(lidar, 325, 18);
-  const LidarSector left        = Lidar_GetSector(lidar,  90, 22);
-  const LidarSector right       = Lidar_GetSector(lidar, 270, 22);
+  const LidarSector left = Lidar_GetSector(lidar, 90, 22);
+  const LidarSector right = Lidar_GetSector(lidar, 270, 22);
 
-  const bool left_blocked  = Lidar_IsBlocked(&left,  320.0f);
+  const bool left_blocked = Lidar_IsBlocked(&left, 320.0f);
   const bool right_blocked = Lidar_IsBlocked(&right, 320.0f);
 
-  Lidar_UpdateScore(&front_block_score,      Lidar_IsBlocked(&front, 550.0f), 6);
+  Lidar_UpdateScore(&front_block_score, Lidar_IsBlocked(&front, 550.0f), 6);
   Lidar_UpdateScore(&hard_front_block_score, Lidar_IsBlocked(&front, 450.0f), 6);
 
-  const bool front_blocked      = (front_block_score >= 2);
+  const bool front_blocked = (front_block_score >= 2);
   const bool hard_front_blocked = (hard_front_block_score >= 2);
 
   const bool dead_end_raw =
       hard_front_blocked && left_blocked && right_blocked &&
-      Lidar_IsBlocked(&front_left,  450.0f) &&
+      Lidar_IsBlocked(&front_left, 450.0f) &&
       Lidar_IsBlocked(&front_right, 450.0f);
 
   Lidar_UpdateScore(&dead_end_score, dead_end_raw, 8);

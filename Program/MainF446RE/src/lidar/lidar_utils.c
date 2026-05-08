@@ -81,6 +81,28 @@ bool Lidar_IsClear(const LidarSector* s, float threshold_mm) {
   return (s->count > 0 && s->avg > threshold_mm);
 }
 
+int Lidar_FindNearestSector(const LD06* lidar, int center_deg,
+                            int half_width_deg, int sector_half_deg,
+                            float min_valid_mm, int min_count,
+                            float* out_avg_mm) {
+  int best_deg = -1;
+  float best_avg = 0.0f;
+
+  for (int d = -half_width_deg; d <= half_width_deg; d++) {
+    int center = (center_deg + d + 360) % 360;
+    LidarSector s = Lidar_GetSector(lidar, center, sector_half_deg);
+    if (s.count < min_count) continue;
+    if (s.avg < min_valid_mm) continue;
+    if (best_deg == -1 || s.avg < best_avg) {
+      best_avg = s.avg;
+      best_deg = center;
+    }
+  }
+
+  if (best_deg != -1) *out_avg_mm = best_avg;
+  return best_deg;
+}
+
 int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
                                 int sector_half_width) {
   int best_angle = -1;

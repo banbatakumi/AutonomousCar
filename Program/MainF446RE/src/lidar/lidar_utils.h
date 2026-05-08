@@ -28,6 +28,16 @@ LidarSector Lidar_GetSectorRange(const LD06* lidar, int start_deg,
 int Lidar_FindNearestAngle(const LD06* lidar, int center_deg,
                            int half_width_deg);
 
+// ノイズ耐性のある最近傍探索
+// 各方向を sector_half_deg 幅のセクタ平均で評価し、
+// min_valid_mm 未満または min_count 未満の方向を除外する
+// out_avg_mm: 最近傍セクタの平均距離 [mm]
+// 戻り値: 0-359 の角度。有効セクタがなければ -1
+int Lidar_FindNearestSector(const LD06* lidar, int center_deg,
+                            int half_width_deg, int sector_half_deg,
+                            float min_valid_mm, int min_count,
+                            float* out_avg_mm);
+
 // ヒステリシス付きスコアカウンタの更新
 // raw が true なら score を +1 (max_score 上限), false なら -1 (0 下限)
 void Lidar_UpdateScore(int* score, bool raw, int max_score);
