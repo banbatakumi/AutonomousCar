@@ -94,8 +94,8 @@ void Algorithm_ForwardOnly(LD06* lidar) {
   const bool right_blocked = (right.count > 0 && right.avg < 320.0f);
   const bool front_block_raw = (front.count > 0 && front.avg < 550.0f);
   const bool front_clear_raw = (front.count > 0 && front.avg > 650.0f);
-  const bool hard_front_block_raw = (front.count > 0 && front.avg < 400.0f);
-  const bool hard_front_clear_raw = (front.count > 0 && front.avg > 450.0f);
+  const bool hard_front_block_raw = (front.count > 0 && front.avg < 450.0f);
+  const bool hard_front_clear_raw = (front.count > 0 && front.avg > 500.0f);
 
   if (front_block_raw) {
     if (front_block_score < 6)
@@ -130,7 +130,7 @@ void Algorithm_ForwardOnly(LD06* lidar) {
   const bool dead_end = (dead_end_score >= 3);
 
   // 緊急停止: ただし切り返し中は潰さない
-  if (front.count > 0 && front.avg < 220.0f &&
+  if (front.count > 0 && front.avg < 300.0f &&
       nav_state != NAV_ESCAPE_REVERSE &&
       nav_state != NAV_ESCAPE_FORWARD_TURN) {
     // printf("EMERGENCY BRAKE: front=%.1f, left=%.1f, right=%.1f nav=%d ms=%lu esc_cd=%lu drive_err=%d\n",
@@ -150,7 +150,7 @@ void Algorithm_ForwardOnly(LD06* lidar) {
       return;
     }
 
-    Drive_Brake(5.0f);
+    Drive_Brake(1.0f);
     return;
   }
 
@@ -170,8 +170,8 @@ void Algorithm_ForwardOnly(LD06* lidar) {
         Timer_Reset(&state_timer);
         turn_dir =
             ChooseTurnDirection(&front_left, &front_right, &left, &right);
-        printf("ALGDBG: ENTER ESCAPE (dir=%d) nav=%d\n", turn_dir,
-               (int)nav_state);
+        // printf("ALGDBG: ENTER ESCAPE (dir=%d) nav=%d\n", turn_dir,
+        //        (int)nav_state);
         // 切り返し直後の早期再突入を防ぐクールダウン
         escape_cooldown_active = true;
         Timer_Reset(&escape_cooldown_timer);
