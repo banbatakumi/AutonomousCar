@@ -136,7 +136,7 @@ void Drive_Serial() {
     }
   } else {
     // ブレーキなし: 薄く光っている
-    PwmOut_Write(&brake_led, 0.5);
+    PwmOut_Write(&brake_led, 0.05f);
   }
 
   if (Timer_ReadMs(&serial_send_interval_timer) > SERIAL_SEND_INTERVAL_MS) {
