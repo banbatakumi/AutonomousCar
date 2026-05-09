@@ -8639,6 +8639,12 @@
 		(uuid "11c37450-6d12-4007-a082-6deb727e759e")
 	)
 	(junction
+		(at 275.59 100.33)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "12df43ce-fbfb-4973-8537-efa66d3f6708")
+	)
+	(junction
 		(at 283.21 132.08)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -8661,6 +8667,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "19357ec8-c019-4d2f-b65a-ee287babbd38")
+	)
+	(junction
+		(at 283.21 109.22)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "1ed6b9f0-934c-42b6-af5c-dd1cd0582da2")
 	)
 	(junction
 		(at 120.65 109.22)
@@ -9658,7 +9670,7 @@
 	)
 	(polyline
 		(pts
-			(xy 292.1 101.6) (xy 266.7 101.6)
+			(xy 293.37 93.98) (xy 267.97 93.98)
 		)
 		(stroke
 			(width 0.254)
@@ -9678,7 +9690,7 @@
 	)
 	(polyline
 		(pts
-			(xy 292.1 101.6) (xy 292.1 139.7)
+			(xy 293.37 93.98) (xy 293.37 139.7)
 		)
 		(stroke
 			(width 0.254)
@@ -9965,6 +9977,16 @@
 			(type default)
 		)
 		(uuid "574a6328-0fdd-405c-9403-61079abba2ab")
+	)
+	(wire
+		(pts
+			(xy 275.59 100.33) (xy 275.59 109.22)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "57f7e743-e150-4e75-9743-536813879dc1")
 	)
 	(wire
 		(pts
@@ -10908,6 +10930,16 @@
 	)
 	(wire
 		(pts
+			(xy 283.21 100.33) (xy 283.21 109.22)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b58289f0-ad41-4e87-bd59-02ccd21d6e56")
+	)
+	(wire
+		(pts
 			(xy 195.58 45.72) (xy 190.5 45.72)
 		)
 		(stroke
@@ -10918,7 +10950,7 @@
 	)
 	(wire
 		(pts
-			(xy 273.05 109.22) (xy 275.59 109.22)
+			(xy 273.05 100.33) (xy 275.59 100.33)
 		)
 		(stroke
 			(width 0)
@@ -22223,7 +22255,7 @@
 	)
 	(symbol
 		(lib_id "power:+3V3")
-		(at 273.05 109.22 0)
+		(at 273.05 100.33 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -22231,7 +22263,7 @@
 		(dnp no)
 		(uuid "8e7739cb-2e47-4a2d-a462-c54c8eaf9399")
 		(property "Reference" "#PWR038"
-			(at 273.05 113.03 0)
+			(at 273.05 104.14 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -22240,7 +22272,7 @@
 			)
 		)
 		(property "Value" "+3V3"
-			(at 273.05 105.41 0)
+			(at 273.05 96.52 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -22248,7 +22280,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 273.05 109.22 0)
+			(at 273.05 100.33 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -22257,7 +22289,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 273.05 109.22 0)
+			(at 273.05 100.33 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -22266,7 +22298,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3V3\""
-			(at 273.05 109.22 0)
+			(at 273.05 100.33 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -26341,6 +26373,75 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:C")
+		(at 279.4 100.33 90)
+		(mirror x)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "c16f8415-1999-4086-aec2-695a0b59a32e")
+		(property "Reference" "C26"
+			(at 279.4 96.52 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "10u"
+			(at 284.48 100.33 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric"
+			(at 283.21 101.2952 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 279.4 100.33 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Unpolarized capacitor"
+			(at 279.4 100.33 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "711fe4bd-8e14-4341-a7a6-79cff8c10366")
+		)
+		(pin "2"
+			(uuid "6da2e525-0638-422d-a2b6-5e2d2aac2eee")
+		)
+		(instances
+			(project "MainBoard_V2"
+				(path "/e803236c-2d70-40fc-8b05-dbcd330310d8"
+					(reference "C26")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:VCC")
 		(at 316.23 170.18 0)
 		(unit 1)
@@ -28459,7 +28560,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Sensor_Motion:InvenSense_QFN-24_4x4mm_P0.5mm"
+		(property "Footprint" "Package_DFN_QFN:QFN-24-1EP_4x4mm_P0.5mm_EP2.15x2.15mm"
 			(at 181.61 190.5 0)
 			(effects
 				(font
