@@ -8,7 +8,7 @@
 
 // 探索・走行パラメータ
 #define MIN_VELOCITY 0.25f        // 最低速度 [m/s]
-#define MAX_VELOCITY 1.0f         // 障害物なし時の最大速度 [m/s]
+#define MAX_VELOCITY 0.5f         // 障害物なし時の最大速度 [m/s]
 #define ACCELERATION 1.0f         // 速度ランプ [m/s²]
 #define EMERGENCY_DIST_MM 350.0f  // この距離未満で緊急停止 [mm]
 #define FAST_DIST_MM 1000.0f      // この距離以上で最大速度 [mm]
@@ -23,16 +23,16 @@
 #define STEER_GAIN (1.0f / STEER_SAT_DEG)
 
 // 壁接近補正パラメータ
-#define WALL_HALF_DEG 20     // 左右壁検出セクタの半幅 [deg]
-#define WALL_DIST_MM 300.0f  // この距離未満で補正開始 [mm]
+#define WALL_HALF_DEG 45     // 左右壁検出セクタの半幅 [deg]
+#define WALL_DIST_MM 500.0f  // この距離未満で補正開始 [mm]
 // WALL_DIST_MM のとき補正 1.0 になるゲイン（1.5 で余裕を持たせて飽和させる）
-#define WALL_CORRECTION_GAIN (1.5f / WALL_DIST_MM)
+#define WALL_CORRECTION_GAIN (2.0f / WALL_DIST_MM)
 
 void Algorithm_Run(LD06* lidar) {
   const LidarSector front = Lidar_GetSector(lidar, 0, FRONT_HALF_DEG);
 
   // 前方至近距離での緊急停止
-  if (front.count > 0 && front.avg < EMERGENCY_DIST_MM + Drive_GetSpeed() * 100.0f) {
+  if (front.count > 0 && front.avg < EMERGENCY_DIST_MM + Drive_GetSpeed() * 200.0f) {
     Drive_Brake(0.75f);
     return;
   }
