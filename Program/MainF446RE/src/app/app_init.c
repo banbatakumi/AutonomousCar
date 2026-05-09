@@ -21,10 +21,9 @@ void Setup() {
   Drive_Init(DigitalIn_Read(&button1));
 
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_value, ADC_VALUE_COUNT);
-  __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_HT | DMA_IT_TC);
 
   Serial_Init(&serial3, &huart3, 2048);
-  
+
   // Initialize LiDAR motor control (汎用化: LD06に渡す)
   DigitalOut_Init(&lidar_motor, LIDAR_GPIO_Port, LIDAR_Pin);
   LD06_Init(&lidar, &serial3, &lidar_motor);

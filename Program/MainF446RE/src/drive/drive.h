@@ -53,6 +53,9 @@ typedef struct {
   Timer steer_timer;
   Timer brake_led_timer;
   bool is_free;
+  float steer_logical;  // 現在のロジカルステア値 [-1, +1]（正=左、負=右）
+  Timer winker_timer;
+  bool winker_state;
 } Drive;
 
 // ペリフェラルを初期化する。

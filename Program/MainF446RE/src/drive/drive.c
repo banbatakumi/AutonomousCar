@@ -21,6 +21,10 @@
 // 急ブレーキ点滅を開始する速度閾値 [m/s]
 #define BRAKE_BLINK_SPEED_THRESHOLD 0.5f
 
+// ウィンカー点滅パラメータ
+#define WINKER_BLINK_HALF_PERIOD_MS 200  // 400ms 周期の半分 [ms]
+#define WINKER_STEER_THRESHOLD 0.4f      // 点滅を開始する最小ステア量
+
 Serial serial_left;
 Serial serial_right;
 Serial serial_steer;
@@ -125,6 +129,30 @@ static void UpdateBrakeLed(void) {
   }
 }
 
+static void UpdateWinkerLed(void) {
+  // ブレーキ中・フリー状態・直進時は消灯
+  if (send_data.do_brake || drive.is_free ||
+      Abs(drive.steer_logical) < WINKER_STEER_THRESHOLD || drive.speed < 0) {
+    PwmOut_Write(&winker_left_led, 0.0f);
+    PwmOut_Write(&winker_right_led, 0.0f);
+    return;
+  }
+
+  if (Timer_ReadMs(&drive.winker_timer) >= WINKER_BLINK_HALF_PERIOD_MS) {
+    drive.winker_state = !drive.winker_state;
+    Timer_Reset(&drive.winker_timer);
+  }
+
+  float brightness = drive.winker_state ? 1.0f : 0.0f;
+  if (drive.steer_logical > 0.0f) {
+    PwmOut_Write(&winker_left_led, 0.0f);
+    PwmOut_Write(&winker_right_led, brightness);
+  } else {
+    PwmOut_Write(&winker_left_led, brightness);
+    PwmOut_Write(&winker_right_led, 0.0f);
+  }
+}
+
 void Drive_Update() {
   Drive_RecvSerial(&serial_left, &left_protocol);
   Drive_RecvSerial(&serial_right, &right_protocol);
@@ -136,6 +164,7 @@ void Drive_Update() {
   drive.speed = MAF_Update(&drive.maf_speed, drive.speed);
 
   UpdateBrakeLed();
+  UpdateWinkerLed();
 
   if (Timer_ReadMs(&serial_send_interval_timer) <= SERIAL_SEND_INTERVAL_MS) return;
   Timer_Reset(&serial_send_interval_timer);
@@ -173,10 +202,13 @@ void Drive_Init(bool do_steer_setup) {
   drive.current_acceleration = 0.0f;
   drive.current_target_velocity = 0.0f;
   drive.is_free = true;
+  drive.steer_logical = 0.0f;
+  drive.winker_state = false;
   Timer_Init(&drive.accel_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
   Timer_Init(&drive.brake_led_timer);
+  Timer_Init(&drive.winker_timer);
   PID_Init(&drive.pid_velocity, 1.0f, 2.0f, 0.0f, -MAX_ACCELERATION, MAX_ACCELERATION);
 
   PwmOut_Init(&brake_led, &htim3, TIM_CHANNEL_4);
@@ -248,7 +280,8 @@ static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
   }
 
   // steer を物理角度 [rad] に変換（-1=右最大, +1=左最大）
-  steer = -Constrain(steer, -1.0f, 1.0f);
+  drive.steer_logical = Constrain(steer, -1.0f, 1.0f);
+  steer = -drive.steer_logical;
   double target_rad = steer_config.min_rad +
                       (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
 
