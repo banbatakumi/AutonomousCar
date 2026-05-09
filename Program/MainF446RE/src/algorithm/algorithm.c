@@ -28,28 +28,92 @@
 // WALL_DIST_MM のとき補正 1.0 になるゲイン（1.5 で余裕を持たせて飽和させる）
 #define WALL_CORRECTION_GAIN (2.0f / WALL_DIST_MM)
 
-void Algorithm_Run(LD06* lidar) {
-  const LidarSector front = Lidar_GetSector(lidar, 0, FRONT_HALF_DEG);
+// 切り返しパラメータ
+#define REVERSE_VELOCITY -0.5f        // 後退速度 [m/s]
+#define REVERSE_ACCELERATION 1.0f     // 後退加速度 [m/s²]
+#define REVERSE_DURATION_MS 1500      // 後退継続時間 [ms]
+#define BRAKE_COMPLETE_SPEED 0.1f     // 停止判定速度 [m/s]
+#define REVERSE_STEER_SAT 0.9f        // 切り返しステア飽和値
+#define REAR_HALF_DEG 30              // 後方障害物検出セクタの半幅 [deg]
+#define REAR_EMERGENCY_DIST_MM 300.0f // この距離未満で後退中断 [mm]
 
-  // 前方至近距離での緊急停止
-  if (front.count > 0 && front.avg < EMERGENCY_DIST_MM + Drive_GetSpeed() * 200.0f) {
-    Drive_Brake(0.75f);
-    return;
+// 緊急停止→切り返しのステート
+typedef enum {
+  ALG_STATE_NORMAL,
+  ALG_STATE_BRAKING,
+  ALG_STATE_REVERSING,
+} AlgState;
+
+static AlgState alg_state = ALG_STATE_NORMAL;
+static float reverse_steer = 0.0f;
+static Timer reverse_timer;
+static bool alg_initialized = false;
+
+void Algorithm_Run(LD06* lidar) {
+  if (!alg_initialized) {
+    Timer_Init(&reverse_timer);
+    alg_initialized = true;
   }
 
+  const LidarSector front = Lidar_GetSector(lidar, 0, FRONT_HALF_DEG);
+  const bool is_emergency =
+      front.count > 0 && front.avg < EMERGENCY_DIST_MM + Drive_GetSpeed() * 200.0f;
+
+  // 緊急停止・切り返しステートマシン
+  switch (alg_state) {
+    case ALG_STATE_BRAKING:
+      Drive_Brake(0.75f);
+      if (Abs(Drive_GetSpeed()) < BRAKE_COMPLETE_SPEED) {
+        // 停止完了: 前方の最も開けた方向を検出し、後退中に前部がその方向を向くよう
+        // 逆符号のステアを設定する（後退 + 右ステア → 前部が左へ向く）
+        int clear_deg = Lidar_FindClearestDirection(
+            lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
+        if (clear_deg != -1) {
+          int signed_deg = (clear_deg > 180) ? (clear_deg - 360) : clear_deg;
+          reverse_steer = -Constrain((float)signed_deg * STEER_GAIN,
+                                     -REVERSE_STEER_SAT, REVERSE_STEER_SAT);
+        } else {
+          reverse_steer = 0.0f;
+        }
+        Timer_Reset(&reverse_timer);
+        alg_state = ALG_STATE_REVERSING;
+      }
+      return;
+
+    case ALG_STATE_REVERSING: {
+      // 後方障害物が近い場合は後退を中断して通常走行へ復帰
+      const LidarSector rear = Lidar_GetSector(lidar, 180, REAR_HALF_DEG);
+      if (rear.count > 0 && rear.avg < REAR_EMERGENCY_DIST_MM) {
+        alg_state = ALG_STATE_NORMAL;
+        Drive_Brake(0.5f);
+        return;
+      }
+      Drive_SetVelocity(REVERSE_VELOCITY, REVERSE_ACCELERATION, reverse_steer);
+      if (Timer_ReadMs(&reverse_timer) >= REVERSE_DURATION_MS) {
+        alg_state = ALG_STATE_NORMAL;
+      }
+      return;
+    }
+
+    default:  // ALG_STATE_NORMAL
+      if (is_emergency) {
+        alg_state = ALG_STATE_BRAKING;
+        Drive_Brake(0.75f);
+        return;
+      }
+      break;
+  }
+
+  // 通常走行ロジック
   // 前方 ±SEARCH_HALF_DEG の範囲で最も開けた方向を探す
   // start = 360 - SEARCH_HALF_DEG、end = SEARCH_HALF_DEG で 0° またぎに対応
   int clear_deg = Lidar_FindClearestDirection(
       lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
 
   if (clear_deg == -1) {
-    // 有効点が全くない場合は停止して待機
     Drive_Brake(0.5f);
     return;
   }
-
-  // 最も開けた方向のセクタ統計を速度計算に使う
-  const LidarSector best = Lidar_GetSector(lidar, clear_deg, SECTOR_HALF_DEG);
 
   // 角度 0〜359 を符号付き -180〜179 に変換（正=左、負=右）してステア値に変換
   int signed_deg = (clear_deg > 180) ? (clear_deg - 360) : clear_deg;
@@ -71,15 +135,9 @@ void Algorithm_Run(LD06* lidar) {
 
   // 目標方向の空き距離を [0, FAST_DIST_MM] で正規化して MIN〜MAX 速度にマップ
   float best_dis_avg = 0;
-  float min_dir = Lidar_FindNearestSector(lidar, 0, 60, 5, 10, 3, &best_dis_avg);
+  Lidar_FindNearestSector(lidar, 0, 60, 5, 10, 3, &best_dis_avg);
   float ratio = Constrain((float)best_dis_avg / FAST_DIST_MM, 0.0f, 1.0f);
   float target_vel = MIN_VELOCITY + ratio * (MAX_VELOCITY - MIN_VELOCITY);
 
-  // printf("clear=%d deg, dist=%.0fmm, steer=%.2f, vel=%.2f\n",
-  //        signed_deg, best.avg, steer, target_vel);
-
   Drive_SetVelocity(target_vel, ACCELERATION, steer);
-  // Drive_SetVelocity(1, 1, 0);
-
-  // Drive_Set(4, 3, steer);
 }
