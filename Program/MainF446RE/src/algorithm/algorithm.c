@@ -6,84 +6,80 @@
 #include "lidar_utils.h"
 #include "mymath.h"
 
-// 追従パラメータ
-#define TARGET_DIST_MM 500.0f      // 目標距離 [mm]
-#define DEAD_ZONE_MM 10.0f         // 停止維持のデッドゾーン [mm]
-#define SPEED_GAIN 0.01f           // 距離誤差→速度ゲイン [m/s per mm]
-#define MAX_FOLLOW_SPEED 2.5f      // 前進最大速度 [m/s]
-#define MAX_REVERSE_SPEED 1.5f     // 後退最大速度 [m/s]
-#define STEER_GAIN (1.0f / 60.0f)  // ±45°で最大ステア
-#define SEARCH_HALF_DEG 60         // 探索範囲 ±45°
-#define EMERGENCY_DIST_MM 300.0f   // 緊急ブレーキ距離 [mm]
-#define SECTOR_HALF_DEG 5          // セクタ評価幅 ±5°
-#define MIN_VALID_DIST_MM 50.0f    // この距離未満はノイズとして無視
-#define MIN_SECTOR_COUNT 3         // セクタ内の最低有効点数
+// 探索・走行パラメータ
+#define MIN_VELOCITY 0.25f        // 最低速度 [m/s]
+#define MAX_VELOCITY 1.0f         // 障害物なし時の最大速度 [m/s]
+#define ACCELERATION 1.0f         // 速度ランプ [m/s²]
+#define EMERGENCY_DIST_MM 350.0f  // この距離未満で緊急停止 [mm]
+#define FAST_DIST_MM 1000.0f      // この距離以上で最大速度 [mm]
+
+// 探索範囲: 前方 ±SEARCH_HALF_DEG
+#define SEARCH_HALF_DEG 90
+#define SECTOR_HALF_DEG 10  // 各候補方向の評価幅 [deg]
+#define FRONT_HALF_DEG 20   // 緊急停止判定の前方扇形幅 [deg]
+
+// ±STEER_SAT_DEG で最大ステア
+#define STEER_SAT_DEG 60
+#define STEER_GAIN (1.0f / STEER_SAT_DEG)
+
+// 壁接近補正パラメータ
+#define WALL_HALF_DEG 20     // 左右壁検出セクタの半幅 [deg]
+#define WALL_DIST_MM 300.0f  // この距離未満で補正開始 [mm]
+// WALL_DIST_MM のとき補正 1.0 になるゲイン（1.5 で余裕を持たせて飽和させる）
+#define WALL_CORRECTION_GAIN (1.5f / WALL_DIST_MM)
 
 void Algorithm_Run(LD06* lidar) {
-  // float dist_mm = 0.0f;
-  // int deg = Lidar_FindNearestSector(lidar, 0, SEARCH_HALF_DEG,
-  //                                   SECTOR_HALF_DEG, MIN_VALID_DIST_MM,
-  //                                   MIN_SECTOR_COUNT, &dist_mm);
+  const LidarSector front = Lidar_GetSector(lidar, 0, FRONT_HALF_DEG);
 
-  // if (deg == -1) {
-  //   Drive_Brake(1.0f);
-  //   printf("Follow: no target in ±%ddeg\n", SEARCH_HALF_DEG);
-  //   return;
-  // }
-
-  // // 0-359° → -180〜+179° に変換 (正=左, 負=右)
-  // int signed_deg = (deg > 180) ? (deg - 360) : deg;
-
-  // printf("Follow: deg=%d, dist=%.0fmm\n", signed_deg, dist_mm);
-
-  // // 緊急ブレーキ: 近すぎる場合
-  // if (dist_mm < EMERGENCY_DIST_MM) {
-  //   Drive_Brake(1.0f);
-  //   return;
-  // }
-
-  // // ステアリング: 角度に比例、±45°で飽和
-  // float steer = Constrain((float)signed_deg * STEER_GAIN, -1.0f, 1.0f);
-
-  // float dist_error = dist_mm - TARGET_DIST_MM;
-
-  // if (dist_error > DEAD_ZONE_MM) {
-  //   // 目標より遠い: 前進
-  //   float vel = Constrain(dist_error * SPEED_GAIN, 0.0f, MAX_FOLLOW_SPEED);
-  //   Drive_SetVelocity(vel, 2.0f, steer);
-  // } else if (dist_error < -DEAD_ZONE_MM) {
-  //   // 目標より近い: 後退
-  //   float vel = Constrain(dist_error * SPEED_GAIN, -MAX_REVERSE_SPEED, 0.0f);
-  //   Drive_SetVelocity(vel, 2.0f, steer);
-  // } else {
-  //   // デッドゾーン: 停止保持
-  //   Drive_Brake(0.5f);
-  // }
-
-  static bool is_braking = false;
-  int front_dist = lidar->distances_360[0];
-
-  if (front_dist > 0) {
-    if (!is_braking) {
-      // 走行中：速度に応じてブレーキ開始距離を計算
-      float brake_threshold = Drive_GetSpeed() * 200.0f + 300.0f;
-      if (front_dist < brake_threshold) {
-        is_braking = true;
-      }
-    } else {
-      // ブレーキ中：停止時の閾値(400)より十分離れるまで解除しない
-      if (front_dist > 300.0f && Drive_GetSpeed() < 0.1) {
-        is_braking = false;
-      }
-    }
-  } else {
-    // 障害物が見えなくなった場合は解除
-    is_braking = false;
+  // 前方至近距離での緊急停止
+  if (front.count > 0 && front.avg < EMERGENCY_DIST_MM + Drive_GetSpeed() * 100.0f) {
+    Drive_Brake(0.75f);
+    return;
   }
 
-  if (is_braking) {
-    Drive_Brake(0.75);
-  } else {
-    Drive_Set(5, 3, 0.0f);
+  // 前方 ±SEARCH_HALF_DEG の範囲で最も開けた方向を探す
+  // start = 360 - SEARCH_HALF_DEG、end = SEARCH_HALF_DEG で 0° またぎに対応
+  int clear_deg = Lidar_FindClearestDirection(
+      lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
+
+  if (clear_deg == -1) {
+    // 有効点が全くない場合は停止して待機
+    Drive_Brake(0.5f);
+    return;
   }
+
+  // 最も開けた方向のセクタ統計を速度計算に使う
+  const LidarSector best = Lidar_GetSector(lidar, clear_deg, SECTOR_HALF_DEG);
+
+  // 角度 0〜359 を符号付き -180〜179 に変換（正=左、負=右）してステア値に変換
+  int signed_deg = (clear_deg > 180) ? (clear_deg - 360) : clear_deg;
+  float steer = Constrain((float)signed_deg * STEER_GAIN, -1.0f, 1.0f);
+
+  // 左右壁への接近補正
+  // 左壁が近い → 右へ補正（負）、右壁が近い → 左へ補正（正）
+  const LidarSector wall_left = Lidar_GetSector(lidar, 90, WALL_HALF_DEG);
+  const LidarSector wall_right = Lidar_GetSector(lidar, 270, WALL_HALF_DEG);
+
+  float wall_correction = 0.0f;
+  if (wall_left.count > 0 && wall_left.avg < WALL_DIST_MM) {
+    wall_correction -= (WALL_DIST_MM - wall_left.avg) * WALL_CORRECTION_GAIN;
+  }
+  if (wall_right.count > 0 && wall_right.avg < WALL_DIST_MM) {
+    wall_correction += (WALL_DIST_MM - wall_right.avg) * WALL_CORRECTION_GAIN;
+  }
+  steer = Constrain(steer + wall_correction, -1.0f, 1.0f);
+
+  // 目標方向の空き距離を [0, FAST_DIST_MM] で正規化して MIN〜MAX 速度にマップ
+  float best_dis_avg = 0;
+  float min_dir = Lidar_FindNearestSector(lidar, 0, 60, 5, 10, 3, &best_dis_avg);
+  float ratio = Constrain((float)best_dis_avg / FAST_DIST_MM, 0.0f, 1.0f);
+  float target_vel = MIN_VELOCITY + ratio * (MAX_VELOCITY - MIN_VELOCITY);
+
+  // printf("clear=%d deg, dist=%.0fmm, steer=%.2f, vel=%.2f\n",
+  //        signed_deg, best.avg, steer, target_vel);
+
+  Drive_SetVelocity(target_vel, ACCELERATION, steer);
+  // Drive_SetVelocity(1, 1, 0);
+
+  // Drive_Set(4, 3, steer);
 }

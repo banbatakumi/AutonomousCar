@@ -6,79 +6,79 @@
 
 #include "ld06.h"
 
-// セクタの統計情報
+// LD06 の distances_360[] から計算した扇形領域の統計。
+// count == 0 のとき avg/min/max は未定義。
 typedef struct {
-  float avg;    // 有効点の平均距離 [mm] (count==0 なら 0.0f)
-  uint16_t min; // 有効点の最小距離 [mm] (count==0 なら 0)
-  uint16_t max; // 有効点の最大距離 [mm] (count==0 なら 0)
-  int count;    // 有効点数
+  float avg;     // 有効点の平均距離 [mm]
+  uint16_t min;  // 有効点の最小距離 [mm]
+  uint16_t max;  // 有効点の最大距離 [mm]
+  int count;     // 有効点数
 } LidarSector;
 
-// center_deg を中心に ±half_width_deg の扇形の統計を返す
-// center_deg, half_width_deg はどちらも度単位 (0-359)
+// 指定した中心角を基準とした扇形領域の距離統計を取得する。
+// center_deg を中心に ±half_width_deg の範囲にある有効点（距離 > 0）の
+// 平均・最小・最大・個数を計算して返す。0° またぎに対応。
 LidarSector Lidar_GetSector(const LD06* lidar, int center_deg,
                             int half_width_deg);
 
-// start_deg から end_deg (両端含む, 時計回りに走査) の統計を返す
-// 0°をまたいで指定可能 (例: 350 → 10)
+// 任意の角度範囲を指定して距離統計を取得する。
+// start_deg から end_deg まで時計回りに走査した有効点の統計を返す。
+// start_deg == end_deg のとき全周（360°）とみなす。
 LidarSector Lidar_GetSectorRange(const LD06* lidar, int start_deg,
                                  int end_deg);
 
-// セクタ内で最も近い障害物の角度を返す (有効点がなければ -1)
+// 指定範囲内で最も近い有効点の角度を返す。
+// center_deg ± half_width_deg の範囲を走査し、距離が最小の点の角度（0〜359）を返す。
+// 有効点がなければ -1。
 int Lidar_FindNearestAngle(const LD06* lidar, int center_deg,
                            int half_width_deg);
 
-// ノイズ耐性のある最近傍探索
-// 各方向を sector_half_deg 幅のセクタ平均で評価し、
-// min_valid_mm 未満または min_count 未満の方向を除外する
-// out_avg_mm: 最近傍セクタの平均距離 [mm]
-// 戻り値: 0-359 の角度。有効セクタがなければ -1
+// セクタ単位の評価で最も近い障害物の方向を返す。
+// 指定範囲を sector_half_deg 幅のセクタに分割し、各セクタの平均距離で評価する。
+// min_valid_mm 未満または有効点数が min_count 未満のセクタはノイズとして除外する。
+// 戻り値は最近傍セクタの中心角度（0〜359）。有効セクタがなければ -1。
+// out_avg_mm は戻り値 != -1 のときのみ書き込まれる。
 int Lidar_FindNearestSector(const LD06* lidar, int center_deg,
                             int half_width_deg, int sector_half_deg,
                             float min_valid_mm, int min_count,
                             float* out_avg_mm);
 
-// ヒステリシス付きスコアカウンタの更新
-// raw が true なら score を +1 (max_score 上限), false なら -1 (0 下限)
+// ヒステリシス付きスコアカウンタを更新する。
+// raw が true なら score を +1（上限 max_score）、false なら -1（下限 0）する。
+// 毎フレーム呼び出し、score が閾値を超えたときだけ状態変化とみなすことで
+// 1 フレームのノイズによる誤判定を防ぐ。
 void Lidar_UpdateScore(int* score, bool raw, int max_score);
 
-// 判定ヘルパー
-// count > 0 かつ avg < threshold のとき true
+// セクタが指定距離以内に障害物を検出しているか判定する。
+// count > 0 かつ avg < threshold_mm のとき true を返す。
 bool Lidar_IsBlocked(const LidarSector* s, float threshold_mm);
-// count > 0 かつ avg > threshold のとき true
+
+// セクタが指定距離より遠くまで開けているか判定する。
+// count > 0 かつ avg > threshold_mm のとき true を返す。
 bool Lidar_IsClear(const LidarSector* s, float threshold_mm);
 
-// -----------------------------------------------------------------------
-// 最大空間方向の探索
-// -----------------------------------------------------------------------
-
-// start_deg から end_deg の範囲 (0°またぎ対応) で最も平均距離が大きい方向を返す
-// sector_half_width: 各候補角度を評価するセクタ幅 [deg]
-// 戻り値: 0-359 の角度。有効点が全くなければ -1
-// 全周探索: start_deg=0, end_deg=359
+// 指定範囲内で最も開けた（平均距離が最大の）方向を返す。
+// start_deg から end_deg（時計回り）の範囲を sector_half_width 幅のセクタで評価し、
+// 平均距離が最大のセクタの中心角度を返す。有効点が全くなければ -1。
+// 全周探索は start_deg=0, end_deg=359 で指定する。
 int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
                                 int sector_half_width);
 
-// -----------------------------------------------------------------------
-// ギャップ（開口部）検出
-// -----------------------------------------------------------------------
-
+// ギャップ（障害物がなく開けた連続領域）の情報。
 typedef struct {
-  int start_deg;  // ギャップ開始角度 [deg]
-  int end_deg;    // ギャップ終了角度 [deg]
-  int center_deg; // ギャップ中心角度 [deg]
-  int width_deg;  // ギャップ幅 [deg]
-  float avg_dist; // ギャップ内の平均距離 [mm]
+  int start_deg;   // ギャップ開始角度 [deg]
+  int end_deg;     // ギャップ終了角度 [deg]
+  int center_deg;  // ギャップ中心角度 [deg]
+  int width_deg;   // ギャップ幅 [deg]
+  float avg_dist;  // ギャップ内の平均距離 [mm]
 } LidarGap;
 
-// center_deg ± half_width_deg の範囲でギャップを探す
-// min_dist_mm:   この距離より遠い角度をギャップとみなす
-// min_width_deg: この角度幅未満のギャップは無視する
-// gaps:          結果格納配列 (呼び出し側で確保)
-// max_gaps:      gaps 配列の最大要素数
-// 戻り値: 検出したギャップ数
+// 指定範囲内のギャップ（開口部）をすべて検出する。
+// center_deg ± half_width_deg の範囲を線形走査し、
+// min_dist_mm 以上の距離が min_width_deg 以上連続する領域をギャップとみなす。
+// 検出結果を gaps 配列に格納し、検出数を返す（最大 max_gaps 個）。
 int Lidar_FindGaps(const LD06* lidar, int center_deg, int half_width_deg,
-                   float min_dist_mm, int min_width_deg,
-                   LidarGap* gaps, int max_gaps);
+                   float min_dist_mm, int min_width_deg, LidarGap* gaps,
+                   int max_gaps);
 
 #endif  // LIDAR_UTILS_H_

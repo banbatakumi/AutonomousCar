@@ -76,7 +76,7 @@ void MainApp() {
   while (1) {
     GetSensors();
     CheckBatteryVoltage();  // バッテリー電圧チェック
-    Drive_Serial();
+    Drive_Update();
     UpdateVoltageBlinkLed(&user_led3, &voltage_signal_led_timer, &voltage_signal_led_state, voltage_signal);
     UpdateVoltageBlinkLed(&user_led2, &voltage_power_led_timer, &voltage_power_led_state, voltage_power);
     PwmOut_Write(&user_led4, (Drive_HasError() || battery_error) ? 1.0f : 0.0f);

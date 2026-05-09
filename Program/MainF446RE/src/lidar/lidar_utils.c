@@ -1,5 +1,17 @@
 #include "lidar_utils.h"
 
+// distances_360[idx] == 0 は「未計測」を意味する。
+// LD06 は有効測定で距離 0mm を返さないため、0 を欠損値として扱う。
+
+// 1 点分の距離を統計に加算するヘルパー。dist == 0 のとき何もしない。
+static void AccumulateDist(uint16_t dist, uint32_t* sum, LidarSector* s) {
+  if (dist == 0) return;
+  *sum += dist;
+  s->count++;
+  if (s->count == 1 || dist < s->min) s->min = dist;
+  if (dist > s->max) s->max = dist;
+}
+
 LidarSector Lidar_GetSector(const LD06* lidar, int center_deg,
                             int half_width_deg) {
   LidarSector s = {0.0f, 0, 0, 0};
@@ -7,14 +19,8 @@ LidarSector Lidar_GetSector(const LD06* lidar, int center_deg,
 
   for (int d = center_deg - half_width_deg; d <= center_deg + half_width_deg;
        d++) {
-    int idx = (d + 360) % 360;
-    uint16_t dist = lidar->distances_360[idx];
-    if (dist == 0) continue;
-
-    sum += dist;
-    s.count++;
-    if (s.count == 1 || dist < s.min) s.min = dist;
-    if (dist > s.max) s.max = dist;
+    // center_deg < half_width_deg のとき d が負になるため +360 でラップ
+    AccumulateDist(lidar->distances_360[(d + 360) % 360], &sum, &s);
   }
 
   if (s.count > 0) s.avg = (float)sum / (float)s.count;
@@ -26,19 +32,12 @@ LidarSector Lidar_GetSectorRange(const LD06* lidar, int start_deg,
   LidarSector s = {0.0f, 0, 0, 0};
   uint32_t sum = 0;
 
-  // 0°をまたぐ場合は total span を計算して回す
+  // start == end のとき span が 0 になるが、意図は全周スキャンなので 360 にする
   int span = (end_deg - start_deg + 360) % 360;
   if (span == 0) span = 360;
 
   for (int i = 0; i <= span; i++) {
-    int idx = (start_deg + i) % 360;
-    uint16_t dist = lidar->distances_360[idx];
-    if (dist == 0) continue;
-
-    sum += dist;
-    s.count++;
-    if (s.count == 1 || dist < s.min) s.min = dist;
-    if (dist > s.max) s.max = dist;
+    AccumulateDist(lidar->distances_360[(start_deg + i) % 360], &sum, &s);
   }
 
   if (s.count > 0) s.avg = (float)sum / (float)s.count;
@@ -108,6 +107,7 @@ int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
   int best_angle = -1;
   float best_avg = -1.0f;
 
+  // 全周のとき start_deg を 2 回スキャンしないよう 359 にする
   int span = (end_deg - start_deg + 360) % 360;
   if (span == 0) span = 359;
 
@@ -124,9 +124,25 @@ int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
   return best_angle;
 }
 
+// ギャップ登録ヘルパー。幅が min_width_deg 未満または gaps が満杯なら無視。
+static void RecordGap(LidarGap* gaps, int* found, int max_gaps, int gap_start,
+                      int gap_end, uint32_t gap_sum, int gap_count,
+                      int min_width_deg) {
+  int width = (gap_end - gap_start + 360) % 360 + 1;
+  if (width < min_width_deg || *found >= max_gaps) return;
+
+  gaps[*found].start_deg  = gap_start;
+  gaps[*found].end_deg    = gap_end;
+  gaps[*found].center_deg = (gap_start + width / 2) % 360;
+  gaps[*found].width_deg  = width;
+  gaps[*found].avg_dist =
+      (gap_count > 0) ? (float)gap_sum / (float)gap_count : 0.0f;
+  (*found)++;
+}
+
 int Lidar_FindGaps(const LD06* lidar, int center_deg, int half_width_deg,
-                   float min_dist_mm, int min_width_deg,
-                   LidarGap* gaps, int max_gaps) {
+                   float min_dist_mm, int min_width_deg, LidarGap* gaps,
+                   int max_gaps) {
   int found = 0;
   bool in_gap = false;
   int gap_start = 0;
@@ -153,37 +169,17 @@ int Lidar_FindGaps(const LD06* lidar, int center_deg, int half_width_deg,
       if (in_gap) {
         in_gap = false;
         int gap_end = (deg - 1 + 360) % 360;
-        int width = (gap_end - gap_start + 360) % 360 + 1;
-
-        if (width >= min_width_deg && found < max_gaps) {
-          gaps[found].start_deg  = gap_start;
-          gaps[found].end_deg    = gap_end;
-          gaps[found].center_deg = (gap_start + width / 2) % 360;
-          gaps[found].width_deg  = width;
-          gaps[found].avg_dist   = (gap_count > 0)
-                                     ? (float)gap_sum / (float)gap_count
-                                     : 0.0f;
-          found++;
-        }
+        RecordGap(gaps, &found, max_gaps, gap_start, gap_end, gap_sum,
+                  gap_count, min_width_deg);
       }
     }
   }
 
-  // 走査終端でギャップが続いていた場合を閉じる
+  // 走査終端までギャップが続いていた場合を閉じる
   if (in_gap) {
     int gap_end = (center_deg + half_width_deg + 360) % 360;
-    int width = (gap_end - gap_start + 360) % 360 + 1;
-
-    if (width >= min_width_deg && found < max_gaps) {
-      gaps[found].start_deg  = gap_start;
-      gaps[found].end_deg    = gap_end;
-      gaps[found].center_deg = (gap_start + width / 2) % 360;
-      gaps[found].width_deg  = width;
-      gaps[found].avg_dist   = (gap_count > 0)
-                                 ? (float)gap_sum / (float)gap_count
-                                 : 0.0f;
-      found++;
-    }
+    RecordGap(gaps, &found, max_gaps, gap_start, gap_end, gap_sum, gap_count,
+              min_width_deg);
   }
 
   return found;
