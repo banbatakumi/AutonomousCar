@@ -26,7 +26,7 @@ Serial serial3;
 LD06 lidar;
 DigitalOut lidar_motor;
 
-// ImuManager imu_manager;
+Imu imu;
 uint16_t adc_value[ADC_VALUE_COUNT];
 
 double voltage_signal;
@@ -42,6 +42,11 @@ bool voltage_power_led_state = true;
 
 // バッテリー低電圧エラーフラグ
 bool battery_error = false;
+
+// HAL I2C 非同期読み出し完了コールバック (MPU6050 用)
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
+  Imu_OnI2CRxComplete(&imu, hi2c);
+}
 
 // Runtime functions moved to app_loop.c
 // Globals remain in this file.

@@ -6,8 +6,8 @@
 #include "adc.h"
 #include "digitalinout.h"
 #include "drive.h"
-// #include "i2c.h"
-// #include "imu_manager.h"
+#include "i2c.h"
+#include "imu.h"
 #include "ld06.h"
 #include "lpf.h"
 #include "main.h"
@@ -43,7 +43,7 @@ extern Serial serial3;
 extern LD06 lidar;
 extern DigitalOut lidar_motor;
 
-// extern ImuManager imu_manager;
+extern Imu imu;
 
 extern uint16_t adc_value[];
 

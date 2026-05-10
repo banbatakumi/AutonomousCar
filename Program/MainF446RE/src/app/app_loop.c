@@ -62,14 +62,15 @@ void GetSensors() {
   // Read raw ADC values and apply LPF
   double raw_voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
   double raw_voltage_power = adc_value[3] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
-  
+
   voltage_signal = LPF_Update(&voltage_signal_lpf, raw_voltage_signal);
   voltage_power = LPF_Update(&voltage_power_lpf, raw_voltage_power);
 
-  // Update MPU6050 sensor data
-  // IMU_Manager_Update(&imu_manager);
-  // const MPU6050_Data* imu_data = IMU_Manager_GetData(&imu_manager);
-  // printf("IMU Yaw: %.2f, Pitch: %.2f, Roll: %.2f\n", imu_data->yaw, imu_data->pitch, imu_data->roll);
+  // MPU6050 (姿勢/角速度/角加速度) 更新
+  Imu_Update(&imu);
+  const MPU6050_Data* d = Imu_GetData(&imu);
+  printf("IMU: Yaw=%.1f, Pitch=%.1f, Roll=%.1f\n",
+         d->yaw, d->pitch, d->roll);
 }
 
 void MainApp() {

@@ -28,7 +28,8 @@ void Setup() {
   DigitalOut_Init(&lidar_motor, LIDAR_GPIO_Port, LIDAR_Pin);
   LD06_Init(&lidar, &serial3, &lidar_motor);
 
-  // IMU_Manager_Init(&imu_manager, &hi2c1, DigitalIn_Read(&button2));
+  // button2 を押したまま起動 → IMU 再キャリブレーション
+  Imu_Init(&imu, &hi2c1, DigitalIn_Read(&button2));
 
   Timer_Init(&control_interval_timer);
   Timer_Init(&voltage_signal_led_timer);
