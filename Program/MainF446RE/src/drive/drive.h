@@ -5,6 +5,7 @@
 #define MAX_ACCELERATION 5.0f
 #define MAX_STEER_SPEED 2.0f  // ステアリングの最大回転速度 [rad/s]
 
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -96,5 +97,6 @@ float Drive_GetSpeed();
 
 // いずれかのモータコントローラが電圧異常または過熱を報告している場合に true を返す。
 bool Drive_HasError();
+
 
 #endif  // DRIVE_H_

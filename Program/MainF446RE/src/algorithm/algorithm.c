@@ -7,12 +7,12 @@
 #include "mymath.h"
 
 // 探索・走行パラメータ
-#define MIN_VELOCITY 1.0f         // 最低速度 [m/s]
+#define MIN_VELOCITY 1.5f         // 最低速度 [m/s]
 #define MAX_VELOCITY 5.0f         // 障害物なし時の最大速度 [m/s]
 #define ACCELERATION 2.5f         // 速度ランプ [m/s²]
-#define EMERGENCY_DIST_MM 300.0f  // この距離未満で緊急停止 [mm]
+#define EMERGENCY_DIST_MM 350.0f  // この距離未満で緊急停止 [mm]
 #define FAST_DIST_MM 1000.0f      // この距離以上で最大速度 [mm]
-#define STEER_SAT 0.9f            // ステア飽和値（0〜1、1=最大舵角）
+#define STEER_SAT 1.0f            // ステア飽和値（0〜1、1=最大舵角）
 
 // 探索範囲: 前方 ±SEARCH_HALF_DEG
 #define SEARCH_HALF_DEG 90
@@ -30,15 +30,15 @@
 #define WALL_CORRECTION_GAIN (0.5f / WALL_DIST_MM)
 
 // カーブ減速パラメータ
-#define CORNER_STEER_THRESHOLD 0.3f        // この値以上で緩やかに減速開始（0〜1）
+#define CORNER_STEER_THRESHOLD 0.2f        // この値以上で緩やかに減速開始（0〜1）
 #define CORNER_STEER_BRAKE_THRESHOLD 0.6f  // この値以上でブレーキ開始（0〜1）
 
 // 切り返しパラメータ
 #define REVERSE_VELOCITY -0.5f         // 後退速度 [m/s]
 #define REVERSE_ACCELERATION 1.0f      // 後退加速度 [m/s²]
-#define REVERSE_DURATION_MS 1000       // 後退継続時間 [ms]
+#define REVERSE_DURATION_MS 1500       // 後退継続時間 [ms]
 #define BRAKE_COMPLETE_SPEED 0.1f      // 停止判定速度 [m/s]
-#define REVERSE_STEER_SAT 0.9f         // 切り返しステア飽和値
+#define REVERSE_STEER_SAT 1.0f         // 切り返しステア飽和値
 #define REAR_HALF_DEG 20               // 後方障害物検出セクタの半幅 [deg]
 #define REAR_EMERGENCY_DIST_MM 300.0f  // この距離未満で後退中断 [mm]
 
@@ -85,7 +85,7 @@ void Algorithm_Run(LD06* lidar) {
   // 緊急停止・切り返しステートマシン
   switch (alg_state) {
     case ALG_STATE_BRAKING:
-      if (!is_emergency) {
+      if (front_nearest_mm > EMERGENCY_DIST_MM * 1.5f) {
         // 前方クリア: 切り返しを省略して通常走行に即復帰
         alg_state = ALG_STATE_NORMAL;
         break;
@@ -168,7 +168,7 @@ void Algorithm_Run(LD06* lidar) {
   if (steer_abs > CORNER_STEER_THRESHOLD) {
     if (!curve_brake_done && Drive_GetSpeed() > MIN_VELOCITY + 0.2f) {
       // ブレーキ未完了かつ速度超過: ブレーキで MIN_VELOCITY まで減速しながらステア
-      Drive_Brake(0.1f, steer);
+      Drive_Brake(0.2f, steer);
       return;
     }
     // MIN_VELOCITY 到達済み: フラグを立てて再ブレーキを抑制し、前方距離ベースで加速

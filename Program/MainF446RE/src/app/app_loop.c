@@ -68,9 +68,6 @@ void GetSensors() {
 
   // MPU6050 (姿勢/角速度/角加速度) 更新
   Imu_Update(&imu);
-  const MPU6050_Data* d = Imu_GetData(&imu);
-  printf("IMU: Yaw=%.1f, Pitch=%.1f, Roll=%.1f\n",
-         d->yaw, d->pitch, d->roll);
 }
 
 void MainApp() {
