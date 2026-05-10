@@ -337,7 +337,8 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   Drive_ApplyAccelerationAndSteer(accel_output, steer);
 }
 
-void Drive_Brake(float deceleration) {
+void Drive_Brake(float deceleration, float steer) {
+  Drive_ApplyAccelerationAndSteer(0.0f, steer);
   send_data.do_brake = true;
   send_data.brake_strength = Constrain(deceleration, 0.0f, MAX_ACCELERATION);
   drive.current_acceleration = 0.0f;

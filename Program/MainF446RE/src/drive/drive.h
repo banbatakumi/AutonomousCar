@@ -84,8 +84,8 @@ void Drive_Set(float max_acceleration, float acceleration_rate, float steer);
 void Drive_SetVelocity(float target_velocity, float acceleration, float steer);
 
 // ブレーキコマンドをモータコントローラに送信する。
-// deceleration は制動強度（0.0〜MAX_ACCELERATION）。
-void Drive_Brake(float deceleration);
+// deceleration は制動強度（0.0〜MAX_ACCELERATION）。steer は -1.0〜+1.0。
+void Drive_Brake(float deceleration, float steer);
 
 // モータコントローラへの送信を停止してモータをフリー状態にする。
 // バッテリーエラーや待機モード時に呼び出す。
