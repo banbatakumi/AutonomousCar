@@ -20,6 +20,20 @@ typedef struct {
 // キャリブレーション中のサンプル数 (静止 5 秒程度)
 #define IMU_CALIB_SAMPLE_COUNT 500
 
+// 機体への取付方向 (chip frame -> body frame)
+// AutonomousCar: MPU6050 はチップ Z軸まわり 180° 回転して実装されている。
+// (チップ X が機体後方、Y が機体右方向、Z は上向きのまま)
+// 取付を変更したらここを書き換える。
+#define IMU_MOUNT_X_SIGN (-1.0f)
+#define IMU_MOUNT_Y_SIGN (-1.0f)
+#define IMU_MOUNT_Z_SIGN (1.0f)
+
+// 出力 Euler 角の取付起因の補正
+//   yaw   : 回転方向反転 (true なら符号反転)
+//   roll  : 静止水平で 180° となる原点を 0° へシフト
+#define IMU_YAW_INVERT 1
+#define IMU_ROLL_OFFSET_DEG 180.0f
+
 static uint32_t ComputeChecksum(const ImuCalibrationFlash* data) {
   return data->magic ^ data->version ^
          (uint32_t)(uint16_t)data->calib.gyro_offset_x ^
@@ -69,6 +83,14 @@ void Imu_Init(Imu* imu, I2C_HandleTypeDef* i2c, bool calibrate_on_boot) {
   }
   imu->initialized = true;
 
+  // 機体への取付方向をライブラリへ通知
+  MPU6050_Mount mount = {
+      .x_sign = IMU_MOUNT_X_SIGN,
+      .y_sign = IMU_MOUNT_Y_SIGN,
+      .z_sign = IMU_MOUNT_Z_SIGN,
+  };
+  MPU6050_SetMount(&imu->mpu, &mount);
+
   if (calibrate_on_boot) {
     printf("[IMU] Button2 held -> calibration\n");
     if (MPU6050_Calibrate(&imu->mpu, IMU_CALIB_SAMPLE_COUNT)) {
@@ -103,7 +125,21 @@ bool Imu_Update(Imu* imu) {
   if (!imu || !imu->initialized) {
     return false;
   }
-  return MPU6050_Update(&imu->mpu);
+  if (!MPU6050_Update(&imu->mpu)) {
+    return false;
+  }
+
+  // 取付起因の出力 Euler 角の補正 (ライブラリ計算には影響を与えない後処理)
+#if IMU_YAW_INVERT
+  imu->mpu.data.yaw = -imu->mpu.data.yaw;
+#endif
+  imu->mpu.data.roll -= IMU_ROLL_OFFSET_DEG;
+  if (imu->mpu.data.roll < -180.0f) {
+    imu->mpu.data.roll += 360.0f;
+  } else if (imu->mpu.data.roll >= 180.0f) {
+    imu->mpu.data.roll -= 360.0f;
+  }
+  return true;
 }
 
 const MPU6050_Data* Imu_GetData(const Imu* imu) {

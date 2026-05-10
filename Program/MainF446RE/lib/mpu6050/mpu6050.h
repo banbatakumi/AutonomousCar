@@ -27,6 +27,15 @@ typedef struct {
   int16_t accel_offset_z;
 } MPU6050_Calibration;
 
+// 取付方向の軸符号変換 (chip frame -> body frame)
+// チップを通常設置するなら (+1, +1, +1)、Z軸まわり180°回転なら (-1, -1, +1) など、
+// 機体側のフレームに合わせる。デフォルトは恒等 (反転なし)。
+typedef struct {
+  float x_sign;
+  float y_sign;
+  float z_sign;
+} MPU6050_Mount;
+
 // 出力データ
 typedef struct {
   // 姿勢 [deg]
@@ -59,6 +68,7 @@ typedef struct {
   uint8_t i2c_addr;
 
   MPU6050_Calibration calib;
+  MPU6050_Mount mount;
 
   // Mahony AHRS quaternion + ゲイン
   float q0, q1, q2, q3;
@@ -92,6 +102,9 @@ bool MPU6050_Calibrate(MPU6050* mpu, uint16_t sample_count);
 
 // キャリブレーション値を直接適用 (flashから読んだ値を流し込む用)
 void MPU6050_SetCalibration(MPU6050* mpu, const MPU6050_Calibration* calib);
+
+// 取付方向の軸符号を設定 (機体側で定義した body frame に合わせる)
+void MPU6050_SetMount(MPU6050* mpu, const MPU6050_Mount* mount);
 
 // 加速度センサから初期姿勢を求めて quaternion を初期化する
 bool MPU6050_PrimeOrientation(MPU6050* mpu);

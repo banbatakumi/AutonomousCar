@@ -30,25 +30,6 @@
 #define DEG_PER_RAD 57.2957795f
 #define RAD_PER_DEG 0.0174532925f
 
-// 取付方向の軸符号変換 (raw -> body frame)
-// 現在の機体は MPU6050 を Z軸周りに180°回転させてマウント (チップX軸が機体後方、
-// Y軸が機体右方向を向く) しているため X/Y 軸の符号を反転して body frame
-// "X forward, Y left, Z up" に揃える。Z 軸はそのまま (チップZ = 機体Z 上向き)。
-// 取付方向を変える場合はここを変更すること。
-//   全軸 +1 : チップ通常取付 (X前, Y左, Z上)
-//   X=-1, Y=-1, Z=+1 : Z軸まわり180°回転 (X後, Y右, Z上)
-//   X=+1, Y=-1, Z=-1 : X軸まわり180°回転 (基板表面が下向き)
-//   X=-1, Y=+1, Z=-1 : Y軸まわり180°回転
-#ifndef MPU6050_AXIS_X_SIGN
-#define MPU6050_AXIS_X_SIGN (-1.0f)
-#endif
-#ifndef MPU6050_AXIS_Y_SIGN
-#define MPU6050_AXIS_Y_SIGN (-1.0f)
-#endif
-#ifndef MPU6050_AXIS_Z_SIGN
-#define MPU6050_AXIS_Z_SIGN (1.0f)
-#endif
-
 // バイト結合 (ビッグエンディアン -> int16)
 static int16_t CombineBytes(uint8_t high, uint8_t low) {
   return (int16_t)(((uint16_t)high << 8) | (uint16_t)low);
@@ -224,6 +205,10 @@ bool MPU6050_Init(MPU6050* mpu, I2C_HandleTypeDef* i2c, uint8_t i2c_addr) {
   mpu->two_kp = MPU6050_TWO_KP_DEFAULT;
   mpu->two_ki = MPU6050_TWO_KI_DEFAULT;
   mpu->q0 = 1.0f;
+  // Mount: 取付方向は外部から指定されない限り恒等 (反転なし)
+  mpu->mount.x_sign = 1.0f;
+  mpu->mount.y_sign = 1.0f;
+  mpu->mount.z_sign = 1.0f;
 
   if (!CheckConnection(mpu)) {
     // 代替アドレスで再試行
@@ -286,6 +271,13 @@ void MPU6050_SetCalibration(MPU6050* mpu, const MPU6050_Calibration* calib) {
     return;
   }
   mpu->calib = *calib;
+}
+
+void MPU6050_SetMount(MPU6050* mpu, const MPU6050_Mount* mount) {
+  if (!mpu || !mount) {
+    return;
+  }
+  mpu->mount = *mount;
 }
 
 bool MPU6050_Calibrate(MPU6050* mpu, uint16_t sample_count) {
@@ -356,9 +348,9 @@ bool MPU6050_PrimeOrientation(MPU6050* mpu) {
   int16_t ay_raw = CombineBytes(buffer[2], buffer[3]);
   int16_t az_raw = CombineBytes(buffer[4], buffer[5]);
 
-  float ax = (float)(ax_raw - mpu->calib.accel_offset_x) * MPU6050_AXIS_X_SIGN;
-  float ay = (float)(ay_raw - mpu->calib.accel_offset_y) * MPU6050_AXIS_Y_SIGN;
-  float az = (float)(az_raw - mpu->calib.accel_offset_z) * MPU6050_AXIS_Z_SIGN;
+  float ax = (float)(ax_raw - mpu->calib.accel_offset_x) * mpu->mount.x_sign;
+  float ay = (float)(ay_raw - mpu->calib.accel_offset_y) * mpu->mount.y_sign;
+  float az = (float)(az_raw - mpu->calib.accel_offset_z) * mpu->mount.z_sign;
 
   SetQuaternionFromAccel(mpu, ax, ay, az);
   return true;
@@ -421,12 +413,12 @@ bool MPU6050_Update(MPU6050* mpu) {
   int16_t gz_raw = CombineBytes(buffer[12], buffer[13]);
 
   // オフセット補正 + 取付方向の軸符号変換 (raw -> body frame)
-  float ax = (float)(ax_raw - mpu->calib.accel_offset_x) * MPU6050_AXIS_X_SIGN;
-  float ay = (float)(ay_raw - mpu->calib.accel_offset_y) * MPU6050_AXIS_Y_SIGN;
-  float az = (float)(az_raw - mpu->calib.accel_offset_z) * MPU6050_AXIS_Z_SIGN;
-  float gx = (float)(gx_raw - mpu->calib.gyro_offset_x) * MPU6050_AXIS_X_SIGN;
-  float gy = (float)(gy_raw - mpu->calib.gyro_offset_y) * MPU6050_AXIS_Y_SIGN;
-  float gz = (float)(gz_raw - mpu->calib.gyro_offset_z) * MPU6050_AXIS_Z_SIGN;
+  float ax = (float)(ax_raw - mpu->calib.accel_offset_x) * mpu->mount.x_sign;
+  float ay = (float)(ay_raw - mpu->calib.accel_offset_y) * mpu->mount.y_sign;
+  float az = (float)(az_raw - mpu->calib.accel_offset_z) * mpu->mount.z_sign;
+  float gx = (float)(gx_raw - mpu->calib.gyro_offset_x) * mpu->mount.x_sign;
+  float gy = (float)(gy_raw - mpu->calib.gyro_offset_y) * mpu->mount.y_sign;
+  float gz = (float)(gz_raw - mpu->calib.gyro_offset_z) * mpu->mount.z_sign;
 
   // 物理量へ変換
   const float accel_scale = MPU6050_GRAVITY_MPS2 / MPU6050_ACCEL_LSB_PER_G;
