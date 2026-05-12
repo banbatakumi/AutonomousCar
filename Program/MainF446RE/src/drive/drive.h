@@ -31,6 +31,7 @@ typedef struct {
   float mech_theta;
   float amp_volt;
   float angular_speed;
+  float angular_accel;
   uint8_t flags;
   bool is_enable;
   bool is_voltage_out_of_range;

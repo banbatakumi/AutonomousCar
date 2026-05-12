@@ -56,7 +56,7 @@ Drive drive;
 static void Drive_RecvSerial(Serial* serial, Protocol* protocol) {
   const uint8_t HEADER = 0xFF;
   const uint8_t FOOTER = 0xAA;
-  const uint8_t DATA_SIZE = 6;
+  const uint8_t DATA_SIZE = 7;
 
   while (Serial_Available(serial)) {
     uint8_t byte = Serial_Read(serial);
@@ -69,9 +69,9 @@ static void Drive_RecvSerial(Serial* serial, Protocol* protocol) {
         d->is_enable = d->flags & 0x01;
         d->is_voltage_out_of_range = (d->flags >> 1) & 0x01;
         d->is_overheat = (d->flags >> 2) & 0x01;
-        d->angular_speed = (int16_t)((protocol->recv_buf[1] << 8) | protocol->recv_buf[2]) * 0.01f;
-        d->mech_theta = (int16_t)((protocol->recv_buf[3] << 8) | protocol->recv_buf[4]) * 0.001f;
-        d->amp_volt = protocol->recv_buf[5] * 0.1f;
+        d->mech_theta = (int16_t)((protocol->recv_buf[1] << 8) | protocol->recv_buf[2]) * 0.001f;
+        d->angular_speed = (int16_t)((protocol->recv_buf[3] << 8) | protocol->recv_buf[4]) * 0.01f;
+        d->angular_accel = (int16_t)((protocol->recv_buf[5] << 8) | protocol->recv_buf[6]) * 0.1f;
       }
       protocol->index = 0;
     } else {
