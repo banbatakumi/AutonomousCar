@@ -18,7 +18,6 @@
 #include "main.h"
 #include "mymath.h"
 #include "pid.h"
-#include "pwm_out.h"
 #include "serial.h"
 #include "timer.h"
 
@@ -56,12 +55,8 @@ typedef struct {
   Timer velocity_timer;
   PID pid_velocity;
   Timer steer_timer;
-  Timer brake_led_timer;
   bool is_free;
-  float steer_logical;  // 現在のロジカルステア値 [-1, +1]（正=左、負=右）
-  Timer winker_timer;
-  bool winker_state;
-  float sync_fb_integrator;  // 速度差フィードバックの積分項
+  float steer_logical;  // 直近のステア値 [-1, +1]（正=左、負=右）。ウィンカー判定に使用。
 } Drive;
 
 // ペリフェラルを初期化する。

@@ -27,8 +27,6 @@ extern DigitalOut user_led2;
 extern DigitalOut user_led3;
 extern PwmOut user_led4;
 
-extern PwmOut front_led;
-
 extern DigitalIn button1;
 extern DigitalIn button2;
 

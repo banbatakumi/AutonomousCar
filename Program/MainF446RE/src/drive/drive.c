@@ -3,6 +3,7 @@
 #include <math.h>
 
 #include "flash.h"
+#include "lighting.h"
 
 // モータコントローラへのコマンドヘッダ
 #define POSITION_HEADER 0xFD
@@ -14,27 +15,14 @@
 #define SERIAL_SEND_FREQUENCY_HZ 1000
 #define SERIAL_SEND_INTERVAL_MS 1  // 1000 / SERIAL_SEND_FREQUENCY_HZ
 
-// ブレーキ点滅パラメータ（急ブレーキ時）
-#define BRAKE_BLINK_PERIOD_MS 200
-#define BRAKE_BLINK_HALF_PERIOD_MS 100  // BRAKE_BLINK_PERIOD_MS / 2
+#define WINKER_STEER_THRESHOLD 0.4f  // ウィンカーを点滅させる最小ステア量
 
-// 急ブレーキ点滅を開始する速度閾値 [m/s]
-#define BRAKE_BLINK_SPEED_THRESHOLD 0.5f
+static Serial serial_left;
+static Serial serial_right;
+static Serial serial_steer;
 
-// ウィンカー点滅パラメータ
-#define WINKER_BLINK_HALF_PERIOD_MS 200  // 400ms 周期の半分 [ms]
-#define WINKER_STEER_THRESHOLD 0.4f      // 点滅を開始する最小ステア量
-
-Serial serial_left;
-Serial serial_right;
-Serial serial_steer;
-
-PwmOut brake_led;
-PwmOut winker_left_led;
-PwmOut winker_right_led;
-
-Timer steer_setup_timer;
-Timer serial_send_interval_timer;
+static Timer steer_setup_timer;
+static Timer serial_send_interval_timer;
 
 SteerConfig steer_config;
 
@@ -109,50 +97,6 @@ static void Drive_SendSerialAcceleration(uint8_t cmd, int16_t left,
   Serial_Write(&serial_right, buf_right, sizeof(buf_right));
 }
 
-static void UpdateBrakeLed(void) {
-  if (!send_data.do_brake) {
-    PwmOut_Write(&brake_led, 0.05f);  // 非ブレーキ時は薄く点灯
-    return;
-  }
-
-  // 急ブレーキかつ走行中: 200ms 周期で点滅
-  if (send_data.brake_strength >= 1.0f &&
-      drive.speed > BRAKE_BLINK_SPEED_THRESHOLD) {
-    float elapsed_ms = Timer_ReadMs(&drive.brake_led_timer);
-    if (elapsed_ms >= BRAKE_BLINK_PERIOD_MS) {
-      Timer_Reset(&drive.brake_led_timer);
-      elapsed_ms = 0;
-    }
-    PwmOut_Write(&brake_led, elapsed_ms < BRAKE_BLINK_HALF_PERIOD_MS ? 1.0f : 0.0f);
-  } else {
-    PwmOut_Write(&brake_led, 1.0f);
-  }
-}
-
-static void UpdateWinkerLed(void) {
-  // ブレーキ中・フリー状態・直進時は消灯
-  if (send_data.do_brake || drive.is_free ||
-      Abs(drive.steer_logical) < WINKER_STEER_THRESHOLD || drive.speed < 0) {
-    PwmOut_Write(&winker_left_led, 0.0f);
-    PwmOut_Write(&winker_right_led, 0.0f);
-    return;
-  }
-
-  if (Timer_ReadMs(&drive.winker_timer) >= WINKER_BLINK_HALF_PERIOD_MS) {
-    drive.winker_state = !drive.winker_state;
-    Timer_Reset(&drive.winker_timer);
-  }
-
-  float brightness = drive.winker_state ? 1.0f : 0.0f;
-  if (drive.steer_logical > 0.0f) {
-    PwmOut_Write(&winker_left_led, 0.0f);
-    PwmOut_Write(&winker_right_led, brightness);
-  } else {
-    PwmOut_Write(&winker_left_led, brightness);
-    PwmOut_Write(&winker_right_led, 0.0f);
-  }
-}
-
 void Drive_Update() {
   Drive_RecvSerial(&serial_left, &left_protocol);
   Drive_RecvSerial(&serial_right, &right_protocol);
@@ -163,8 +107,17 @@ void Drive_Update() {
                 WHEEL_RADIUS;
   drive.speed = MAF_Update(&drive.maf_speed, drive.speed);
 
-  UpdateBrakeLed();
-  UpdateWinkerLed();
+  Lighting_SetBrake(send_data.do_brake, send_data.brake_strength, drive.speed);
+
+  WinkerDirection winker_dir = WINKER_OFF;
+  if (!send_data.do_brake && !drive.is_free && drive.speed >= 0.0f) {
+    if (drive.steer_logical > WINKER_STEER_THRESHOLD) {
+      winker_dir = WINKER_RIGHT;
+    } else if (drive.steer_logical < -WINKER_STEER_THRESHOLD) {
+      winker_dir = WINKER_LEFT;
+    }
+  }
+  Lighting_SetWinker(winker_dir);
 
   if (Timer_ReadMs(&serial_send_interval_timer) <= SERIAL_SEND_INTERVAL_MS) return;
   Timer_Reset(&serial_send_interval_timer);
@@ -203,31 +156,10 @@ void Drive_Init(bool do_steer_setup) {
   drive.current_target_velocity = 0.0f;
   drive.is_free = true;
   drive.steer_logical = 0.0f;
-  drive.winker_state = false;
-  drive.sync_fb_integrator = 0.0f;
   Timer_Init(&drive.accel_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
-  Timer_Init(&drive.brake_led_timer);
-  Timer_Init(&drive.winker_timer);
   PID_Init(&drive.pid_velocity, 1.5f, 2.5f, 0.0f, -MAX_POWER, MAX_POWER);
-
-  PwmOut_Init(&brake_led, &htim3, TIM_CHANNEL_4);
-  PwmOut_Init(&winker_left_led, &htim3, TIM_CHANNEL_3);
-  PwmOut_Init(&winker_right_led, &htim3, TIM_CHANNEL_2);
-
-  // 起動確認用のウィンカー点滅
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 50; j++) {
-      PwmOut_Write(&winker_left_led, j * 0.01f);
-      PwmOut_Write(&winker_right_led, j * 0.01f);
-      HAL_Delay(1);
-    }
-    HAL_Delay(150);
-    PwmOut_Write(&winker_left_led, 0.0f);
-    PwmOut_Write(&winker_right_led, 0.0f);
-    HAL_Delay(200);
-  }
 
   if (do_steer_setup) {
     printf("Steer setup: calibrating...\n");
@@ -353,15 +285,14 @@ void Drive_Brake(float deceleration, float steer) {
   drive.current_target_velocity = 0.0f;
   drive.is_free = false;
   PID_Reset(&drive.pid_velocity);
-  drive.sync_fb_integrator = 0.0f;
 }
 
 void Drive_Free() {
   drive.is_free = true;
+  send_data.do_brake = false;
   drive.current_acceleration = 0.0f;
   drive.current_target_velocity = 0.0f;
   PID_Reset(&drive.pid_velocity);
-  drive.sync_fb_integrator = 0.0f;
 }
 
 float Drive_GetSpeed() { return drive.speed; }

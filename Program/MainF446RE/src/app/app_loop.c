@@ -4,6 +4,7 @@
 #include "algorithm.h"
 #include "app.h"
 #include "drive.h"
+#include "lighting.h"
 #include "mode.h"
 
 static uint32_t VoltageToBlinkPeriodUs(double voltage) {
@@ -87,6 +88,7 @@ void MainApp() {
     GetSensors();
     CheckBatteryVoltage();  // バッテリー電圧チェック
     Drive_Update();
+    Lighting_Update();
     UpdateVoltageBlinkLed(&user_led3, &voltage_signal_led_timer, &voltage_signal_led_state, voltage_signal);
     UpdateVoltageBlinkLed(&user_led2, &voltage_power_led_timer, &voltage_power_led_state, voltage_power);
     PwmOut_Write(&user_led4, (Drive_HasError() || battery_error) ? 1.0f : 0.0f);
@@ -98,19 +100,19 @@ void MainApp() {
       case MODE_STANDBY:
         // 待機モード：モータを停止
         Drive_Free();
-        PwmOut_Write(&front_led, 0.01);
+        Lighting_SetHeadlight(0.01f);
         break;
 
       case MODE_RUN:
         // 走行モード：従来の自動走行ロジック
         Algorithm_Run(&lidar, Ultrasonic_Get(&ultrasonic_front));
-        PwmOut_Write(&front_led, 0.5);
+        Lighting_SetHeadlight(0.5f);
         break;
 
       case MODE_FORWARD_ONLY:
         // 一旦前進だけのモード
         Algorithm_ForwardOnly(&lidar);
-        PwmOut_Write(&front_led, 0.5);
+        Lighting_SetHeadlight(0.5f);
         break;
 
       default:

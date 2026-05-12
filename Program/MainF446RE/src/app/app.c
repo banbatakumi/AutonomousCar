@@ -10,8 +10,6 @@ DigitalOut user_led2;
 DigitalOut user_led3;
 PwmOut user_led4;
 
-PwmOut front_led;
-
 DigitalIn button1;
 DigitalIn button2;
 

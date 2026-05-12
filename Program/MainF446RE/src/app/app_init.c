@@ -1,4 +1,5 @@
 #include "app.h"
+#include "lighting.h"
 #include "mode.h"
 
 void Setup() {
@@ -8,7 +9,7 @@ void Setup() {
   DigitalOut_Init(&user_led3, USER_LED3_GPIO_Port, USER_LED3_Pin);
   PwmOut_Init(&user_led4, &htim4, TIM_CHANNEL_2);
 
-  PwmOut_Init(&front_led, &htim3, TIM_CHANNEL_1);
+  Lighting_Init();
 
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
