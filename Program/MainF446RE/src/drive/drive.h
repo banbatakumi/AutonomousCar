@@ -2,7 +2,7 @@
 #define DRIVE_H_
 
 #define DIFFERENTIAL 0.25f
-#define MAX_POWER 5.0f
+#define MAX_TORQUE 1.0f
 #define MAX_STEER_SPEED 2.0f  // ステアリングの最大回転速度 [rad/s]
 
 // 車体の物理パラメータ
@@ -38,8 +38,8 @@ typedef struct {
 } RecvData;
 
 typedef struct {
-  float power_left;
-  float power_right;
+  float torque_left;
+  float torque_right;
   float steer;
   LPF lpf_steer;
   bool do_brake;
@@ -48,15 +48,29 @@ typedef struct {
 
 typedef struct {
   float speed;
+  float accel;
   MAF maf_speed;
-  float current_acceleration;
-  Timer accel_timer;
+  MAF maf_acccel;
+  MAF maf_imu_long;
+  MAF maf_imu_lat;
+  MAF maf_mu_estimate;
+  float current_torque;
+  Timer torque_timer;
   float current_target_velocity;
   Timer velocity_timer;
   PID pid_velocity;
   Timer steer_timer;
   bool is_free;
   float steer_logical;  // 直近のステア値 [-1, +1]（正=左、負=右）。ウィンカー判定に使用。
+  float imu_accel_x;
+  float imu_accel_y;
+  float imu_pitch_deg;
+  float imu_roll_deg;
+  bool imu_valid;
+  float traction_mu;
+  float traction_accel_limit;
+  float imu_long_bias;
+  float imu_lat_bias;
 } Drive;
 
 // ペリフェラルを初期化する。
@@ -74,10 +88,10 @@ bool Drive_SetupSteer();
 // メインループで毎ティック呼び出すこと。
 void Drive_Update();
 
-// 加速度指令値を設定して走行する。
-// max_acceleration [m/s²] を目標値として acceleration_rate [m/s³] でランプアップする。
+// モータ出力を指定して走行する。
+// target_torque を目標値として torque_rate [/s] でランプアップする。
 // steer は -1.0（右最大）〜 +1.0（左最大）。
-void Drive_Set(float max_acceleration, float acceleration_rate, float steer);
+void Drive_Set(float target_torque, float torque_rate, float steer);
 
 // 目標速度を指定して PID 制御で走行する。
 // target_velocity [m/s] に向けて acceleration [m/s²] でランプし、PID で追従する。
@@ -85,7 +99,7 @@ void Drive_Set(float max_acceleration, float acceleration_rate, float steer);
 void Drive_SetVelocity(float target_velocity, float acceleration, float steer);
 
 // ブレーキコマンドをモータコントローラに送信する。
-// deceleration は制動強度（0.0〜MAX_POWER）。steer は -1.0〜+1.0。
+// deceleration は制動強度（0.0〜MAX_TORQUE）。steer は -1.0〜+1.0。
 void Drive_Brake(float deceleration, float steer);
 
 // モータコントローラへの送信を停止してモータをフリー状態にする。
@@ -94,6 +108,12 @@ void Drive_Free();
 
 // 現在の車速を返す [m/s]。移動平均フィルタ済みの値。
 float Drive_GetSpeed();
+
+// IMU の加速度・姿勢を渡す。Drive 側で摩擦推定と加速度上限に利用する。
+void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg);
+
+// 現在の摩擦係数推定値を返す。
+float Drive_GetTractionMu();
 
 // いずれかのモータコントローラが電圧異常または過熱を報告している場合に true を返す。
 bool Drive_HasError();

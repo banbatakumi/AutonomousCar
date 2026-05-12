@@ -1,6 +1,7 @@
 #include "drive.h"
 
 #include <math.h>
+#include <stdio.h>
 
 #include "flash.h"
 #include "lighting.h"
@@ -11,6 +12,18 @@
 #define BRAKE_HEADER 0xFB
 
 #define WHEEL_RADIUS 0.0275f  // [m]
+
+#define TRACTION_GRAVITY 9.80665f
+#define TRACTION_DEFAULT_MU 0.35f
+#define TRACTION_MIN_MU 0.20f
+#define TRACTION_MAX_MU 1.20f
+#define TRACTION_SAFETY_FACTOR 0.85f
+#define TRACTION_BIAS_SPEED_THRESHOLD 0.05f
+#define TRACTION_BIAS_ALPHA 0.02f
+#define TRACTION_MU_RISE_ALPHA 0.02f
+#define TRACTION_MU_FALL_ALPHA 0.20f
+#define TRACTION_SLIP_ACCEL_MARGIN 0.60f
+#define TRACTION_LIMIT_FLOOR 0.20f
 
 #define SERIAL_SEND_FREQUENCY_HZ 1000
 #define SERIAL_SEND_INTERVAL_MS 1  // 1000 / SERIAL_SEND_FREQUENCY_HZ
@@ -29,7 +42,7 @@ SteerConfig steer_config;
 // 受信パーサの状態管理
 typedef struct {
   RecvData data;
-  uint8_t recv_buf[6];
+  uint8_t recv_buf[7];
   uint8_t index;
 } Protocol;
 
@@ -57,7 +70,7 @@ static void Drive_RecvSerial(Serial* serial, Protocol* protocol) {
         d->is_enable = d->flags & 0x01;
         d->is_voltage_out_of_range = (d->flags >> 1) & 0x01;
         d->is_overheat = (d->flags >> 2) & 0x01;
-        d->mech_theta = (int16_t)((protocol->recv_buf[1] << 8) | protocol->recv_buf[2]) * 0.001f;
+        d->mech_theta = (uint16_t)((protocol->recv_buf[1] << 8) | protocol->recv_buf[2]) * 0.0001f;
         d->angular_speed = (int16_t)((protocol->recv_buf[3] << 8) | protocol->recv_buf[4]) * 0.01f;
         d->angular_accel = (int16_t)((protocol->recv_buf[5] << 8) | protocol->recv_buf[6]) * 0.1f;
       }
@@ -97,15 +110,74 @@ static void Drive_SendSerialAcceleration(uint8_t cmd, int16_t left,
   Serial_Write(&serial_right, buf_right, sizeof(buf_right));
 }
 
+static void Drive_UpdateTractionEstimator(void) {
+  if (!drive.imu_valid) {
+    // IMU がまだ入っていない間は、車輪由来の情報だけでは推定を更新しない。
+    return;
+  }
+
+  // IMU の前後・横加速度を軽く平滑化して、瞬間ノイズの影響を減らす。
+  float imu_long_accel = MAF_Update(&drive.maf_imu_long, drive.imu_accel_x);
+  float imu_lat_accel = MAF_Update(&drive.maf_imu_lat, drive.imu_accel_y);
+
+  // 低速かつほぼ無加速のときは、IMU の残留オフセットを少しずつ学習する。
+  if (Abs(drive.speed) < TRACTION_BIAS_SPEED_THRESHOLD && Abs(drive.accel) < TRACTION_BIAS_SPEED_THRESHOLD) {
+    drive.imu_long_bias += TRACTION_BIAS_ALPHA * (imu_long_accel - drive.imu_long_bias);
+    drive.imu_lat_bias += TRACTION_BIAS_ALPHA * (imu_lat_accel - drive.imu_lat_bias);
+  }
+
+  // 静止時に学習したバイアスを引いて、実際の車体加速度だけを残す。
+  float corrected_long_accel = imu_long_accel - drive.imu_long_bias;
+  float corrected_lat_accel = imu_lat_accel - drive.imu_lat_bias;
+
+  // IMU から見た摩擦の使われ方を、前後・横加速度の合成から推定する。
+  float observed_mu = sqrtf(corrected_long_accel * corrected_long_accel +
+                            corrected_lat_accel * corrected_lat_accel) /
+                      TRACTION_GRAVITY;
+  observed_mu = Constrain(observed_mu, TRACTION_MIN_MU, TRACTION_MAX_MU);
+
+  // 車輪側の加速度と IMU 側の加速度が大きくずれたら、空転/スリップの疑いがある。
+  float wheel_mu = Abs(drive.accel) / TRACTION_GRAVITY;
+  bool is_slipping = Abs(drive.accel - corrected_long_accel) > TRACTION_SLIP_ACCEL_MARGIN &&
+                     Abs(drive.speed) > TRACTION_BIAS_SPEED_THRESHOLD;
+
+  printf("drive.accel=%.2f, corrected_long_accel=%.2f, wheel_mu=%.2f, observed_mu=%.2f, is_slipping=%d\n",
+         drive.accel, corrected_long_accel, wheel_mu, observed_mu, is_slipping);
+
+  // スリップ時は安全側に下げ、通常時は観測値を少しずつ追従する。
+  float candidate_mu = is_slipping ? fminf(observed_mu, wheel_mu)
+                                   : fmaxf(observed_mu, wheel_mu);
+
+  if (is_slipping) {
+    drive.traction_mu += TRACTION_MU_FALL_ALPHA * (candidate_mu - drive.traction_mu);
+  } else {
+    drive.traction_mu += TRACTION_MU_RISE_ALPHA * (candidate_mu - drive.traction_mu);
+  }
+  drive.traction_mu = MAF_Update(&drive.maf_mu_estimate,
+                                 Constrain(drive.traction_mu, TRACTION_MIN_MU, TRACTION_MAX_MU));
+
+  // 推定した μ から、今その瞬間に使える縦方向加速度の上限を決める。
+  float available_accel = drive.traction_mu * TRACTION_GRAVITY;
+  float lateral_abs = Abs(corrected_lat_accel);
+  float longitudinal_limit = sqrtf(fmaxf(0.0f, available_accel * available_accel -
+                                                   lateral_abs * lateral_abs));
+  drive.traction_accel_limit = Constrain(longitudinal_limit * TRACTION_SAFETY_FACTOR,
+                                         TRACTION_LIMIT_FLOOR,
+                                         available_accel * TRACTION_SAFETY_FACTOR);
+}
+
 void Drive_Update() {
   Drive_RecvSerial(&serial_left, &left_protocol);
   Drive_RecvSerial(&serial_right, &right_protocol);
   Drive_RecvSerial(&serial_steer, &steer_protocol);
 
   // 右モータは車体に対して逆向きに搭載されているため符号を反転して平均する
-  drive.speed = (right_protocol.data.angular_speed - left_protocol.data.angular_speed) * 0.5 *
-                WHEEL_RADIUS;
+  drive.speed = (right_protocol.data.angular_speed - left_protocol.data.angular_speed) * 0.5 * WHEEL_RADIUS;
   drive.speed = MAF_Update(&drive.maf_speed, drive.speed);
+
+  drive.accel = (right_protocol.data.angular_accel - left_protocol.data.angular_accel) * 0.5 * WHEEL_RADIUS;
+  drive.accel = MAF_Update(&drive.maf_acccel, drive.accel);
+  Drive_UpdateTractionEstimator();
 
   Lighting_SetBrake(send_data.do_brake, send_data.brake_strength, drive.speed);
 
@@ -133,13 +205,13 @@ void Drive_Update() {
   Drive_SendSerialSteer(POSITION_HEADER, (int16_t)(send_data.steer * 1000));
 
   if (send_data.do_brake) {
-    int16_t strength = (int16_t)(send_data.brake_strength * 100);
+    int16_t strength = (int16_t)(send_data.brake_strength * 10000);
     Drive_SendSerialAcceleration(BRAKE_HEADER, strength, strength);
   } else {
     Drive_SendSerialAcceleration(
         TORQUE_HEADER,
-        (int16_t)(send_data.power_left * 100),
-        (int16_t)(send_data.power_right * -100));  // 右モータは逆転方向が前進
+        (int16_t)(send_data.torque_left * -10000),
+        (int16_t)(send_data.torque_right * 10000));  // 右モータは逆転方向が前進
   }
 }
 
@@ -152,14 +224,27 @@ void Drive_Init(bool do_steer_setup) {
   Timer_Init(&serial_send_interval_timer);
 
   MAF_Init(&drive.maf_speed, 10);
-  drive.current_acceleration = 0.0f;
+  MAF_Init(&drive.maf_acccel, 10);
+  MAF_Init(&drive.maf_imu_long, 10);
+  MAF_Init(&drive.maf_imu_lat, 10);
+  MAF_Init(&drive.maf_mu_estimate, 10);
+  drive.current_torque = 0.0f;
   drive.current_target_velocity = 0.0f;
   drive.is_free = true;
   drive.steer_logical = 0.0f;
-  Timer_Init(&drive.accel_timer);
+  drive.imu_accel_x = 0.0f;
+  drive.imu_accel_y = 0.0f;
+  drive.imu_pitch_deg = 0.0f;
+  drive.imu_roll_deg = 0.0f;
+  drive.imu_valid = false;
+  drive.traction_mu = TRACTION_DEFAULT_MU;
+  drive.traction_accel_limit = TRACTION_DEFAULT_MU * TRACTION_GRAVITY * TRACTION_SAFETY_FACTOR;
+  drive.imu_long_bias = 0.0f;
+  drive.imu_lat_bias = 0.0f;
+  Timer_Init(&drive.torque_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
-  PID_Init(&drive.pid_velocity, 1.5f, 2.5f, 0.0f, -MAX_POWER, MAX_POWER);
+  PID_Init(&drive.pid_velocity, 0.5f, 1.0f, 0.0f, -MAX_TORQUE, MAX_TORQUE);
 
   if (do_steer_setup) {
     printf("Steer setup: calibrating...\n");
@@ -177,16 +262,18 @@ void Drive_Init(bool do_steer_setup) {
 bool Drive_SetupSteer() {
   Drive_RecvSerial(&serial_steer, &steer_protocol);
 
+  printf("Steer setup: mech_theta=%.3f rad\n", steer_protocol.data.mech_theta);
+
   int16_t torque = 0;
   uint32_t elapsed = Timer_ReadMs(&steer_setup_timer);
 
   // 最初の 1 秒: 正トルクで物理的な最小角を探る
   if (elapsed < 1000) {
-    torque = 250;
+    torque = 5000;
     steer_config.min_rad = steer_protocol.data.mech_theta;
     // 次の 1 秒: 逆トルクで最大角を探る
   } else if (elapsed < 2000) {
-    torque = -250;
+    torque = -5000;
     steer_config.max_rad = steer_protocol.data.mech_theta;
   }
 
@@ -195,35 +282,43 @@ bool Drive_SetupSteer() {
     return false;
   }
 
+  // キャリブレーション後、min_rad と max_rad の大小関係を確認・正規化する。
+  // モータ極性がキャリブレーション時と異なる場合に対応。
+  if (steer_config.min_rad > steer_config.max_rad) {
+    printf("Steer setup: swapping min/max (min_rad > max_rad detected)\n");
+    double tmp = steer_config.min_rad;
+    steer_config.min_rad = steer_config.max_rad;
+    steer_config.max_rad = tmp;
+  }
+
   printf("Steer setup done: min_rad=%.3f, max_rad=%.3f\n",
          steer_config.min_rad, steer_config.max_rad);
   return true;
 }
 
-static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
-  // 基本的な加速度配分（従来の電子ディファレンシャル）
-  float accel_left = acceleration;
-  float accel_right = acceleration;
+static void Drive_ApplyTorqueAndSteer(float torque, float steer) {
+  // 左右のトルク配分によるヨーモーメント制御
+  float torque_left = torque;
+  float torque_right = torque;
 
   if (steer > 0.0f) {
     // 左旋回: 右を減速
-    accel_left *= (1.0f + steer * DIFFERENTIAL);
-    accel_right *= (1.0f - steer * DIFFERENTIAL);
+    torque_left *= (1.0f + steer * DIFFERENTIAL);
+    torque_right *= (1.0f - steer * DIFFERENTIAL);
   } else {
     // 右旋回: 左を減速
-    accel_left *= (1.0f + steer * DIFFERENTIAL);
-    accel_right *= (1.0f - steer * DIFFERENTIAL);
+    torque_left *= (1.0f + steer * DIFFERENTIAL);
+    torque_right *= (1.0f - steer * DIFFERENTIAL);
   }
 
-  // 最終的な加速度指令をクリップ
-  send_data.power_left = Constrain(accel_left, -MAX_POWER, MAX_POWER);
-  send_data.power_right = Constrain(accel_right, -MAX_POWER, MAX_POWER);
+  // 最終的なモータ出力をクリップ
+  send_data.torque_left = Constrain(torque_left, -MAX_TORQUE, MAX_TORQUE);
+  send_data.torque_right = Constrain(torque_right, -MAX_TORQUE, MAX_TORQUE);
 
-  // steer を物理角度 [rad] に変換（-1=右最大, +1=左最大）
+  // steer を物理角度 [rad] に変換（-1=右最小, +1=左最大）
   drive.steer_logical = Constrain(steer, -1.0f, 1.0f);
-  steer = -drive.steer_logical;
   double target_rad = steer_config.min_rad +
-                      (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
+                      (-drive.steer_logical + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
 
   // 急激な舵角変化を MAX_STEER_SPEED [rad/s] で制限する
   float dt_steer = Timer_Read(&drive.steer_timer);
@@ -237,23 +332,23 @@ static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
   }
 }
 
-void Drive_Set(float max_acceleration, float acceleration_rate, float steer) {
+void Drive_Set(float target_torque, float torque_rate, float steer) {
   send_data.do_brake = false;
   drive.is_free = false;
 
-  float dt = Timer_Read(&drive.accel_timer);
-  Timer_Reset(&drive.accel_timer);
-  if (dt > 0.5f) dt = 0.0f;  // 長時間停止後の初回スパイクを防ぐ
+  float dt = Timer_Read(&drive.torque_timer);
+  Timer_Reset(&drive.torque_timer);
+  if (dt > 0.1f) dt = 0.0f;  // 長時間停止後の初回スパイクを防ぐ
 
-  if (drive.current_acceleration < max_acceleration) {
-    drive.current_acceleration =
-        fminf(drive.current_acceleration + acceleration_rate * dt, max_acceleration);
-  } else if (drive.current_acceleration > max_acceleration) {
-    drive.current_acceleration =
-        fmaxf(drive.current_acceleration - acceleration_rate * dt, max_acceleration);
+  if (drive.current_torque < target_torque) {
+    drive.current_torque = drive.current_torque + torque_rate * dt;
+  } else if (drive.current_torque > target_torque) {
+    drive.current_torque = drive.current_torque - torque_rate * dt;
   }
+  float torque_limit = Abs(target_torque);
+  drive.current_torque = Constrain(drive.current_torque, -torque_limit, torque_limit);
 
-  Drive_ApplyAccelerationAndSteer(drive.current_acceleration, steer);
+  Drive_ApplyTorqueAndSteer(drive.current_torque, steer);
 }
 
 void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
@@ -264,24 +359,31 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   Timer_Reset(&drive.velocity_timer);
   if (dt > 0.1f) dt = 0.0f;  // 長時間停止後の初回スパイクを防ぐ
 
-  if (drive.current_target_velocity < target_velocity) {
-    drive.current_target_velocity =
-        fminf(drive.current_target_velocity + acceleration * dt, target_velocity);
-  } else if (drive.current_target_velocity > target_velocity) {
-    drive.current_target_velocity =
-        fmaxf(drive.current_target_velocity - acceleration * dt, target_velocity);
+  float accel_limit = drive.traction_accel_limit;
+  if (accel_limit <= 0.0f) {
+    accel_limit = acceleration;
   }
+  float effective_acceleration = Constrain(Abs(acceleration), 0.0f, accel_limit);
 
-  float accel_output = PID_Update(&drive.pid_velocity,
-                                  drive.current_target_velocity, drive.speed);
-  Drive_ApplyAccelerationAndSteer(accel_output, steer);
+  if (drive.current_target_velocity < target_velocity) {
+    drive.current_target_velocity = drive.current_target_velocity + effective_acceleration * dt;
+  } else if (drive.current_target_velocity > target_velocity) {
+    drive.current_target_velocity = drive.current_target_velocity - effective_acceleration * dt;
+  }
+  float target_velocity_limit = Abs(target_velocity);
+  drive.current_target_velocity = Constrain(drive.current_target_velocity, -target_velocity_limit,
+                                            target_velocity_limit);
+
+  float torque_output = PID_Update(&drive.pid_velocity,
+                                   drive.current_target_velocity, drive.speed);
+  Drive_ApplyTorqueAndSteer(torque_output, steer);
 }
 
 void Drive_Brake(float deceleration, float steer) {
-  Drive_ApplyAccelerationAndSteer(0.0f, steer);
+  Drive_ApplyTorqueAndSteer(0.0f, steer);
   send_data.do_brake = true;
-  send_data.brake_strength = Constrain(deceleration, 0.0f, MAX_POWER);
-  drive.current_acceleration = 0.0f;
+  send_data.brake_strength = Constrain(deceleration, 0.0f, MAX_TORQUE);
+  drive.current_torque = 0.0f;
   drive.current_target_velocity = 0.0f;
   drive.is_free = false;
   PID_Reset(&drive.pid_velocity);
@@ -290,12 +392,23 @@ void Drive_Brake(float deceleration, float steer) {
 void Drive_Free() {
   drive.is_free = true;
   send_data.do_brake = false;
-  drive.current_acceleration = 0.0f;
+  drive.current_torque = 0.0f;
   drive.current_target_velocity = 0.0f;
   PID_Reset(&drive.pid_velocity);
 }
 
 float Drive_GetSpeed() { return drive.speed; }
+
+void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg) {
+  // app 層から渡された IMU 値を保持し、推定器は drive 層の中だけで回す。
+  drive.imu_accel_x = accel_x;
+  drive.imu_accel_y = accel_y;
+  drive.imu_pitch_deg = pitch_deg;
+  drive.imu_roll_deg = roll_deg;
+  drive.imu_valid = true;
+}
+
+float Drive_GetTractionMu() { return drive.traction_mu; }
 
 static bool Drive_RecvDataHasError(const RecvData* data) {
   return data->is_voltage_out_of_range || data->is_overheat;

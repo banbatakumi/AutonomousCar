@@ -64,11 +64,6 @@ void GetSensors() {
   uint16_t left_dist = Ultrasonic_Get(&ultrasonic_left);
   uint16_t back_dist = Ultrasonic_Get(&ultrasonic_back);
 
-  static uint32_t cnt = 0;
-  if (cnt++ % 1000 == 0) {
-    printf("Ultrasonic distances (mm): front=%u, right=%u, left=%u, back=%u\n", front_dist, right_dist, left_dist, back_dist);
-  }
-
   if (LD06_Update(&lidar)) {
   }
 
@@ -81,6 +76,10 @@ void GetSensors() {
 
   // MPU6050 (姿勢/角速度/角加速度) 更新
   Imu_Update(&imu);
+  const MPU6050_Data* imu_data = Imu_GetData(&imu);
+  if (imu_data != NULL) {
+    Drive_SetImuData(imu_data->accel_x, imu_data->accel_y, imu_data->pitch, imu_data->roll);
+  }
 }
 
 void MainApp() {
