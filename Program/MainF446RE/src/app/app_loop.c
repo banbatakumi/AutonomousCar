@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #include "algo_forward.h"
 #include "algorithm.h"
 #include "app.h"
@@ -56,6 +58,16 @@ void GetSensors() {
   Ultrasonic_Update(&ultrasonic_left);
   Ultrasonic_Update(&ultrasonic_back);
 
+  uint16_t front_dist = Ultrasonic_Get(&ultrasonic_front);
+  uint16_t right_dist = Ultrasonic_Get(&ultrasonic_right);
+  uint16_t left_dist = Ultrasonic_Get(&ultrasonic_left);
+  uint16_t back_dist = Ultrasonic_Get(&ultrasonic_back);
+
+  static uint32_t cnt = 0;
+  if (cnt++ % 1000 == 0) {
+    printf("Ultrasonic distances (mm): front=%u, right=%u, left=%u, back=%u\n", front_dist, right_dist, left_dist, back_dist);
+  }
+
   if (LD06_Update(&lidar)) {
   }
 
@@ -91,7 +103,7 @@ void MainApp() {
 
       case MODE_RUN:
         // 走行モード：従来の自動走行ロジック
-        Algorithm_Run(&lidar);
+        Algorithm_Run(&lidar, Ultrasonic_Get(&ultrasonic_front));
         PwmOut_Write(&front_led, 0.5);
         break;
 

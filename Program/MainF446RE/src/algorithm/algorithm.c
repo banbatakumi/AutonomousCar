@@ -7,12 +7,13 @@
 #include "mymath.h"
 
 // 探索・走行パラメータ
-#define MIN_VELOCITY 1.5f         // 最低速度 [m/s]
-#define MAX_VELOCITY 5.0f         // 障害物なし時の最大速度 [m/s]
-#define ACCELERATION 2.5f         // 速度ランプ [m/s²]
-#define EMERGENCY_DIST_MM 350.0f  // この距離未満で緊急停止 [mm]
-#define FAST_DIST_MM 1000.0f      // この距離以上で最大速度 [mm]
-#define STEER_SAT 1.0f            // ステア飽和値（0〜1、1=最大舵角）
+#define MIN_VELOCITY 0.25f                 // 最低速度 [m/s]
+#define MAX_VELOCITY 0.5f                  // 障害物なし時の最大速度 [m/s]
+#define ACCELERATION 0.5f                  // 速度ランプ [m/s²]
+#define EMERGENCY_DIST_MM 350.0f           // この距離未満で緊急停止 [mm]
+#define FAST_DIST_MM 1000.0f               // この距離以上で最大速度 [mm]
+#define STEER_SAT 1.0f                     // ステア飽和値（0〜1、1=最大舵角）
+#define FRONT_ULTRASONIC_OFFSET_MM 150.0f  // 前方超音波はLiDARより150mm前方に搭載
 
 // 探索範囲: 前方 ±SEARCH_HALF_DEG
 #define SEARCH_HALF_DEG 90
@@ -40,7 +41,7 @@
 #define BRAKE_COMPLETE_SPEED 0.1f      // 停止判定速度 [m/s]
 #define REVERSE_STEER_SAT 1.0f         // 切り返しステア飽和値
 #define REAR_HALF_DEG 20               // 後方障害物検出セクタの半幅 [deg]
-#define REAR_EMERGENCY_DIST_MM 300.0f  // この距離未満で後退中断 [mm]
+#define REAR_EMERGENCY_DIST_MM 350.0f  // この距離未満で後退中断 [mm]
 
 // 緊急停止→切り返しのステート
 typedef enum {
@@ -55,7 +56,7 @@ static Timer reverse_timer;
 static bool alg_initialized = false;
 static bool curve_brake_done = false;  // MIN_VELOCITY 達成後の再ブレーキ抑制フラグ
 
-void Algorithm_Run(LD06* lidar) {
+void Algorithm_Run(LD06* lidar, uint16_t front_ultrasonic_mm) {
   if (!alg_initialized) {
     Timer_Init(&reverse_timer);
     alg_initialized = true;
@@ -79,13 +80,14 @@ void Algorithm_Run(LD06* lidar) {
   float front_nearest_mm = 0.0f;
   const int front_nearest = Lidar_FindNearestSector(lidar, signed_deg * 0.5, FRONT_HALF_DEG, 5, 1.0f, 3,
                                                     &front_nearest_mm);
+
   const bool is_emergency =
-      front_nearest != -1 && front_nearest_mm < EMERGENCY_DIST_MM + Drive_GetSpeed() * 150.0f;
+      (front_nearest != -1 && front_nearest_mm < EMERGENCY_DIST_MM + Drive_GetSpeed() * 150.0f) || (front_ultrasonic_mm > 0 && front_ultrasonic_mm < EMERGENCY_DIST_MM - FRONT_ULTRASONIC_OFFSET_MM);
 
   // 緊急停止・切り返しステートマシン
   switch (alg_state) {
     case ALG_STATE_BRAKING:
-      if (front_nearest_mm > EMERGENCY_DIST_MM * 1.5f) {
+      if (front_nearest_mm > EMERGENCY_DIST_MM * 1.5f && front_ultrasonic_mm > EMERGENCY_DIST_MM - FRONT_ULTRASONIC_OFFSET_MM) {
         // 前方クリア: 切り返しを省略して通常走行に即復帰
         alg_state = ALG_STATE_NORMAL;
         break;

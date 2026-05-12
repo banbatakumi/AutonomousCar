@@ -1,10 +1,13 @@
 #ifndef DRIVE_H_
 #define DRIVE_H_
 
-#define DIFFERENTIAL 0.5f
-#define MAX_ACCELERATION 5.0f
+#define DIFFERENTIAL 0.25f
+#define MAX_POWER 5.0f
 #define MAX_STEER_SPEED 2.0f  // ステアリングの最大回転速度 [rad/s]
 
+// 車体の物理パラメータ
+#define WHEEL_BASE 0.220f   // ホイールベース (前後軸間距離) [m]
+#define TREAD_WIDTH 0.143f  // トレッド幅 (左右車輪中心間距離) [m]
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -35,8 +38,8 @@ typedef struct {
 } RecvData;
 
 typedef struct {
-  float acceleration_left;
-  float acceleration_right;
+  float power_left;
+  float power_right;
   float steer;
   LPF lpf_steer;
   bool do_brake;
@@ -57,6 +60,7 @@ typedef struct {
   float steer_logical;  // 現在のロジカルステア値 [-1, +1]（正=左、負=右）
   Timer winker_timer;
   bool winker_state;
+  float sync_fb_integrator;  // 速度差フィードバックの積分項
 } Drive;
 
 // ペリフェラルを初期化する。
@@ -85,7 +89,7 @@ void Drive_Set(float max_acceleration, float acceleration_rate, float steer);
 void Drive_SetVelocity(float target_velocity, float acceleration, float steer);
 
 // ブレーキコマンドをモータコントローラに送信する。
-// deceleration は制動強度（0.0〜MAX_ACCELERATION）。steer は -1.0〜+1.0。
+// deceleration は制動強度（0.0〜MAX_POWER）。steer は -1.0〜+1.0。
 void Drive_Brake(float deceleration, float steer);
 
 // モータコントローラへの送信を停止してモータをフリー状態にする。
@@ -97,6 +101,5 @@ float Drive_GetSpeed();
 
 // いずれかのモータコントローラが電圧異常または過熱を報告している場合に true を返す。
 bool Drive_HasError();
-
 
 #endif  // DRIVE_H_

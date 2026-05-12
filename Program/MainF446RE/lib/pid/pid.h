@@ -17,8 +17,8 @@ typedef struct {
   bool is_first_update;
 } PID;
 
-static inline void PID_Init(PID *pid, float kp, float ki, float kd,
-                             float output_min, float output_max) {
+static inline void PID_Init(PID* pid, float kp, float ki, float kd,
+                            float output_min, float output_max) {
   pid->kp = kp;
   pid->ki = ki;
   pid->kd = kd;
@@ -30,25 +30,25 @@ static inline void PID_Init(PID *pid, float kp, float ki, float kd,
   Timer_Init(&pid->timer);
 }
 
-static inline void PID_SetGains(PID *pid, float kp, float ki, float kd) {
+static inline void PID_SetGains(PID* pid, float kp, float ki, float kd) {
   pid->kp = kp;
   pid->ki = ki;
   pid->kd = kd;
 }
 
-static inline void PID_Reset(PID *pid) {
+static inline void PID_Reset(PID* pid) {
   pid->integral = 0.0f;
   pid->prev_error = 0.0f;
   pid->is_first_update = true;
   Timer_Reset(&pid->timer);
 }
 
-static inline float PID_Update(PID *pid, float target, float current) {
+static inline float PID_Update(PID* pid, float target, float current) {
   float dt = Timer_Read(&pid->timer);
   Timer_Reset(&pid->timer);
 
   // 初回呼び出し or 異常なdt の場合はスキップ
-  if (pid->is_first_update || dt <= 0.0f || dt > 1.0f) {
+  if (pid->is_first_update || dt <= 0.0f || dt > 0.1f) {
     pid->is_first_update = false;
     pid->prev_error = target - current;
     return 0.0f;

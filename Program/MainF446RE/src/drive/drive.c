@@ -185,8 +185,8 @@ void Drive_Update() {
   } else {
     Drive_SendSerialAcceleration(
         TORQUE_HEADER,
-        (int16_t)(send_data.acceleration_left * 100),
-        (int16_t)(send_data.acceleration_right * -100));  // 右モータは逆転方向が前進
+        (int16_t)(send_data.power_left * 100),
+        (int16_t)(send_data.power_right * -100));  // 右モータは逆転方向が前進
   }
 }
 
@@ -204,12 +204,13 @@ void Drive_Init(bool do_steer_setup) {
   drive.is_free = true;
   drive.steer_logical = 0.0f;
   drive.winker_state = false;
+  drive.sync_fb_integrator = 0.0f;
   Timer_Init(&drive.accel_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
   Timer_Init(&drive.brake_led_timer);
   Timer_Init(&drive.winker_timer);
-  PID_Init(&drive.pid_velocity, 1.0f, 2.0f, 0.0f, -MAX_ACCELERATION, MAX_ACCELERATION);
+  PID_Init(&drive.pid_velocity, 1.5f, 2.5f, 0.0f, -MAX_POWER, MAX_POWER);
 
   PwmOut_Init(&brake_led, &htim3, TIM_CHANNEL_4);
   PwmOut_Init(&winker_left_led, &htim3, TIM_CHANNEL_3);
@@ -267,17 +268,24 @@ bool Drive_SetupSteer() {
   return true;
 }
 
-// 電子ディファレンシャル: steer > 0（左旋回）なら右を減速、steer < 0 なら左を減速。
 static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
+  // 基本的な加速度配分（従来の電子ディファレンシャル）
+  float accel_left = acceleration;
+  float accel_right = acceleration;
+
   if (steer > 0.0f) {
-    send_data.acceleration_left = Constrain(acceleration, -MAX_ACCELERATION, MAX_ACCELERATION);
-    send_data.acceleration_right = Constrain(acceleration * (1.0f - steer * DIFFERENTIAL),
-                                             -MAX_ACCELERATION, MAX_ACCELERATION);
+    // 左旋回: 右を減速
+    accel_left *= (1.0f + steer * DIFFERENTIAL);
+    accel_right *= (1.0f - steer * DIFFERENTIAL);
   } else {
-    send_data.acceleration_left = Constrain(acceleration * (1.0f + steer * DIFFERENTIAL),
-                                            -MAX_ACCELERATION, MAX_ACCELERATION);
-    send_data.acceleration_right = Constrain(acceleration, -MAX_ACCELERATION, MAX_ACCELERATION);
+    // 右旋回: 左を減速
+    accel_left *= (1.0f + steer * DIFFERENTIAL);
+    accel_right *= (1.0f - steer * DIFFERENTIAL);
   }
+
+  // 最終的な加速度指令をクリップ
+  send_data.power_left = Constrain(accel_left, -MAX_POWER, MAX_POWER);
+  send_data.power_right = Constrain(accel_right, -MAX_POWER, MAX_POWER);
 
   // steer を物理角度 [rad] に変換（-1=右最大, +1=左最大）
   drive.steer_logical = Constrain(steer, -1.0f, 1.0f);
@@ -286,10 +294,10 @@ static void Drive_ApplyAccelerationAndSteer(float acceleration, float steer) {
                       (steer + 1.0) / 2.0 * (steer_config.max_rad - steer_config.min_rad);
 
   // 急激な舵角変化を MAX_STEER_SPEED [rad/s] で制限する
-  float dt = Timer_Read(&drive.steer_timer);
+  float dt_steer = Timer_Read(&drive.steer_timer);
   Timer_Reset(&drive.steer_timer);
-  if (dt > 0.0f && dt < 0.5f) {
-    double max_delta = MAX_STEER_SPEED * dt;
+  if (dt_steer > 0.0f && dt_steer < 0.5f) {
+    double max_delta = MAX_STEER_SPEED * dt_steer;
     double delta = Constrain(target_rad - send_data.steer, -max_delta, max_delta);
     send_data.steer += delta;
   } else {
@@ -340,11 +348,12 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
 void Drive_Brake(float deceleration, float steer) {
   Drive_ApplyAccelerationAndSteer(0.0f, steer);
   send_data.do_brake = true;
-  send_data.brake_strength = Constrain(deceleration, 0.0f, MAX_ACCELERATION);
+  send_data.brake_strength = Constrain(deceleration, 0.0f, MAX_POWER);
   drive.current_acceleration = 0.0f;
   drive.current_target_velocity = 0.0f;
   drive.is_free = false;
   PID_Reset(&drive.pid_velocity);
+  drive.sync_fb_integrator = 0.0f;
 }
 
 void Drive_Free() {
@@ -352,6 +361,7 @@ void Drive_Free() {
   drive.current_acceleration = 0.0f;
   drive.current_target_velocity = 0.0f;
   PID_Reset(&drive.pid_velocity);
+  drive.sync_fb_integrator = 0.0f;
 }
 
 float Drive_GetSpeed() { return drive.speed; }
