@@ -8,7 +8,7 @@
 #include "lpf.h"
 #include "timer.h"
 
-#define DISTANSE_ADJUSTMENT 20  // センサーの誤差を補正するための係数（実測値に合わせて調整）
+#define DISTANSE_ADJUSTMENT 175  // センサーの誤差を補正するための係数（実測値に合わせて調整）
 
 /**
  * Ultrasonic sensor driver
