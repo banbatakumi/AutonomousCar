@@ -44,6 +44,8 @@ extern Serial serial3;
 extern LD06 lidar;
 extern PwmOut lidar_motor;
 
+extern Serial serial6;
+
 extern Imu imu;
 
 extern uint16_t adc_value[];
@@ -56,6 +58,8 @@ extern LPF voltage_power_lpf;
 
 extern Timer voltage_signal_led_timer;
 extern Timer voltage_power_led_timer;
+
+extern Timer serial_send_interval_timer;
 
 extern bool battery_error;
 

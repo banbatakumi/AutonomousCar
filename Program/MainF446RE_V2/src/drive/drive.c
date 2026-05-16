@@ -369,6 +369,8 @@ void Drive_Free() {
 
 float Drive_GetSpeed() { return drive.speed; }
 
+float Drive_GetAccel() { return drive.accel; }
+
 void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg) {
   // app 層から渡された IMU 値を保持し、推定器は drive 層の中だけで回す。
   drive.imu_accel_x = accel_x;

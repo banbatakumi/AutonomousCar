@@ -1,5 +1,7 @@
 #include "lighting.h"
 
+#include <stdbool.h>
+
 #include "main.h"
 #include "pwm_out.h"
 #include "timer.h"
@@ -26,6 +28,8 @@ typedef struct {
   WinkerDirection winker_dir;
   bool winker_blink_state;
   Timer winker_timer;
+
+  bool hazard_active;
 
   float headlight_brightness;
 
@@ -60,7 +64,8 @@ static void UpdateBrakeLed(void) {
 }
 
 static void UpdateWinkerLed(void) {
-  if (s.winker_dir == WINKER_OFF) {
+  bool blink_active = s.hazard_active || (s.winker_dir != WINKER_OFF);
+  if (!blink_active) {
     PwmOut_Write(&winker_left_led, 0.0f);
     PwmOut_Write(&winker_right_led, 0.0f);
     return;
@@ -72,7 +77,10 @@ static void UpdateWinkerLed(void) {
   }
 
   float brightness = s.winker_blink_state ? 1.0f : 0.0f;
-  if (s.winker_dir == WINKER_LEFT) {
+  if (s.hazard_active) {
+    PwmOut_Write(&winker_left_led, brightness);
+    PwmOut_Write(&winker_right_led, brightness);
+  } else if (s.winker_dir == WINKER_LEFT) {
     PwmOut_Write(&winker_left_led, brightness);
     PwmOut_Write(&winker_right_led, 0.0f);
   } else {
@@ -112,6 +120,7 @@ void Lighting_Init(void) {
   s.brake_speed = 0.0f;
   s.winker_dir = WINKER_OFF;
   s.winker_blink_state = true;
+  s.hazard_active = false;
   s.headlight_brightness = 0.0f;
   s.passing_active = false;
 
@@ -156,6 +165,14 @@ void Lighting_SetWinker(WinkerDirection direction) {
 
 void Lighting_SetHeadlight(float brightness) {
   s.headlight_brightness = brightness;
+}
+
+void Lighting_SetHazard(bool active) {
+  if (active && !s.hazard_active) {
+    s.winker_blink_state = true;
+    Timer_Reset(&s.winker_timer);
+  }
+  s.hazard_active = active;
 }
 
 void Lighting_Passing(void) {

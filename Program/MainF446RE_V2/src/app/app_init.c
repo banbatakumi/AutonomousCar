@@ -29,6 +29,7 @@ void Setup() {
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_value, ADC_VALUE_COUNT);
 
   Serial_Init(&serial3, &huart3, 2048);
+  Serial_Init(&serial6, &huart6, 2048);
 
   // TIM1 CH4: LiDAR motor PWM control
   PwmOut_Init(&lidar_motor, &htim1, TIM_CHANNEL_4);
@@ -40,6 +41,8 @@ void Setup() {
   Timer_Init(&control_interval_timer);
   Timer_Init(&voltage_signal_led_timer);
   Timer_Init(&voltage_power_led_timer);
+
+  Timer_Init(&serial_send_interval_timer);
 
   // Initialize LPF for voltage measurements (k_lpf=0.8 for smooth filtering)
   LPF_Init(&voltage_signal_lpf, 0.8, 0.0);

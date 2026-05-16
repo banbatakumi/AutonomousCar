@@ -26,6 +26,8 @@ Serial serial3;
 LD06 lidar;
 PwmOut lidar_motor;
 
+Serial serial6;
+
 Imu imu;
 uint16_t adc_value[ADC_VALUE_COUNT];
 
@@ -37,6 +39,8 @@ LPF voltage_power_lpf;
 
 Timer voltage_signal_led_timer;
 Timer voltage_power_led_timer;
+
+Timer serial_send_interval_timer;
 
 // バッテリー低電圧エラーフラグ
 bool battery_error = false;

@@ -8,6 +8,7 @@ typedef enum {
   WINKER_OFF = 0,
   WINKER_LEFT,
   WINKER_RIGHT,
+  WINKER_HAZARD,  // 左右同時点滅
 } WinkerDirection;
 
 // LED ペリフェラルを初期化し、起動確認アニメーションを再生する。
@@ -20,8 +21,11 @@ void Lighting_Update(void);
 // active=false のとき薄く点灯。active=true かつ strength>=1.0 かつ speed が閾値以上のとき点滅。
 void Lighting_SetBrake(bool active, float strength, float speed);
 
-// ウィンカーの点滅方向を設定する。WINKER_OFF で消灯。
+// ウィンカーの点滅方向を設定する。WINKER_OFF で消灯。ハザード中は上書きされない。
 void Lighting_SetWinker(WinkerDirection direction);
+
+// ハザードランプ（左右同時点滅）の状態を設定する。ウィンカーより優先される。
+void Lighting_SetHazard(bool active);
 
 // フロントライトの輝度を設定する [0.0, 1.0]。パッシング中は上書きされる。
 void Lighting_SetHeadlight(float brightness);

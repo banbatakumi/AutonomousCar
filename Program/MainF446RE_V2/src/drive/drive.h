@@ -110,6 +110,9 @@ void Drive_Free();
 // 現在の車速を返す [m/s]。移動平均フィルタ済みの値。
 float Drive_GetSpeed();
 
+// 現在の車加速度を返す [m/s²]。移動平均フィルタ済みの値。
+float Drive_GetAccel();
+
 // IMU の加速度・姿勢を渡す。Drive 側で摩擦推定と加速度上限に利用する。
 void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg);
 
