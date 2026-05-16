@@ -141,8 +141,8 @@ static void Drive_UpdateTractionEstimator(void) {
   bool is_slipping = Abs(drive.accel - corrected_long_accel) > TRACTION_SLIP_ACCEL_MARGIN &&
                      Abs(drive.speed) > TRACTION_BIAS_SPEED_THRESHOLD;
 
-  printf("drive.accel=%.2f, corrected_long_accel=%.2f, wheel_mu=%.2f, observed_mu=%.2f, is_slipping=%d\n",
-         drive.accel, corrected_long_accel, wheel_mu, observed_mu, is_slipping);
+  // printf("drive.accel=%.2f, corrected_long_accel=%.2f, wheel_mu=%.2f, observed_mu=%.2f, is_slipping=%d\n",
+  //        drive.accel, corrected_long_accel, wheel_mu, observed_mu, is_slipping);
 
   // スリップ時は安全側に下げ、通常時は観測値を少しずつ追従する。
   float candidate_mu = is_slipping ? fminf(observed_mu, wheel_mu)

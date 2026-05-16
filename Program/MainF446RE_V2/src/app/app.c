@@ -5,9 +5,11 @@
 #include "drive.h"
 #include "mode.h"
 
+Buzzer buzzer;
+
 DigitalOut user_led1;
 DigitalOut user_led2;
-DigitalOut user_led3;
+PwmOut user_led3;
 PwmOut user_led4;
 
 DigitalIn button1;
@@ -22,7 +24,7 @@ Ultrasonic ultrasonic_back;
 
 Serial serial3;
 LD06 lidar;
-DigitalOut lidar_motor;
+PwmOut lidar_motor;
 
 Imu imu;
 uint16_t adc_value[ADC_VALUE_COUNT];
@@ -35,8 +37,6 @@ LPF voltage_power_lpf;
 
 Timer voltage_signal_led_timer;
 Timer voltage_power_led_timer;
-bool voltage_signal_led_state = true;
-bool voltage_power_led_state = true;
 
 // バッテリー低電圧エラーフラグ
 bool battery_error = false;

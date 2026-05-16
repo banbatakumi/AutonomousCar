@@ -31,10 +31,10 @@ static uint8_t CalCRC8(const uint8_t* p, uint8_t len) {
   return crc;
 }
 
-void LD06_Init(LD06* lidar, Serial* serial, DigitalOut* motor_control) {
+void LD06_Init(LD06* lidar, Serial* serial, PwmOut* motor_control) {
   lidar->serial = serial;
   lidar->motor = motor_control;
-  DigitalOut_Write(lidar->motor, 1);  // LD06の電源ON
+  PwmOut_Write(lidar->motor, 1.0f);  // LD06モーター起動（100% duty）
   lidar->rx_state = 0;
   lidar->speed = 0.0f;
   lidar->timestamp = 0;

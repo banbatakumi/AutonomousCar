@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "digitalinout.h"
+#include "pwm_out.h"
 #include "serial.h"
 
 #define LD06_POINT_PER_PACK 12
@@ -21,7 +21,7 @@ typedef struct {
 // LD06の制御・データ保持用インスタンス構造体
 typedef struct {
   Serial* serial;
-  DigitalOut* motor;   // LiDAR回転モーター制御ポインタ（外部から提供）
+  PwmOut* motor;   // LiDAR回転モーター制御ポインタ（外部から提供）
   uint8_t rx_buf[LD06_PACKET_SIZE];
   uint8_t rx_state;
 
@@ -35,8 +35,8 @@ typedef struct {
   uint8_t confidences_360[360];
 } LD06;
 
-// 初期化関数（motor_controlは呼び出し側で初期化済みのDigitalOut*ポインタ）
-void LD06_Init(LD06* lidar, Serial* serial, DigitalOut* motor_control);
+// 初期化関数（motor_controlは呼び出し側で初期化済みのPwmOut*ポインタ）
+void LD06_Init(LD06* lidar, Serial* serial, PwmOut* motor_control);
 
 // 受信処理とデータ更新 (メインループで定期的に呼び出す)
 // 新しいパケットが受信され、正常にパース完了した場合は true を返す

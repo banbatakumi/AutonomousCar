@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "adc.h"
+#include "buzzer.h"
 #include "digitalinout.h"
 #include "drive.h"
 #include "i2c.h"
@@ -22,9 +23,11 @@ void Setup();
 void MainApp();
 
 // Externs for globals used across app modules
+extern Buzzer buzzer;
+
 extern DigitalOut user_led1;
 extern DigitalOut user_led2;
-extern DigitalOut user_led3;
+extern PwmOut user_led3;
 extern PwmOut user_led4;
 
 extern DigitalIn button1;
@@ -39,7 +42,7 @@ extern Ultrasonic ultrasonic_back;
 
 extern Serial serial3;
 extern LD06 lidar;
-extern DigitalOut lidar_motor;
+extern PwmOut lidar_motor;
 
 extern Imu imu;
 
@@ -53,8 +56,6 @@ extern LPF voltage_power_lpf;
 
 extern Timer voltage_signal_led_timer;
 extern Timer voltage_power_led_timer;
-extern bool voltage_signal_led_state;
-extern bool voltage_power_led_state;
 
 extern bool battery_error;
 

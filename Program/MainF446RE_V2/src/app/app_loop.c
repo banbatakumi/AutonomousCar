@@ -1,8 +1,17 @@
+#include <math.h>
 #include <stdint.h>
 
 #include "algo_forward.h"
+
+// 車速 1 m/s あたりの音程 [Hz]。値を上げると高い音になる。
+#define MOTOR_SOUND_FREQ_PER_MPS 1500.0f
+// 最高音程 [Hz]
+#define MOTOR_SOUND_MAX_FREQ_HZ 5000U
+// この速度未満は無音 [m/s]
+#define MOTOR_SOUND_MIN_SPEED_MPS 0.05f
 #include "algorithm.h"
 #include "app.h"
+#include "buzzer.h"
 #include "drive.h"
 #include "lighting.h"
 #include "mode.h"
@@ -22,19 +31,19 @@ static uint32_t VoltageToBlinkPeriodUs(double voltage) {
   return (uint32_t)period_us;
 }
 
-static void UpdateVoltageBlinkLed(DigitalOut* led, Timer* timer, bool* state, double voltage) {
+// 電圧に応じた周期のSin波でPWM輝度を更新する。高電圧=長周期(ゆっくり)、低電圧=短周期(速い)。
+static void UpdateVoltageSinLed(PwmOut* led, Timer* timer, double voltage) {
   uint32_t period_us = VoltageToBlinkPeriodUs(voltage);
-  uint32_t half_period_us = period_us / 2U;
+  uint32_t elapsed_us = Timer_ReadUs(timer);
 
-  if (half_period_us == 0U) {
-    half_period_us = 1U;
-  }
-
-  if (Timer_ReadUs(timer) >= half_period_us) {
-    *state = !*state;
-    DigitalOut_Write(led, *state);
+  if (elapsed_us >= period_us) {
     Timer_Reset(timer);
+    elapsed_us = 0U;
   }
+
+  float phase = 6.28318530f * (float)elapsed_us / (float)period_us;
+  float brightness = 0.5f * (1.0f + sinf(phase));
+  PwmOut_Write(led, brightness);
 }
 
 // バッテリー電圧をチェック、低電圧時にエラー対応
@@ -54,6 +63,8 @@ static void CheckBatteryVoltage(void) {
 }
 
 void GetSensors() {
+  LD06_Update(&lidar);
+
   Ultrasonic_Update(&ultrasonic_front);
   Ultrasonic_Update(&ultrasonic_right);
   Ultrasonic_Update(&ultrasonic_left);
@@ -63,9 +74,6 @@ void GetSensors() {
   uint16_t right_dist = Ultrasonic_Get(&ultrasonic_right);
   uint16_t left_dist = Ultrasonic_Get(&ultrasonic_left);
   uint16_t back_dist = Ultrasonic_Get(&ultrasonic_back);
-
-  if (LD06_Update(&lidar)) {
-  }
 
   // Read raw ADC values and apply LPF
   double raw_voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
@@ -87,10 +95,11 @@ void MainApp() {
     GetSensors();
     CheckBatteryVoltage();  // バッテリー電圧チェック
     Drive_Update();
+    Buzzer_Update(&buzzer);
     Lighting_Update();
-    UpdateVoltageBlinkLed(&user_led3, &voltage_signal_led_timer, &voltage_signal_led_state, voltage_signal);
-    UpdateVoltageBlinkLed(&user_led2, &voltage_power_led_timer, &voltage_power_led_state, voltage_power);
-    PwmOut_Write(&user_led4, (Drive_HasError() || battery_error) ? 1.0f : 0.0f);
+    UpdateVoltageSinLed(&user_led3, &voltage_signal_led_timer, voltage_signal);
+    UpdateVoltageSinLed(&user_led4, &voltage_power_led_timer, voltage_power);
+    DigitalOut_Write(&user_led1, (Drive_HasError() || battery_error) ? 1 : 0);
 
     // モード切替の処理（button1, button2を使用）
     Mode_Update(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
@@ -120,9 +129,9 @@ void MainApp() {
 
     // 制御周期
     while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
-      DigitalOut_Write(&user_led1, 1);
+      DigitalOut_Write(&user_led2, 1);
     }
-    DigitalOut_Write(&user_led1, 0);
+    DigitalOut_Write(&user_led2, 0);
     Timer_Reset(&control_interval_timer);
   }
 }

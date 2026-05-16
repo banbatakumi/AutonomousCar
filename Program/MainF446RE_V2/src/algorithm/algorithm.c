@@ -10,7 +10,7 @@
 #define MIN_VELOCITY 0.25f                 // 最低速度 [m/s]
 #define MAX_VELOCITY 0.5f                  // 障害物なし時の最大速度 [m/s]
 #define ACCELERATION 0.5f                  // 速度ランプ [m/s²]
-#define EMERGENCY_DIST_MM 350.0f           // この距離未満で緊急停止 [mm]
+#define EMERGENCY_DIST_MM 300.0f           // この距離未満で緊急停止 [mm]
 #define FAST_DIST_MM 1000.0f               // この距離以上で最大速度 [mm]
 #define STEER_SAT 1.0f                     // ステア飽和値（0〜1、1=最大舵角）
 #define FRONT_ULTRASONIC_OFFSET_MM 150.0f  // 前方超音波はLiDARより150mm前方に搭載

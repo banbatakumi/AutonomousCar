@@ -12,4 +12,4 @@ void Mode_Init(int initial_button1_state, int initial_button2_state);
 void Mode_Update(int button1_state, int button2_state);
 OperationMode Mode_Get(void);
 
-#endif // MODE_H_
+#endif  // MODE_H_

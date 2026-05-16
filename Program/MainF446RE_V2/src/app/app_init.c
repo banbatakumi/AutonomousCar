@@ -1,4 +1,5 @@
 #include "app.h"
+#include "buzzer.h"
 #include "lighting.h"
 #include "mode.h"
 
@@ -6,10 +7,14 @@ void Setup() {
   printf("Setup started\n");
   DigitalOut_Init(&user_led1, USER_LED1_GPIO_Port, USER_LED1_Pin);
   DigitalOut_Init(&user_led2, USER_LED2_GPIO_Port, USER_LED2_Pin);
-  DigitalOut_Init(&user_led3, USER_LED3_GPIO_Port, USER_LED3_Pin);
+  PwmOut_Init(&user_led3, &htim4, TIM_CHANNEL_1);
   PwmOut_Init(&user_led4, &htim4, TIM_CHANNEL_2);
 
+  // TIM2 CH2: BUZZER, APB1 タイマクロック 90MHz, Prescaler=9
+  Buzzer_Init(&buzzer, &htim2, TIM_CHANNEL_2, 90000000U, 9U);
+
   Lighting_Init();
+  Buzzer_PlayStartupMelody(&buzzer);
 
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
@@ -25,8 +30,8 @@ void Setup() {
 
   Serial_Init(&serial3, &huart3, 2048);
 
-  // Initialize LiDAR motor control (汎用化: LD06に渡す)
-  DigitalOut_Init(&lidar_motor, LIDAR_GPIO_Port, LIDAR_Pin);
+  // TIM1 CH4: LiDAR motor PWM control
+  PwmOut_Init(&lidar_motor, &htim1, TIM_CHANNEL_4);
   LD06_Init(&lidar, &serial3, &lidar_motor);
 
   // button2 を押したまま起動 → IMU 再キャリブレーション
@@ -40,8 +45,6 @@ void Setup() {
   LPF_Init(&voltage_signal_lpf, 0.8, 0.0);
   LPF_Init(&voltage_power_lpf, 0.8, 0.0);
 
-  DigitalOut_Write(&user_led2, voltage_power_led_state);
-  DigitalOut_Write(&user_led3, voltage_signal_led_state);
   Mode_Init(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
   printf("Setup finished\n");
 }
