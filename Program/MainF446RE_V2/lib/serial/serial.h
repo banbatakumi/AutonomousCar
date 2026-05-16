@@ -57,6 +57,7 @@ static inline void Serial_WriteByte(Serial* self, uint8_t data) {
 
 // 複数バイト送信
 static inline void Serial_Write(Serial* self, const uint8_t* data, uint16_t len) {
+  HAL_UART_AbortTransmit(self->huart);
   HAL_UART_Transmit_DMA(self->huart, (uint8_t*)data, len);
 }
 

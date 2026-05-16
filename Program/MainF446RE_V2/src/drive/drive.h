@@ -2,7 +2,7 @@
 #define DRIVE_H_
 
 #define DIFFERENTIAL 0.25f
-#define MAX_TORQUE 1.0f
+#define MAX_TORQUE 2.0f
 #define MAX_STEER_SPEED 2.0f  // ステアリングの最大回転速度 [rad/s]
 
 // 車体の物理パラメータ
@@ -53,22 +53,23 @@ typedef struct {
   MAF maf_acccel;
   MAF maf_imu_long;
   MAF maf_imu_lat;
-  MAF maf_mu_estimate;
   float current_torque;
   Timer torque_timer;
   float current_target_velocity;
   Timer velocity_timer;
   PID pid_velocity;
   Timer steer_timer;
+  Timer traction_timer;
   bool is_free;
+  bool is_slipping;
   float steer_logical;  // 直近のステア値 [-1, +1]（正=左、負=右）。ウィンカー判定に使用。
   float imu_accel_x;
   float imu_accel_y;
   float imu_pitch_deg;
   float imu_roll_deg;
   bool imu_valid;
-  float traction_mu;
-  float traction_accel_limit;
+  float imu_velocity;        // IMU積分による推定速度 [m/s]
+  float traction_vel_limit;  // スリップ時の目標速度上限 [m/s]
   float imu_long_bias;
   float imu_lat_bias;
 } Drive;
@@ -111,9 +112,6 @@ float Drive_GetSpeed();
 
 // IMU の加速度・姿勢を渡す。Drive 側で摩擦推定と加速度上限に利用する。
 void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg);
-
-// 現在の摩擦係数推定値を返す。
-float Drive_GetTractionMu();
 
 // いずれかのモータコントローラが電圧異常または過熱を報告している場合に true を返す。
 bool Drive_HasError();

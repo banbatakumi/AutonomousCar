@@ -7,11 +7,11 @@
 #include "mymath.h"
 
 // 探索・走行パラメータ
-#define MIN_VELOCITY 0.25f                 // 最低速度 [m/s]
-#define MAX_VELOCITY 0.5f                  // 障害物なし時の最大速度 [m/s]
-#define ACCELERATION 0.5f                  // 速度ランプ [m/s²]
+#define MIN_VELOCITY 1.0f                  // 最低速度 [m/s]
+#define MAX_VELOCITY 3.0f                  // 障害物なし時の最大速度 [m/s]
+#define ACCELERATION 5.0f                  // 速度ランプ [m/s²]
 #define EMERGENCY_DIST_MM 300.0f           // この距離未満で緊急停止 [mm]
-#define FAST_DIST_MM 1000.0f               // この距離以上で最大速度 [mm]
+#define FAST_DIST_MM 1500.0f               // この距離以上で最大速度 [mm]
 #define STEER_SAT 1.0f                     // ステア飽和値（0〜1、1=最大舵角）
 #define FRONT_ULTRASONIC_OFFSET_MM 150.0f  // 前方超音波はLiDARより150mm前方に搭載
 
@@ -21,7 +21,7 @@
 #define FRONT_HALF_DEG 20   // 緊急停止判定の前方扇形幅 [deg]
 
 // ±STEER_SAT_DEG で最大ステア
-#define STEER_SAT_DEG 90
+#define STEER_SAT_DEG 60
 #define STEER_GAIN (STEER_SAT / STEER_SAT_DEG)
 
 // 壁接近補正パラメータ
@@ -68,7 +68,7 @@ void Algorithm_Run(LD06* lidar, uint16_t front_ultrasonic_mm) {
       lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
 
   if (clear_deg == -1) {
-    Drive_Brake(0.5f, 0.0f);
+    Drive_Brake(0.3f, 0.0f);
     return;
   }
 
@@ -92,7 +92,7 @@ void Algorithm_Run(LD06* lidar, uint16_t front_ultrasonic_mm) {
         alg_state = ALG_STATE_NORMAL;
         break;
       }
-      Drive_Brake(0.75f, 0.0f);
+      Drive_Brake(0.3f, 0.0f);
       if (Abs(Drive_GetSpeed()) < BRAKE_COMPLETE_SPEED) {
         // 停止完了: 前方の最も開けた方向を検出し、後退中に前部がその方向を向くよう
         // 逆符号のステアを設定する（後退 + 右ステア → 前部が左へ向く）
@@ -115,7 +115,7 @@ void Algorithm_Run(LD06* lidar, uint16_t front_ultrasonic_mm) {
       const LidarSector rear = Lidar_GetSector(lidar, 180, REAR_HALF_DEG);
       if (rear.count > 0 && rear.avg < REAR_EMERGENCY_DIST_MM) {
         alg_state = ALG_STATE_NORMAL;
-        Drive_Brake(0.5f, 0.0f);
+        Drive_Brake(0.3f, 0.0f);
         return;
       }
       Drive_SetVelocity(REVERSE_VELOCITY, REVERSE_ACCELERATION, reverse_steer);
@@ -128,7 +128,7 @@ void Algorithm_Run(LD06* lidar, uint16_t front_ultrasonic_mm) {
     default:  // ALG_STATE_NORMAL
       if (is_emergency) {
         alg_state = ALG_STATE_BRAKING;
-        Drive_Brake(0.75f, 0.0f);
+        Drive_Brake(0.3f, 0.0f);
         return;
       }
       break;
@@ -170,7 +170,7 @@ void Algorithm_Run(LD06* lidar, uint16_t front_ultrasonic_mm) {
   if (steer_abs > CORNER_STEER_THRESHOLD) {
     if (!curve_brake_done && Drive_GetSpeed() > MIN_VELOCITY + 0.2f) {
       // ブレーキ未完了かつ速度超過: ブレーキで MIN_VELOCITY まで減速しながらステア
-      Drive_Brake(0.2f, steer);
+      Drive_Brake(0.1f, steer);
       return;
     }
     // MIN_VELOCITY 到達済み: フラグを立てて再ブレーキを抑制し、前方距離ベースで加速

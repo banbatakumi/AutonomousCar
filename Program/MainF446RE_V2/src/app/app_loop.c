@@ -102,7 +102,9 @@ void MainApp() {
     DigitalOut_Write(&user_led1, (Drive_HasError() || battery_error) ? 1 : 0);
 
     // モード切替の処理（button1, button2を使用）
-    Mode_Update(DigitalIn_Read(&button1), DigitalIn_Read(&button2));
+    if (Mode_Update(DigitalIn_Read(&button1), DigitalIn_Read(&button2))) {
+      Buzzer_Beep(&buzzer, 1000, 80);
+    }
 
     switch (Mode_Get()) {
       case MODE_STANDBY:
