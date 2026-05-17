@@ -16,7 +16,6 @@
 #define FOOTER 0xAA
 #define RECV_DATA_SIZE 4
 #define SEND_INTERVAL_US 100000  // 100 ms
-#define LIDAR_SECTORS 36
 
 static RemoteCommand cmd = {0};
 static Timer send_timer;
@@ -54,46 +53,30 @@ static void ParseSerial(void) {
 static void SendTelemetry(void) {
   if (Timer_ReadUs(&send_timer) < SEND_INTERVAL_US) return;
 
-  const LD06* lidar = Sensor_GetLidar();
-  uint8_t dis[LIDAR_SECTORS];
-  for (uint8_t i = 0; i < LIDAR_SECTORS; i++) {
-    dis[i] = Constrain(Lidar_GetSector(lidar, i * 10, 5).avg * 0.005f, 0, 15);
-  }
-
   const MPU6050_Data* imu_data = Sensor_GetImuData();
 
-  static uint8_t buf[31];
+  static uint8_t buf[12 + 720 + 1];  // ヘッダ+基本データ+360点分のLiDAR距離+フッタ
   buf[0] = HEADER;
-  buf[1] = (int8_t)(Drive_GetSpeed() * 10);
-  buf[2] = (int8_t)(Drive_GetAccel() * 10);
-  buf[3] = dis[0] << 4 | dis[1];
-  buf[4] = dis[2] << 4 | dis[3];
-  buf[5] = dis[4] << 4 | dis[5];
-  buf[6] = dis[6] << 4 | dis[7];
-  buf[7] = dis[8] << 4 | dis[9];
-  buf[8] = dis[10] << 4 | dis[11];
-  buf[9] = dis[12] << 4 | dis[13];
-  buf[10] = dis[14] << 4 | dis[15];
-  buf[11] = dis[16] << 4 | dis[17];
-  buf[12] = dis[18] << 4 | dis[19];
-  buf[13] = dis[20] << 4 | dis[21];
-  buf[14] = dis[22] << 4 | dis[23];
-  buf[15] = dis[24] << 4 | dis[25];
-  buf[16] = dis[26] << 4 | dis[27];
-  buf[17] = dis[28] << 4 | dis[29];
-  buf[18] = dis[30] << 4 | dis[31];
-  buf[19] = dis[32] << 4 | dis[33];
-  buf[20] = dis[34] << 4 | dis[35];
-  buf[21] = (uint8_t)(Sensor_GetVoltageSignal() * 10);
-  buf[22] = (uint8_t)(Sensor_GetVoltagePower() * 10);
-  buf[23] = Drive_HasError() ? 1 : 0;
-  buf[24] = (int8_t)(imu_data->accel_x * 2) << 4 | (int8_t)(imu_data->accel_y * 2);
-  buf[25] = (int8_t)imu_data->pitch;
-  buf[26] = (int8_t)imu_data->roll;
-  buf[27] = Drive_GetLeftMotorTemperature();
-  buf[28] = Drive_GetRightMotorTemperature();
-  buf[29] = Drive_GetSteerMotorTemperature();
-  buf[30] = FOOTER;
+  buf[1] = Drive_HasError() ? 1 : 0;
+  buf[2] = (int8_t)(Drive_GetSpeed() * 10);
+  buf[3] = (int8_t)(Drive_GetAccel() * 10);
+  buf[4] = (uint8_t)(Sensor_GetVoltageSignal() * 10);
+  buf[5] = (uint8_t)(Sensor_GetVoltagePower() * 10);
+  buf[6] = (int8_t)(imu_data->accel_x * 2) << 4 | (int8_t)(imu_data->accel_y * 2);
+  buf[7] = (int8_t)imu_data->pitch;
+  buf[8] = (int8_t)imu_data->roll;
+  buf[9] = Drive_GetLeftMotorTemperature();
+  buf[10] = Drive_GetRightMotorTemperature();
+  buf[11] = Drive_GetSteerMotorTemperature();
+  const LD06* lidar = Sensor_GetLidar();
+  uint16_t distances_360[360];
+  Lidar_BuildFilledPoints(lidar, distances_360, 200);  // confidence_threshold = 100
+  Lidar_FilterSpikes(distances_360, 10, 0.3f);         // window_deg = 10, threshold_ratio = 0.5
+  for (int i = 0; i < 360; i++) {
+    buf[12 + i * 2] = (distances_360[i] >> 8) & 0xFF;
+    buf[12 + i * 2 + 1] = distances_360[i] & 0xFF;
+  }
+  buf[732] = FOOTER;
   Serial_Write(&serial6, buf, sizeof(buf));
   Timer_Reset(&send_timer);
 }
@@ -106,9 +89,9 @@ void Remote_Update(void) {
 
   ParseSerial();
 
-  Lighting_SetHeadlight(cmd.on_headlight ? 1.0f : 0.01f);
+  Lighting_SetHeadlight(cmd.on_headlight ? 0.5f : 0.01f);
   Lighting_SetHazard(cmd.on_hazard);
-  Buzzer_SetTone(&buzzer, cmd.play_sound ? 1000 : 0);
+  Buzzer_SetTone(&buzzer, cmd.play_sound ? 500 : 0);
 
   if (cmd.do_stop) {
     Drive_Free();

@@ -44,4 +44,18 @@ int Lidar_FindNearestSector(const LD06* lidar, int center_deg,
 int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
                                 int sector_half_width);
 
+// confidence_threshold 未満または distance == 0 の点を無効とし、
+// 両隣の有効点間で角度距離ベースの線形補間を行った新しい点群を生成する。
+// 補間は最大 180° の範囲で有効点を探す。有効点が全く存在しない場合は 0 のまま。
+// out_360 には補間済みの距離データ [mm] が 0〜359° 順に格納される。
+void Lidar_BuildFilledPoints(const LD06* lidar, uint16_t out_360[360],
+                             uint8_t confidence_threshold);
+
+// points_360[] 内のスパイク（周囲から大きく外れた点）を補間で補正する。インプレース更新。
+// window_deg: 両側それぞれ参照する角度幅。threshold_ratio: 周囲平均との乖離率の上限。
+// 乖離が threshold_ratio を超えた点を周囲平均で置換する。distance == 0 の点はスキップ。
+// Lidar_BuildFilledPoints の出力に適用することを想定しているが、生データにも使用可能。
+void Lidar_FilterSpikes(uint16_t points_360[360], int window_deg,
+                        float threshold_ratio);
+
 #endif  // LIDAR_UTILS_H_
