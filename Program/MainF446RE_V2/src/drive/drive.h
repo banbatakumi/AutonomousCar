@@ -73,6 +73,7 @@ typedef struct {
   float traction_vel_limit;  // スリップ時の目標速度上限 [m/s]
   float imu_long_bias;
   float imu_lat_bias;
+  bool traction_enabled;
 } Drive;
 
 // ペリフェラルを初期化する。
@@ -125,5 +126,8 @@ void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_
 
 // いずれかのモータコントローラが電圧異常または過熱を報告している場合に true を返す。
 bool Drive_HasError();
+
+// トラクション制御の有効/無効を切り替える。デフォルトは有効。
+void Drive_SetTractionEnabled(bool enabled);
 
 #endif  // DRIVE_H_

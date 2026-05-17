@@ -1,6 +1,7 @@
 #include "drive.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 #include "flash.h"
@@ -214,6 +215,7 @@ void Drive_Init(bool do_steer_setup) {
   drive.traction_vel_limit = 1000.0f;
   drive.imu_long_bias = 0.0f;
   drive.imu_lat_bias = 0.0f;
+  drive.traction_enabled = true;
   Timer_Init(&drive.torque_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
@@ -275,15 +277,8 @@ static void Drive_ApplyTorqueAndSteer(float torque, float steer) {
   float torque_left = torque;
   float torque_right = torque;
 
-  if (steer > 0.0f) {
-    // 左旋回: 右を減速
-    torque_left *= (1.0f + steer * DIFFERENTIAL);
-    torque_right *= (1.0f - steer * DIFFERENTIAL);
-  } else {
-    // 右旋回: 左を減速
-    torque_left *= (1.0f + steer * DIFFERENTIAL);
-    torque_right *= (1.0f - steer * DIFFERENTIAL);
-  }
+  torque_left *= (1.0f + steer * DIFFERENTIAL);
+  torque_right *= (1.0f - steer * DIFFERENTIAL);
 
   // 最終的なモータ出力をクリップ
   send_data.torque_left = Constrain(torque_left, -MAX_TORQUE, MAX_TORQUE);
@@ -333,9 +328,8 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   Timer_Reset(&drive.velocity_timer);
   if (dt > 0.1f) dt = 0.0f;  // 長時間停止後の初回スパイクを防ぐ
 
-  // スリップ中は目標速度をIMU推定速度以下に制限する
-  drive.traction_vel_limit = 10;
-  float clamped_target = fminf(target_velocity, drive.traction_vel_limit);
+  float vel_limit = drive.traction_enabled ? drive.traction_vel_limit : target_velocity;
+  float clamped_target = fminf(target_velocity, vel_limit);
 
   float abs_accel = Abs(acceleration);
   if (drive.current_target_velocity < clamped_target) {
@@ -397,3 +391,5 @@ bool Drive_HasError() {
          Drive_RecvDataHasError(&right_protocol.data) ||
          Drive_RecvDataHasError(&steer_protocol.data);
 }
+
+void Drive_SetTractionEnabled(bool enabled) { drive.traction_enabled = enabled; }
