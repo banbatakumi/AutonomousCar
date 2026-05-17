@@ -56,7 +56,7 @@ static Timer reverse_timer;
 static bool alg_initialized = false;
 static bool curve_brake_done = false;  // MIN_VELOCITY 達成後の再ブレーキ抑制フラグ
 
-void Algorithm_Run(LD06* lidar, uint16_t front_ultrasonic_mm) {
+void Algorithm_Run(const LD06* lidar, uint16_t front_ultrasonic_mm) {
   if (!alg_initialized) {
     Timer_Init(&reverse_timer);
     alg_initialized = true;

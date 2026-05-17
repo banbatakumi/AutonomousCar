@@ -36,7 +36,7 @@ SteerConfig steer_config;
 // 受信パーサの状態管理
 typedef struct {
   RecvData data;
-  uint8_t recv_buf[7];
+  uint8_t recv_buf[8];
   uint8_t index;
 } Protocol;
 
@@ -51,7 +51,7 @@ Drive drive;
 static void Drive_RecvSerial(Serial* serial, Protocol* protocol) {
   const uint8_t HEADER = 0xFF;
   const uint8_t FOOTER = 0xAA;
-  const uint8_t DATA_SIZE = 7;
+  const uint8_t DATA_SIZE = 8;
 
   while (Serial_Available(serial)) {
     uint8_t byte = Serial_Read(serial);
@@ -64,9 +64,10 @@ static void Drive_RecvSerial(Serial* serial, Protocol* protocol) {
         d->is_enable = d->flags & 0x01;
         d->is_voltage_out_of_range = (d->flags >> 1) & 0x01;
         d->is_overheat = (d->flags >> 2) & 0x01;
-        d->mech_theta = (uint16_t)((protocol->recv_buf[1] << 8) | protocol->recv_buf[2]) * 0.0001f;
-        d->angular_speed = (int16_t)((protocol->recv_buf[3] << 8) | protocol->recv_buf[4]) * 0.01f;
-        d->angular_accel = (int16_t)((protocol->recv_buf[5] << 8) | protocol->recv_buf[6]) * 0.1f;
+        d->temperature = protocol->recv_buf[1];
+        d->mech_theta = (uint16_t)((protocol->recv_buf[2] << 8) | protocol->recv_buf[3]) * 0.0001f;
+        d->angular_speed = (int16_t)((protocol->recv_buf[4] << 8) | protocol->recv_buf[5]) * 0.01f;
+        d->angular_accel = (int16_t)((protocol->recv_buf[6] << 8) | protocol->recv_buf[7]) * 0.1f;
       }
       protocol->index = 0;
     } else {
@@ -333,6 +334,7 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   if (dt > 0.1f) dt = 0.0f;  // 長時間停止後の初回スパイクを防ぐ
 
   // スリップ中は目標速度をIMU推定速度以下に制限する
+  drive.traction_vel_limit = 10;
   float clamped_target = fminf(target_velocity, drive.traction_vel_limit);
 
   float abs_accel = Abs(acceleration);
@@ -370,6 +372,12 @@ void Drive_Free() {
 float Drive_GetSpeed() { return drive.speed; }
 
 float Drive_GetAccel() { return drive.accel; }
+
+float Drive_GetSteer() { return drive.steer_logical; }
+
+uint8_t Drive_GetLeftMotorTemperature() { return left_protocol.data.temperature; }
+uint8_t Drive_GetRightMotorTemperature() { return right_protocol.data.temperature; }
+uint8_t Drive_GetSteerMotorTemperature() { return steer_protocol.data.temperature; }
 
 void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg) {
   // app 層から渡された IMU 値を保持し、推定器は drive 層の中だけで回す。

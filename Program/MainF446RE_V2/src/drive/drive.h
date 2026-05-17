@@ -31,6 +31,7 @@ typedef struct {
   float amp_volt;
   float angular_speed;
   float angular_accel;
+  uint8_t temperature;
   uint8_t flags;
   bool is_enable;
   bool is_voltage_out_of_range;
@@ -112,6 +113,12 @@ float Drive_GetSpeed();
 
 // 現在の車加速度を返す [m/s²]。移動平均フィルタ済みの値。
 float Drive_GetAccel();
+
+float Drive_GetSteer();
+
+uint8_t Drive_GetLeftMotorTemperature();
+uint8_t Drive_GetRightMotorTemperature();
+uint8_t Drive_GetSteerMotorTemperature();
 
 // IMU の加速度・姿勢を渡す。Drive 側で摩擦推定と加速度上限に利用する。
 void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg);
