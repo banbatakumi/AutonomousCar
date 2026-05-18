@@ -15,10 +15,13 @@
 #define HEADER 0xFF
 #define FOOTER 0xAA
 #define RECV_DATA_SIZE 4
-#define SEND_INTERVAL_US 100000  // 100 ms
+#define SEND_INTERVAL_US 100000   // 100 ms
+#define WATCHDOG_TIMEOUT_US 500000  // 500 ms
 
 static RemoteCommand cmd = {0};
 static Timer send_timer;
+static Timer watchdog_timer;
+static bool watchdog_stop = false;
 static bool initialized = false;
 
 static void ParseSerial(void) {
@@ -41,6 +44,8 @@ static void ParseSerial(void) {
         cmd.move_speed = (int8_t)recv_buf[1] * 0.1f;
         cmd.acceleration = (int8_t)recv_buf[2] * 0.1f;
         cmd.steer = ((int8_t)recv_buf[3]) / 127.0f;
+        Timer_Reset(&watchdog_timer);
+        watchdog_stop = false;
       }
       index = 0;
     } else {
@@ -84,17 +89,26 @@ static void SendTelemetry(void) {
 void Remote_Update(void) {
   if (!initialized) {
     Timer_Init(&send_timer);
+    Timer_Init(&watchdog_timer);
     initialized = true;
   }
 
   ParseSerial();
 
+  if (Timer_ReadUs(&watchdog_timer) >= WATCHDOG_TIMEOUT_US) {
+    watchdog_stop = true;
+  }
+
   Lighting_SetHeadlight(cmd.on_headlight ? 0.5f : 0.01f);
   Lighting_SetHazard(cmd.on_hazard);
   Buzzer_SetTone(&buzzer, cmd.play_sound ? 500 : 0);
 
-  if (cmd.do_stop) {
-    Drive_Free();
+  if (cmd.do_stop || watchdog_stop) {
+    if (Abs(Drive_GetSpeed()) >= 0.5f) {
+      Drive_Brake(MAX_TORQUE, 0.0f);
+    } else {
+      Drive_Free();
+    }
   } else {
     const LD06* lidar = Sensor_GetLidar();
     switch (cmd.mode) {
