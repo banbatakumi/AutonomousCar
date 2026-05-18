@@ -14,9 +14,9 @@
 
 #define HEADER 0xFF
 #define FOOTER 0xAA
-#define RECV_DATA_SIZE 4
-#define SEND_INTERVAL_US 100000     // 100 ms
-#define WATCHDOG_TIMEOUT_US 500000  // 500 ms
+#define RECV_DATA_SIZE 5
+#define SEND_INTERVAL_US 10000      // 10 ms
+#define WATCHDOG_TIMEOUT_US 100000  // 100 ms
 
 static RemoteCommand cmd = {0};
 static Timer send_timer;
@@ -40,10 +40,11 @@ static void ParseSerial(void) {
         cmd.on_hazard = (recv_buf[0] >> 3) & 0x01;
         cmd.play_sound = (recv_buf[0] >> 4) & 0x01;
         cmd.enable_auto_brake = (recv_buf[0] >> 5) & 0x01;
-        cmd.mode = (recv_buf[0] >> 6) & 0x03;
-        cmd.move_speed = (int8_t)recv_buf[1] * 0.1f;
-        cmd.acceleration = (int8_t)recv_buf[2] * 0.1f;
-        cmd.steer = ((int8_t)recv_buf[3]) / 127.0f;
+        cmd.enable_traction_control = (recv_buf[0] >> 6) & 0x01;
+        cmd.mode = recv_buf[1];
+        cmd.move_speed = (int8_t)recv_buf[2] * 0.1f;
+        cmd.acceleration = (int8_t)recv_buf[3] * 0.1f;
+        cmd.steer = ((int8_t)recv_buf[4]) / 127.0f;
         Timer_Reset(&watchdog_timer);
         watchdog_stop = false;
       }
@@ -62,7 +63,7 @@ static void SendTelemetry(void) {
 
   static uint8_t buf[12 + 720 + 1];  // ヘッダ+基本データ+360点分のLiDAR距離+フッタ
   buf[0] = HEADER;
-  buf[1] = Drive_HasError() ? 1 : 0;
+  buf[1] = Drive_HasError() << 1 | Drive_IsSlipping();
   buf[2] = (int8_t)(Drive_GetSpeed() * 10);
   buf[3] = (int8_t)(Drive_GetAccel() * 10);
   buf[4] = (uint8_t)(Sensor_GetVoltageSignal() * 10);
@@ -102,6 +103,7 @@ void Remote_Update(void) {
   Lighting_SetHeadlight(cmd.on_headlight ? 0.5f : 0.01f);
   Lighting_SetHazard(cmd.on_hazard);
   Buzzer_SetTone(&buzzer, cmd.play_sound ? 500 : 0);
+  Drive_SetTractionEnabled(cmd.enable_traction_control);
 
   if (cmd.do_stop || watchdog_stop) {
     if (Abs(Drive_GetSpeed()) >= 0.5f) {

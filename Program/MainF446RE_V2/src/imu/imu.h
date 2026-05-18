@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include "i2c.h"
+#include "lpf.h"
 #include "mpu6050.h"
 
 // MPU6050 + flash 永続キャリブレーションのラッパ
@@ -11,6 +12,9 @@ typedef struct {
   MPU6050 mpu;
   bool initialized;
   bool calibration_loaded;
+  LPF lpf_accel_x;
+  LPF lpf_accel_y;
+  LPF lpf_accel_z;
 } Imu;
 
 // 初期化。button2 が起動時に押されていればキャリブレーションを実行して flash に保存。

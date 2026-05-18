@@ -3,7 +3,7 @@
 
 #define TORQUE_VECTORING_GAIN 0.25f
 #define MAX_VOLTAGE 2.0f
-#define MAX_STEER_SPEED 2.0f  // ステアリングの最大回転速度 [rad/s]
+#define MAX_STEER_SPEED 3.0f  // ステアリングの最大回転速度 [rad/s]
 
 // 車体の物理パラメータ
 #define WHEEL_BASE 0.220f   // ホイールベース (前後軸間距離) [m]
@@ -52,8 +52,6 @@ typedef struct {
   float accel;
   MAF maf_speed;
   MAF maf_acccel;
-  MAF maf_imu_long;
-  MAF maf_imu_lat;
   float current_voltage;
   Timer voltage_timer;
   float current_target_velocity;
@@ -69,11 +67,10 @@ typedef struct {
   float imu_pitch_deg;
   float imu_roll_deg;
   bool imu_valid;
-  float imu_velocity;        // IMU積分による推定速度 [m/s]
-  float traction_vel_limit;  // スリップ時の目標速度上限 [m/s]
-  float imu_long_bias;
-  float imu_lat_bias;
+  float traction_volt_limit;    // トラクション制御による電圧上限 [V]
+  float imu_long_bias;          // 静止時のIMU縦加速度残留オフセット [m/s²]
   bool traction_enabled;
+  uint16_t slip_debounce_count;  // スリップ確定用デバウンスカウンタ
 } Drive;
 
 // ペリフェラルを初期化する。
@@ -129,5 +126,8 @@ bool Drive_HasError();
 
 // トラクション制御の有効/無効を切り替える。デフォルトは有効。
 void Drive_SetTractionEnabled(bool enabled);
+
+// 現在スリップ中かどうかを返す。
+bool Drive_IsSlipping();
 
 #endif  // DRIVE_H_

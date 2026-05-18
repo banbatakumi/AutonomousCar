@@ -47,7 +47,6 @@ void Setup() {
   Sensor_Init(DigitalIn_Read(&button2));
 
   Drive_Init(DigitalIn_Read(&button1));
-  Drive_SetTractionEnabled(false);
 
   Serial_Init(&serial6, &huart6, 2048);
 

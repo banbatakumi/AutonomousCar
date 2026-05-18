@@ -1,9 +1,11 @@
 #include "imu.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "flash.h"
+#include "mymath.h"
 
 // flash 上のキャリブレーションデータ
 typedef struct {
@@ -19,6 +21,10 @@ typedef struct {
 
 // キャリブレーション中のサンプル数 (静止 5 秒程度)
 #define IMU_CALIB_SAMPLE_COUNT 500
+
+// 並進加速度の LPF 平滑化係数 (0 < k < 1, 大きいほど強い平滑)
+// IMU 更新レート ~1 kHz 想定、実効カットオフ ~16 Hz
+#define IMU_ACCEL_LPF_K 0.9
 
 // 機体への取付方向 (chip frame -> body frame)
 // AutonomousCar: MPU6050 はチップ Z軸まわり 180° 回転して実装されている。
@@ -114,6 +120,10 @@ void Imu_Init(Imu* imu, I2C_HandleTypeDef* i2c, bool calibrate_on_boot) {
     }
   }
 
+  LPF_Init(&imu->lpf_accel_x, IMU_ACCEL_LPF_K, 0.0);
+  LPF_Init(&imu->lpf_accel_y, IMU_ACCEL_LPF_K, 0.0);
+  LPF_Init(&imu->lpf_accel_z, IMU_ACCEL_LPF_K, 0.0);
+
   // 加速度から初期姿勢を推定
   MPU6050_PrimeOrientation(&imu->mpu);
 
@@ -139,6 +149,15 @@ bool Imu_Update(Imu* imu) {
   } else if (imu->mpu.data.roll >= 180.0f) {
     imu->mpu.data.roll -= 360.0f;
   }
+
+  imu->mpu.data.accel_x = (float)LPF_Update(&imu->lpf_accel_x, imu->mpu.data.accel_x);
+  imu->mpu.data.accel_y = (float)LPF_Update(&imu->lpf_accel_y, imu->mpu.data.accel_y);
+  imu->mpu.data.accel_z = (float)LPF_Update(&imu->lpf_accel_z, imu->mpu.data.accel_z);
+
+  float pitch_rad = imu->mpu.data.pitch * (float)DEG_TO_RAD;
+  float roll_rad = imu->mpu.data.roll * (float)DEG_TO_RAD;
+  imu->mpu.data.accel_x += 9.81f * sinf(pitch_rad);
+  imu->mpu.data.accel_y += 9.81f * sinf(roll_rad);
   return true;
 }
 

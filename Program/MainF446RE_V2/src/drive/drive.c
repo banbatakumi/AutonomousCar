@@ -14,11 +14,12 @@
 
 #define WHEEL_RADIUS 0.0275f  // [m]
 
-#define TRACTION_SLIP_VEL_THRESHOLD 0.25f    // [m/s] スリップと判定する車輪速とIMU推定速度の差
-#define TRACTION_BIAS_SPEED_THRESHOLD 0.05f  // [m/s] バイアス学習を行う最大速度
-#define TRACTION_BIAS_ALPHA 0.01f            // バイアスの学習レート
-#define TRACTION_IMU_BLEND_ALPHA 0.005f      // 非スリップ時にIMU速度を車輪速へ引き寄せるレート
-#define TRACTION_VEL_LIMIT_FLOOR 0.0f        // [m/s] スリップ時の速度上限の最低値
+#define TRACTION_SLIP_ACCEL_THRESHOLD 3.0f    // [m/s²] 車輪・車体加速度差のスリップ判定閾値
+#define TRACTION_SLIP_DEBOUNCE_SAMPLES 100    // スリップ確定に必要な連続サンプル数 (≈10ms @ 10kHz)
+#define TRACTION_BIAS_ALPHA 0.01f             // 静止時IMUバイアス学習レート
+#define TRACTION_BIAS_SPEED_THRESHOLD 0.5f    // [m/s] スリップ判定を行う最低速度
+#define TRACTION_VOLT_REDUCE_RATE 10.0f       // [V/s] スリップ中の電圧上限削減レート
+#define TRACTION_VOLT_RECOVER_RATE 2.0f       // [V/s] 非スリップ時の電圧上限回復レート
 
 #define SERIAL_SEND_FREQUENCY_HZ 1000
 #define SERIAL_SEND_INTERVAL_MS 1  // 1000 / SERIAL_SEND_FREQUENCY_HZ
@@ -113,34 +114,38 @@ static void Drive_UpdateTractionEstimator(void) {
   Timer_Reset(&drive.traction_timer);
   if (dt <= 0.0f || dt > 0.1f) return;
 
-  float imu_long_accel = MAF_Update(&drive.maf_imu_long, drive.imu_accel_x);
-  float imu_lat_accel = MAF_Update(&drive.maf_imu_lat, drive.imu_accel_y);
-
-  // 低速・低加速時にIMUのオフセットを学習する
-  if (Abs(drive.speed) < 0.01) {
-    drive.imu_long_bias += TRACTION_BIAS_ALPHA * (imu_long_accel - drive.imu_long_bias);
-    drive.imu_lat_bias += TRACTION_BIAS_ALPHA * (imu_lat_accel - drive.imu_lat_bias);
+  // 静止時のみIMUバイアスを学習する（重力補正後の残留オフセット吸収）
+  if (Abs(drive.speed) < 0.05f) {
+    drive.imu_long_bias += TRACTION_BIAS_ALPHA * (drive.imu_accel_x - drive.imu_long_bias);
   }
 
-  float corrected_long_accel = imu_long_accel - drive.imu_long_bias;
+  // 車輪加速度と車体加速度（IMU・重力補正済み）の差でスリップを判定する
+  // 積分を使わないためドリフト問題が原理的に発生しない
+  float body_accel = drive.imu_accel_x - drive.imu_long_bias;
+  float accel_diff = drive.accel - body_accel;
 
-  // IMU加速度を積分して車体速度を推定する
-  drive.imu_velocity += corrected_long_accel * dt;
+  bool slip_candidate = accel_diff > TRACTION_SLIP_ACCEL_THRESHOLD &&
+                        Abs(drive.speed) > TRACTION_BIAS_SPEED_THRESHOLD;
 
-  // 車輪速がIMU推定速度を大きく上回ったらスリップと判定する
-  float slip = drive.speed - drive.imu_velocity;
-
-  drive.is_slipping = Abs(slip) > TRACTION_SLIP_VEL_THRESHOLD &&
-                      drive.speed > TRACTION_BIAS_SPEED_THRESHOLD;
-
-  if (drive.is_slipping) {
-    // スリップ中は目標速度をIMU推定速度に制限する
-    drive.traction_vel_limit = fmaxf(drive.imu_velocity, TRACTION_VEL_LIMIT_FLOOR);
+  if (slip_candidate) {
+    if (drive.slip_debounce_count < TRACTION_SLIP_DEBOUNCE_SAMPLES) {
+      drive.slip_debounce_count++;
+    }
   } else {
-    // 非スリップ時は制限を解除し、imu_velocityを車輪速に緩やかに引き寄せてドリフトを防ぐ
-    drive.traction_vel_limit = 1000.0f;
-    drive.imu_velocity += TRACTION_IMU_BLEND_ALPHA * (drive.speed - drive.imu_velocity);
+    drive.slip_debounce_count = 0;
   }
+  drive.is_slipping = drive.slip_debounce_count >= TRACTION_SLIP_DEBOUNCE_SAMPLES;
+
+  // スリップ中は電圧上限を下げ、解消後は徐々に回復する
+  if (drive.is_slipping) {
+    drive.traction_volt_limit -= TRACTION_VOLT_REDUCE_RATE * dt;
+    if (drive.traction_volt_limit < 0.0f) drive.traction_volt_limit = 0.0f;
+  } else {
+    drive.traction_volt_limit += TRACTION_VOLT_RECOVER_RATE * dt;
+    if (drive.traction_volt_limit > MAX_VOLTAGE) drive.traction_volt_limit = MAX_VOLTAGE;
+  }
+  // printf("TCS: accel_diff=%.2f m/s2, volt_limit=%.2f V, slipping=%d\n",
+  //        accel_diff, drive.traction_volt_limit, drive.is_slipping);
 }
 
 void Drive_Update() {
@@ -199,8 +204,6 @@ void Drive_Init(bool do_steer_setup) {
 
   MAF_Init(&drive.maf_speed, 25);
   MAF_Init(&drive.maf_acccel, 50);
-  MAF_Init(&drive.maf_imu_long, 25);
-  MAF_Init(&drive.maf_imu_lat, 25);
   drive.current_voltage = 0.0f;
   drive.current_target_velocity = 0.0f;
   drive.is_free = true;
@@ -211,16 +214,15 @@ void Drive_Init(bool do_steer_setup) {
   drive.imu_pitch_deg = 0.0f;
   drive.imu_roll_deg = 0.0f;
   drive.imu_valid = false;
-  drive.imu_velocity = 0.0f;
-  drive.traction_vel_limit = 1000.0f;
   drive.imu_long_bias = 0.0f;
-  drive.imu_lat_bias = 0.0f;
-  drive.traction_enabled = true;
+  drive.traction_volt_limit = MAX_VOLTAGE;
+  drive.slip_debounce_count = 0;
+  drive.traction_enabled = false;
   Timer_Init(&drive.voltage_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
   Timer_Init(&drive.traction_timer);
-  PID_Init(&drive.pid_velocity, 0.5f, 1.0f, 0.0f, -MAX_VOLTAGE, MAX_VOLTAGE);
+  PID_Init(&drive.pid_velocity, 1.0f, 1.5f, 0.0f, -MAX_VOLTAGE, MAX_VOLTAGE);
 
   if (do_steer_setup) {
     printf("Steer setup: calibrating...\n");
@@ -273,6 +275,10 @@ bool Drive_SetupSteer() {
 }
 
 static void Drive_ApplyVoltageAndSteer(float voltage, float steer) {
+  if (drive.traction_enabled && voltage > drive.traction_volt_limit) {
+    voltage = drive.traction_volt_limit;
+  }
+
   float voltage_left = voltage;
   float voltage_right = voltage;
 
@@ -327,20 +333,17 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   Timer_Reset(&drive.velocity_timer);
   if (dt > 0.1f) dt = 0.0f;  // 長時間停止後の初回スパイクを防ぐ
 
-  float vel_limit = drive.traction_enabled ? drive.traction_vel_limit : target_velocity;
-  float clamped_target = fminf(target_velocity, vel_limit);
-
   float abs_accel = Abs(acceleration);
-  if (drive.current_target_velocity < clamped_target) {
+  if (drive.current_target_velocity < target_velocity) {
     drive.current_target_velocity += abs_accel * dt;
-  } else if (drive.current_target_velocity > clamped_target) {
+  } else if (drive.current_target_velocity > target_velocity) {
     drive.current_target_velocity -= abs_accel * dt;
   }
   drive.current_target_velocity = Constrain(drive.current_target_velocity,
-                                            -Abs(clamped_target), Abs(clamped_target));
+                                            -Abs(target_velocity), Abs(target_velocity));
 
   float voltage_output = PID_Update(&drive.pid_velocity,
-                                   drive.current_target_velocity, drive.speed);
+                                    drive.current_target_velocity, drive.speed);
   Drive_ApplyVoltageAndSteer(voltage_output, steer);
 }
 
@@ -359,6 +362,9 @@ void Drive_Free() {
   send_data.do_brake = false;
   drive.current_voltage = 0.0f;
   drive.current_target_velocity = 0.0f;
+  drive.traction_volt_limit = MAX_VOLTAGE;
+  drive.slip_debounce_count = 0;
+  drive.is_slipping = false;
   PID_Reset(&drive.pid_velocity);
 }
 
@@ -392,3 +398,5 @@ bool Drive_HasError() {
 }
 
 void Drive_SetTractionEnabled(bool enabled) { drive.traction_enabled = enabled; }
+
+bool Drive_IsSlipping() { return drive.is_slipping; }
