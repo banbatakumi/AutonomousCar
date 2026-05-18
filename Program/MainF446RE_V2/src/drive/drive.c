@@ -9,7 +9,7 @@
 
 // モータコントローラへのコマンドヘッダ
 #define POSITION_HEADER 0xFD
-#define TORQUE_HEADER 0xFC
+#define VOLTAGE_HEADER 0xFC
 #define BRAKE_HEADER 0xFB
 
 #define WHEEL_RADIUS 0.0275f  // [m]
@@ -183,9 +183,9 @@ void Drive_Update() {
     Drive_SendSerialAcceleration(BRAKE_HEADER, strength, strength);
   } else {
     Drive_SendSerialAcceleration(
-        TORQUE_HEADER,
-        (int16_t)(send_data.torque_left * -10000),
-        (int16_t)(send_data.torque_right * 10000));  // 右モータは逆転方向が前進
+        VOLTAGE_HEADER,
+        (int16_t)(send_data.voltage_left * -10000),
+        (int16_t)(send_data.voltage_right * 10000));  // 右モータは逆転方向が前進
   }
 }
 
@@ -201,7 +201,7 @@ void Drive_Init(bool do_steer_setup) {
   MAF_Init(&drive.maf_acccel, 50);
   MAF_Init(&drive.maf_imu_long, 25);
   MAF_Init(&drive.maf_imu_lat, 25);
-  drive.current_torque = 0.0f;
+  drive.current_voltage = 0.0f;
   drive.current_target_velocity = 0.0f;
   drive.is_free = true;
   drive.is_slipping = false;
@@ -216,11 +216,11 @@ void Drive_Init(bool do_steer_setup) {
   drive.imu_long_bias = 0.0f;
   drive.imu_lat_bias = 0.0f;
   drive.traction_enabled = true;
-  Timer_Init(&drive.torque_timer);
+  Timer_Init(&drive.voltage_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
   Timer_Init(&drive.traction_timer);
-  PID_Init(&drive.pid_velocity, 0.5f, 1.0f, 0.0f, -MAX_TORQUE, MAX_TORQUE);
+  PID_Init(&drive.pid_velocity, 0.5f, 1.0f, 0.0f, -MAX_VOLTAGE, MAX_VOLTAGE);
 
   if (do_steer_setup) {
     printf("Steer setup: calibrating...\n");
@@ -240,21 +240,21 @@ bool Drive_SetupSteer() {
 
   printf("Steer setup: mech_theta=%.3f rad\n", steer_protocol.data.mech_theta);
 
-  int16_t torque = 0;
+  int16_t voltage = 0;
   uint32_t elapsed = Timer_ReadMs(&steer_setup_timer);
 
-  // 最初の 1 秒: 正トルクで物理的な最小角を探る
+  // 最初の 1 秒: 正電圧で物理的な最小角を探る
   if (elapsed < 1000) {
-    torque = 5000;
+    voltage = 5000;
     steer_config.min_rad = steer_protocol.data.mech_theta;
-    // 次の 1 秒: 逆トルクで最大角を探る
+    // 次の 1 秒: 逆電圧で最大角を探る
   } else if (elapsed < 2000) {
-    torque = -5000;
+    voltage = -5000;
     steer_config.max_rad = steer_protocol.data.mech_theta;
   }
 
   if (elapsed < 2000) {
-    Drive_SendSerialSteer(TORQUE_HEADER, torque);
+    Drive_SendSerialSteer(VOLTAGE_HEADER, voltage);
     return false;
   }
 
@@ -272,17 +272,16 @@ bool Drive_SetupSteer() {
   return true;
 }
 
-static void Drive_ApplyTorqueAndSteer(float torque, float steer) {
-  // 左右のトルク配分によるヨーモーメント制御
-  float torque_left = torque;
-  float torque_right = torque;
+static void Drive_ApplyVoltageAndSteer(float voltage, float steer) {
+  float voltage_left = voltage;
+  float voltage_right = voltage;
 
-  torque_left *= (1.0f + steer * DIFFERENTIAL);
-  torque_right *= (1.0f - steer * DIFFERENTIAL);
+  voltage_left *= (1.0f + steer * TORQUE_VECTORING_GAIN);
+  voltage_right *= (1.0f - steer * TORQUE_VECTORING_GAIN);
 
   // 最終的なモータ出力をクリップ
-  send_data.torque_left = Constrain(torque_left, -MAX_TORQUE, MAX_TORQUE);
-  send_data.torque_right = Constrain(torque_right, -MAX_TORQUE, MAX_TORQUE);
+  send_data.voltage_left = Constrain(voltage_left, -MAX_VOLTAGE, MAX_VOLTAGE);
+  send_data.voltage_right = Constrain(voltage_right, -MAX_VOLTAGE, MAX_VOLTAGE);
 
   // steer を物理角度 [rad] に変換（-1=右最小, +1=左最大）
   drive.steer_logical = Constrain(steer, -1.0f, 1.0f);
@@ -301,23 +300,23 @@ static void Drive_ApplyTorqueAndSteer(float torque, float steer) {
   }
 }
 
-void Drive_Set(float target_torque, float torque_rate, float steer) {
+void Drive_Set(float target_voltage, float voltage_rate, float steer) {
   send_data.do_brake = false;
   drive.is_free = false;
 
-  float dt = Timer_Read(&drive.torque_timer);
-  Timer_Reset(&drive.torque_timer);
+  float dt = Timer_Read(&drive.voltage_timer);
+  Timer_Reset(&drive.voltage_timer);
   if (dt > 0.1f) dt = 0.0f;  // 長時間停止後の初回スパイクを防ぐ
 
-  if (drive.current_torque < target_torque) {
-    drive.current_torque = drive.current_torque + torque_rate * dt;
-  } else if (drive.current_torque > target_torque) {
-    drive.current_torque = drive.current_torque - torque_rate * dt;
+  if (drive.current_voltage < target_voltage) {
+    drive.current_voltage = drive.current_voltage + voltage_rate * dt;
+  } else if (drive.current_voltage > target_voltage) {
+    drive.current_voltage = drive.current_voltage - voltage_rate * dt;
   }
-  float torque_limit = Abs(target_torque);
-  drive.current_torque = Constrain(drive.current_torque, -torque_limit, torque_limit);
+  float voltage_limit = Abs(target_voltage);
+  drive.current_voltage = Constrain(drive.current_voltage, -voltage_limit, voltage_limit);
 
-  Drive_ApplyTorqueAndSteer(drive.current_torque, steer);
+  Drive_ApplyVoltageAndSteer(drive.current_voltage, steer);
 }
 
 void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
@@ -340,16 +339,16 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   drive.current_target_velocity = Constrain(drive.current_target_velocity,
                                             -Abs(clamped_target), Abs(clamped_target));
 
-  float torque_output = PID_Update(&drive.pid_velocity,
+  float voltage_output = PID_Update(&drive.pid_velocity,
                                    drive.current_target_velocity, drive.speed);
-  Drive_ApplyTorqueAndSteer(torque_output, steer);
+  Drive_ApplyVoltageAndSteer(voltage_output, steer);
 }
 
 void Drive_Brake(float deceleration, float steer) {
-  Drive_ApplyTorqueAndSteer(0.0f, steer);
+  Drive_ApplyVoltageAndSteer(0.0f, steer);
   send_data.do_brake = true;
-  send_data.brake_strength = Constrain(deceleration, 0.0f, MAX_TORQUE);
-  drive.current_torque = 0.0f;
+  send_data.brake_strength = Constrain(deceleration, 0.0f, MAX_VOLTAGE);
+  drive.current_voltage = 0.0f;
   drive.current_target_velocity = 0.0f;
   drive.is_free = false;
   PID_Reset(&drive.pid_velocity);
@@ -358,7 +357,7 @@ void Drive_Brake(float deceleration, float steer) {
 void Drive_Free() {
   drive.is_free = true;
   send_data.do_brake = false;
-  drive.current_torque = 0.0f;
+  drive.current_voltage = 0.0f;
   drive.current_target_velocity = 0.0f;
   PID_Reset(&drive.pid_velocity);
 }

@@ -1,8 +1,8 @@
 #ifndef DRIVE_H_
 #define DRIVE_H_
 
-#define DIFFERENTIAL 0.25f
-#define MAX_TORQUE 2.0f
+#define TORQUE_VECTORING_GAIN 0.25f
+#define MAX_VOLTAGE 2.0f
 #define MAX_STEER_SPEED 2.0f  // ステアリングの最大回転速度 [rad/s]
 
 // 車体の物理パラメータ
@@ -39,8 +39,8 @@ typedef struct {
 } RecvData;
 
 typedef struct {
-  float torque_left;
-  float torque_right;
+  float voltage_left;
+  float voltage_right;
   float steer;
   LPF lpf_steer;
   bool do_brake;
@@ -54,8 +54,8 @@ typedef struct {
   MAF maf_acccel;
   MAF maf_imu_long;
   MAF maf_imu_lat;
-  float current_torque;
-  Timer torque_timer;
+  float current_voltage;
+  Timer voltage_timer;
   float current_target_velocity;
   Timer velocity_timer;
   PID pid_velocity;
@@ -92,9 +92,9 @@ bool Drive_SetupSteer();
 void Drive_Update();
 
 // モータ出力を指定して走行する。
-// target_torque を目標値として torque_rate [/s] でランプアップする。
+// target_voltage を目標値として voltage_rate [/s] でランプアップする。
 // steer は -1.0（右最大）〜 +1.0（左最大）。
-void Drive_Set(float target_torque, float torque_rate, float steer);
+void Drive_Set(float target_voltage, float voltage_rate, float steer);
 
 // 目標速度を指定して PID 制御で走行する。
 // target_velocity [m/s] に向けて acceleration [m/s²] でランプし、PID で追従する。
@@ -102,7 +102,7 @@ void Drive_Set(float target_torque, float torque_rate, float steer);
 void Drive_SetVelocity(float target_velocity, float acceleration, float steer);
 
 // ブレーキコマンドをモータコントローラに送信する。
-// deceleration は制動強度（0.0〜MAX_TORQUE）。steer は -1.0〜+1.0。
+// deceleration は制動強度（0.0〜MAX_VOLTAGE）。steer は -1.0〜+1.0。
 void Drive_Brake(float deceleration, float steer);
 
 // モータコントローラへの送信を停止してモータをフリー状態にする。

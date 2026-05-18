@@ -15,7 +15,7 @@
 #define HEADER 0xFF
 #define FOOTER 0xAA
 #define RECV_DATA_SIZE 4
-#define SEND_INTERVAL_US 100000   // 100 ms
+#define SEND_INTERVAL_US 100000     // 100 ms
 #define WATCHDOG_TIMEOUT_US 500000  // 500 ms
 
 static RemoteCommand cmd = {0};
@@ -105,7 +105,7 @@ void Remote_Update(void) {
 
   if (cmd.do_stop || watchdog_stop) {
     if (Abs(Drive_GetSpeed()) >= 0.5f) {
-      Drive_Brake(MAX_TORQUE, 0.0f);
+      Drive_Brake(0.5, 0.0f);
     } else {
       Drive_Free();
     }
