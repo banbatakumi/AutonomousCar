@@ -119,6 +119,9 @@ bool MPU6050_StartAsyncRead(MPU6050* mpu);
 // HAL I2C コールバックから呼び出してフラグを立てる (Drv非依存にするため公開)
 void MPU6050_OnI2CRxComplete(MPU6050* mpu, I2C_HandleTypeDef* hi2c);
 
+// HAL I2C Error callback から呼び出して非同期読み出しの固着を解除する
+void MPU6050_OnI2CError(MPU6050* mpu, I2C_HandleTypeDef* hi2c);
+
 // 直近の出力データを取得
 const MPU6050_Data* MPU6050_GetData(const MPU6050* mpu);
 

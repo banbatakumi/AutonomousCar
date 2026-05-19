@@ -113,6 +113,10 @@ void Sensor_OnI2CRxComplete(I2C_HandleTypeDef* hi2c) {
   Imu_OnI2CRxComplete(&imu, hi2c);
 }
 
+void Sensor_OnI2CError(I2C_HandleTypeDef* hi2c) {
+  Imu_OnI2CError(&imu, hi2c);
+}
+
 bool Sensor_GetBatteryError(void) { return battery_error; }
 double Sensor_GetVoltageSignal(void) { return voltage_signal; }
 double Sensor_GetVoltagePower(void) { return voltage_power; }

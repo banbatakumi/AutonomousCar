@@ -373,6 +373,8 @@ bool MPU6050_StartAsyncRead(MPU6050* mpu) {
     mpu->rx_ready = 0;
     return true;
   }
+  mpu->async_active = 0;
+  mpu->rx_ready = 0;
   return false;
 }
 
@@ -382,6 +384,16 @@ void MPU6050_OnI2CRxComplete(MPU6050* mpu, I2C_HandleTypeDef* hi2c) {
   }
   if (mpu->i2c == hi2c && mpu->async_active) {
     mpu->rx_ready = 1;
+    mpu->async_active = 0;
+  }
+}
+
+void MPU6050_OnI2CError(MPU6050* mpu, I2C_HandleTypeDef* hi2c) {
+  if (!mpu || !mpu->initialized) {
+    return;
+  }
+  if (mpu->i2c == hi2c) {
+    mpu->rx_ready = 0;
     mpu->async_active = 0;
   }
 }

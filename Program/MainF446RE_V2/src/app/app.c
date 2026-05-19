@@ -27,6 +27,10 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
   Sensor_OnI2CRxComplete(hi2c);
 }
 
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef* hi2c) {
+  Sensor_OnI2CError(hi2c);
+}
+
 void Setup() {
   printf("Setup started\n");
   DigitalOut_Init(&user_led1, USER_LED1_GPIO_Port, USER_LED1_Pin);

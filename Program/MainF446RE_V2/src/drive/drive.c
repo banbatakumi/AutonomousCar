@@ -14,12 +14,12 @@
 
 #define WHEEL_RADIUS 0.0275f  // [m]
 
-#define TRACTION_SLIP_ACCEL_THRESHOLD 3.0f    // [m/s²] 車輪・車体加速度差のスリップ判定閾値
-#define TRACTION_SLIP_DEBOUNCE_SAMPLES 100    // スリップ確定に必要な連続サンプル数 (≈10ms @ 10kHz)
-#define TRACTION_BIAS_ALPHA 0.01f             // 静止時IMUバイアス学習レート
-#define TRACTION_BIAS_SPEED_THRESHOLD 0.5f    // [m/s] スリップ判定を行う最低速度
-#define TRACTION_VOLT_REDUCE_RATE 10.0f       // [V/s] スリップ中の電圧上限削減レート
-#define TRACTION_VOLT_RECOVER_RATE 2.0f       // [V/s] 非スリップ時の電圧上限回復レート
+#define TRACTION_SLIP_ACCEL_THRESHOLD 1.0f  // [m/s²] 車輪・車体加速度差のスリップ判定閾値
+#define TRACTION_SLIP_DEBOUNCE_SAMPLES 250  // スリップ確定に必要な連続サンプル数 (≈10ms @ 10kHz)
+#define TRACTION_BIAS_ALPHA 0.01f           // 静止時IMUバイアス学習レート
+#define TRACTION_BIAS_SPEED_THRESHOLD 0.5f  // [m/s] スリップ判定を行う最低速度
+#define TRACTION_VOLT_REDUCE_RATE 6.0f      // [V/s] スリップ中の電圧上限削減レート
+#define TRACTION_VOLT_RECOVER_RATE 2.0f     // [V/s] 非スリップ時の電圧上限回復レート
 
 #define SERIAL_SEND_FREQUENCY_HZ 1000
 #define SERIAL_SEND_INTERVAL_MS 1  // 1000 / SERIAL_SEND_FREQUENCY_HZ
@@ -123,7 +123,8 @@ static void Drive_UpdateTractionEstimator(void) {
   // 積分を使わないためドリフト問題が原理的に発生しない
   float body_accel = drive.imu_accel_x - drive.imu_long_bias;
   float accel_diff = drive.accel - body_accel;
-
+  printf("[Traction] speed=%.2f m/s, accel=%.2f m/s², body_accel=%.2f m/s², diff=%.2f m/s²\n",
+         drive.speed, drive.accel, body_accel, accel_diff);
   bool slip_candidate = accel_diff > TRACTION_SLIP_ACCEL_THRESHOLD &&
                         Abs(drive.speed) > TRACTION_BIAS_SPEED_THRESHOLD;
 
@@ -144,8 +145,6 @@ static void Drive_UpdateTractionEstimator(void) {
     drive.traction_volt_limit += TRACTION_VOLT_RECOVER_RATE * dt;
     if (drive.traction_volt_limit > MAX_VOLTAGE) drive.traction_volt_limit = MAX_VOLTAGE;
   }
-  // printf("TCS: accel_diff=%.2f m/s2, volt_limit=%.2f V, slipping=%d\n",
-  //        accel_diff, drive.traction_volt_limit, drive.is_slipping);
 }
 
 void Drive_Update() {

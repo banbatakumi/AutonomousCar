@@ -26,6 +26,10 @@ typedef struct {
 // IMU 更新レート ~1 kHz 想定、実効カットオフ ~16 Hz
 #define IMU_ACCEL_LPF_K 0.9
 
+// 非同期 I2C が止まったと判断するまでの時間と再接続試行間隔
+#define IMU_RECONNECT_TIMEOUT_MS 250U
+#define IMU_RECONNECT_INTERVAL_MS 500U
+
 // 機体への取付方向 (chip frame -> body frame)
 // AutonomousCar: MPU6050 はチップ Z軸まわり 180° 回転して実装されている。
 // (チップ X が機体後方、Y が機体右方向、Z は上向きのまま)
@@ -77,6 +81,64 @@ static bool SaveCalibration(const MPU6050_Calibration* calib) {
                                  sizeof(data)) == HAL_OK;
 }
 
+static void ApplyMount(MPU6050* mpu) {
+  MPU6050_Mount mount = {
+      .x_sign = IMU_MOUNT_X_SIGN,
+      .y_sign = IMU_MOUNT_Y_SIGN,
+      .z_sign = IMU_MOUNT_Z_SIGN,
+  };
+  MPU6050_SetMount(mpu, &mount);
+}
+
+static void ResetAccelFilters(Imu* imu) {
+  LPF_Init(&imu->lpf_accel_x, IMU_ACCEL_LPF_K, 0.0);
+  LPF_Init(&imu->lpf_accel_y, IMU_ACCEL_LPF_K, 0.0);
+  LPF_Init(&imu->lpf_accel_z, IMU_ACCEL_LPF_K, 0.0);
+}
+
+static bool Reconnect(Imu* imu) {
+  if (!imu || !imu->mpu.i2c) {
+    return false;
+  }
+
+  I2C_HandleTypeDef* i2c = imu->mpu.i2c;
+  uint8_t i2c_addr = imu->mpu.i2c_addr;
+  MPU6050_Calibration calib = imu->mpu.calib;
+  bool calibration_loaded = imu->calibration_loaded;
+
+  imu->initialized = false;
+  imu->data_valid = false;
+
+  HAL_I2C_Master_Abort_IT(i2c, i2c_addr << 1);
+  HAL_I2C_DeInit(i2c);
+  if (HAL_I2C_Init(i2c) != HAL_OK) {
+    printf("[IMU] I2C reinit failed\n");
+    imu->initialized = true;
+    return false;
+  }
+
+  if (!MPU6050_Init(&imu->mpu, i2c, i2c_addr)) {
+    printf("[IMU] MPU6050 reconnect failed\n");
+    imu->initialized = true;
+    return false;
+  }
+
+  ApplyMount(&imu->mpu);
+  if (calibration_loaded) {
+    MPU6050_SetCalibration(&imu->mpu, &calib);
+  }
+  imu->calibration_loaded = calibration_loaded;
+  ResetAccelFilters(imu);
+
+  MPU6050_PrimeOrientation(&imu->mpu);
+  MPU6050_StartAsyncRead(&imu->mpu);
+
+  imu->initialized = true;
+  imu->last_update_tick = HAL_GetTick();
+  printf("[IMU] Reconnected\n");
+  return true;
+}
+
 void Imu_Init(Imu* imu, I2C_HandleTypeDef* i2c, bool calibrate_on_boot) {
   if (!imu || !i2c) {
     return;
@@ -90,12 +152,7 @@ void Imu_Init(Imu* imu, I2C_HandleTypeDef* i2c, bool calibrate_on_boot) {
   imu->initialized = true;
 
   // 機体への取付方向をライブラリへ通知
-  MPU6050_Mount mount = {
-      .x_sign = IMU_MOUNT_X_SIGN,
-      .y_sign = IMU_MOUNT_Y_SIGN,
-      .z_sign = IMU_MOUNT_Z_SIGN,
-  };
-  MPU6050_SetMount(&imu->mpu, &mount);
+  ApplyMount(&imu->mpu);
 
   if (calibrate_on_boot) {
     printf("[IMU] Button2 held -> calibration\n");
@@ -120,15 +177,14 @@ void Imu_Init(Imu* imu, I2C_HandleTypeDef* i2c, bool calibrate_on_boot) {
     }
   }
 
-  LPF_Init(&imu->lpf_accel_x, IMU_ACCEL_LPF_K, 0.0);
-  LPF_Init(&imu->lpf_accel_y, IMU_ACCEL_LPF_K, 0.0);
-  LPF_Init(&imu->lpf_accel_z, IMU_ACCEL_LPF_K, 0.0);
+  ResetAccelFilters(imu);
 
   // 加速度から初期姿勢を推定
   MPU6050_PrimeOrientation(&imu->mpu);
 
   // 非同期I2C読み出し開始
   MPU6050_StartAsyncRead(&imu->mpu);
+  imu->last_update_tick = HAL_GetTick();
 }
 
 bool Imu_Update(Imu* imu) {
@@ -136,8 +192,17 @@ bool Imu_Update(Imu* imu) {
     return false;
   }
   if (!MPU6050_Update(&imu->mpu)) {
+    uint32_t now = HAL_GetTick();
+    if ((uint32_t)(now - imu->last_update_tick) >= IMU_RECONNECT_TIMEOUT_MS &&
+        (uint32_t)(now - imu->last_reconnect_attempt_tick) >= IMU_RECONNECT_INTERVAL_MS) {
+      imu->last_reconnect_attempt_tick = now;
+      printf("[IMU] Update timeout; reconnecting\n");
+      Reconnect(imu);
+    }
     return false;
   }
+  imu->last_update_tick = HAL_GetTick();
+  imu->data_valid = true;
 
   // 取付起因の出力 Euler 角の補正 (ライブラリ計算には影響を与えない後処理)
 #if IMU_YAW_INVERT
@@ -162,7 +227,7 @@ bool Imu_Update(Imu* imu) {
 }
 
 const MPU6050_Data* Imu_GetData(const Imu* imu) {
-  if (!imu || !imu->initialized) {
+  if (!imu || !imu->initialized || !imu->data_valid) {
     return NULL;
   }
   return MPU6050_GetData(&imu->mpu);
@@ -173,6 +238,13 @@ void Imu_OnI2CRxComplete(Imu* imu, I2C_HandleTypeDef* hi2c) {
     return;
   }
   MPU6050_OnI2CRxComplete(&imu->mpu, hi2c);
+}
+
+void Imu_OnI2CError(Imu* imu, I2C_HandleTypeDef* hi2c) {
+  if (!imu || !imu->initialized) {
+    return;
+  }
+  MPU6050_OnI2CError(&imu->mpu, hi2c);
 }
 
 bool Imu_RecalibrateAndSave(Imu* imu) {

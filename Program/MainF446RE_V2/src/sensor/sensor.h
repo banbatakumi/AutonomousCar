@@ -39,6 +39,9 @@ void Sensor_UpdateVoltageLeds(PwmOut* led_signal, PwmOut* led_power);
 /** @brief HAL I2C MemRxCplt コールバックから呼ぶこと (MPU6050 非同期読み出し完了通知)。 */
 void Sensor_OnI2CRxComplete(I2C_HandleTypeDef* hi2c);
 
+/** @brief HAL I2C Error コールバックから呼ぶこと (MPU6050 非同期読み出しエラー通知)。 */
+void Sensor_OnI2CError(I2C_HandleTypeDef* hi2c);
+
 bool Sensor_GetBatteryError(void);
 double Sensor_GetVoltageSignal(void);
 double Sensor_GetVoltagePower(void);
