@@ -14,12 +14,18 @@
 
 #define WHEEL_RADIUS 0.0275f  // [m]
 
-#define TRACTION_SLIP_ACCEL_THRESHOLD 1.0f  // [m/s²] 車輪・車体加速度差のスリップ判定閾値
-#define TRACTION_SLIP_DEBOUNCE_SAMPLES 250  // スリップ確定に必要な連続サンプル数 (≈10ms @ 10kHz)
 #define TRACTION_BIAS_ALPHA 0.01f           // 静止時IMUバイアス学習レート
 #define TRACTION_BIAS_SPEED_THRESHOLD 0.5f  // [m/s] スリップ判定を行う最低速度
 #define TRACTION_VOLT_REDUCE_RATE 6.0f      // [V/s] スリップ中の電圧上限削減レート
 #define TRACTION_VOLT_RECOVER_RATE 2.0f     // [V/s] 非スリップ時の電圧上限回復レート
+
+// カルマンフィルタ速度推定器のパラメータ
+// Q: プロセスノイズ分散 [m²/s²/s]。未モデル化加速度・IMUドリフトの大きさで調整。
+// R: 観測ノイズ分散 [m²/s²]。オドメトリの計測誤差の大きさで調整。
+#define KV_PROCESS_NOISE_Q 0.5f
+#define KV_MEAS_NOISE_R 1.0f
+#define KV_SLIP_THRESHOLD 0.1f       // [m/s] イノベーション閾値（空転スリップ検知）
+#define KV_SLIP_DEBOUNCE_SAMPLES 10  // スリップ確定サンプル数 (≈5ms @ 10kHz)
 
 #define SERIAL_SEND_FREQUENCY_HZ 1000
 #define SERIAL_SEND_INTERVAL_MS 1  // 1000 / SERIAL_SEND_FREQUENCY_HZ
@@ -119,25 +125,25 @@ static void Drive_UpdateTractionEstimator(void) {
     drive.imu_long_bias += TRACTION_BIAS_ALPHA * (drive.imu_accel_x - drive.imu_long_bias);
   }
 
-  // 車輪加速度と車体加速度（IMU・重力補正済み）の差でスリップを判定する
-  // 積分を使わないためドリフト問題が原理的に発生しない
   float body_accel = drive.imu_accel_x - drive.imu_long_bias;
-  float accel_diff = drive.accel - body_accel;
-  printf("[Traction] speed=%.2f m/s, accel=%.2f m/s², body_accel=%.2f m/s², diff=%.2f m/s²\n",
-         drive.speed, drive.accel, body_accel, accel_diff);
-  bool slip_candidate = accel_diff > TRACTION_SLIP_ACCEL_THRESHOLD &&
-                        Abs(drive.speed) > TRACTION_BIAS_SPEED_THRESHOLD;
 
+  // カルマンフィルタ: IMU加速度を入力、オドメトリを観測として速度融合。
+  // ゲーティングにより、|innovation| > slip_threshold のとき観測更新をスキップするため
+  // 持続スリップ中も innovation が大きいまま維持される。
+  drive.kf_velocity = KalmanVelocity_Update(&drive.kalman_vel, body_accel, dt, drive.speed);
+
+  // innovation > 0 かつ閾値超え → 車輪が車体より速く回転 → 空転スリップ
+  bool slip_candidate = drive.kalman_vel.innovation > KV_SLIP_THRESHOLD &&
+                        Abs(drive.speed) > TRACTION_BIAS_SPEED_THRESHOLD;
   if (slip_candidate) {
-    if (drive.slip_debounce_count < TRACTION_SLIP_DEBOUNCE_SAMPLES) {
+    if (drive.slip_debounce_count < KV_SLIP_DEBOUNCE_SAMPLES) {
       drive.slip_debounce_count++;
     }
   } else {
     drive.slip_debounce_count = 0;
   }
-  drive.is_slipping = drive.slip_debounce_count >= TRACTION_SLIP_DEBOUNCE_SAMPLES;
+  drive.is_slipping = drive.slip_debounce_count >= KV_SLIP_DEBOUNCE_SAMPLES;
 
-  // スリップ中は電圧上限を下げ、解消後は徐々に回復する
   if (drive.is_slipping) {
     drive.traction_volt_limit -= TRACTION_VOLT_REDUCE_RATE * dt;
     if (drive.traction_volt_limit < 0.0f) drive.traction_volt_limit = 0.0f;
@@ -145,6 +151,8 @@ static void Drive_UpdateTractionEstimator(void) {
     drive.traction_volt_limit += TRACTION_VOLT_RECOVER_RATE * dt;
     if (drive.traction_volt_limit > MAX_VOLTAGE) drive.traction_volt_limit = MAX_VOLTAGE;
   }
+  printf("Traction estimator: accel=%.2f m/s², innovation=%.3f m/s, slip=%d, volt_limit=%.2f V\n",
+         body_accel, drive.kalman_vel.innovation, drive.is_slipping, drive.traction_volt_limit);
 }
 
 void Drive_Update() {
@@ -217,6 +225,8 @@ void Drive_Init(bool do_steer_setup) {
   drive.traction_volt_limit = MAX_VOLTAGE;
   drive.slip_debounce_count = 0;
   drive.traction_enabled = false;
+  KalmanVelocity_Init(&drive.kalman_vel, KV_PROCESS_NOISE_Q, KV_MEAS_NOISE_R, KV_SLIP_THRESHOLD);
+  drive.kf_velocity = 0.0f;
   Timer_Init(&drive.voltage_timer);
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
@@ -364,6 +374,8 @@ void Drive_Free() {
   drive.traction_volt_limit = MAX_VOLTAGE;
   drive.slip_debounce_count = 0;
   drive.is_slipping = false;
+  KalmanVelocity_Reset(&drive.kalman_vel, 0.0f);
+  drive.kf_velocity = 0.0f;
   PID_Reset(&drive.pid_velocity);
 }
 
@@ -399,3 +411,7 @@ bool Drive_HasError() {
 void Drive_SetTractionEnabled(bool enabled) { drive.traction_enabled = enabled; }
 
 bool Drive_IsSlipping() { return drive.is_slipping; }
+
+float Drive_GetKfVelocity() { return drive.kf_velocity; }
+
+float Drive_GetKfInnovation() { return drive.kalman_vel.innovation; }

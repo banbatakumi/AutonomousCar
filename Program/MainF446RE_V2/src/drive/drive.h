@@ -1,8 +1,8 @@
 #ifndef DRIVE_H_
 #define DRIVE_H_
 
-#define TORQUE_VECTORING_GAIN 0.25f
-#define MAX_VOLTAGE 2.0f
+#define TORQUE_VECTORING_GAIN 0.3f
+#define MAX_VOLTAGE 2.5f
 #define MAX_STEER_SPEED 3.0f  // ステアリングの最大回転速度 [rad/s]
 
 // 車体の物理パラメータ
@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "kalman_velocity.h"
 #include "lpf.h"
 #include "maf.h"
 #include "main.h"
@@ -67,10 +68,12 @@ typedef struct {
   float imu_pitch_deg;
   float imu_roll_deg;
   bool imu_valid;
-  float traction_volt_limit;    // トラクション制御による電圧上限 [V]
-  float imu_long_bias;          // 静止時のIMU縦加速度残留オフセット [m/s²]
+  float traction_volt_limit;  // トラクション制御による電圧上限 [V]
+  float imu_long_bias;        // 静止時のIMU縦加速度残留オフセット [m/s²]
   bool traction_enabled;
-  uint16_t slip_debounce_count;  // スリップ確定用デバウンスカウンタ
+  uint16_t slip_debounce_count;  // KFイノベーションのデバウンスカウンタ
+  KalmanVelocity kalman_vel;     // カルマンフィルタによる車体速度推定器
+  float kf_velocity;             // カルマンフィルタ推定速度 [m/s]
 } Drive;
 
 // ペリフェラルを初期化する。
@@ -127,7 +130,18 @@ bool Drive_HasError();
 // トラクション制御の有効/無効を切り替える。デフォルトは有効。
 void Drive_SetTractionEnabled(bool enabled);
 
-// 現在スリップ中かどうかを返す。
+// 現在スリップ中かどうかを返す。カルマンフィルタのイノベーション閾値判定。
 bool Drive_IsSlipping();
+
+// カルマンフィルタで推定した車体速度を返す [m/s]。
+// スリップ中はオドメトリを無視して IMU 積分のみで伝播するため、
+// スリップの影響を受けにくい車体速度の推定値となる。
+float Drive_GetKfVelocity();
+
+// カルマンフィルタのイノベーションを返す [m/s]。
+// イノベーション = v_odometry - v_predicted
+// 正に大きい → 車輪が車体より速く回転 → 空転スリップ
+// 負に大きい → 車輪が車体より遅く回転 → 制動ロック
+float Drive_GetKfInnovation();
 
 #endif  // DRIVE_H_
