@@ -8,9 +8,9 @@
 #include "sensor.h"
 #include "timer.h"
 
-#define MIN_VELOCITY 1.0f
-#define MAX_VELOCITY 3.0f
-#define ACCELERATION 5.0f
+#define MIN_VELOCITY 1.5f
+#define MAX_VELOCITY 4.0f
+#define ACCELERATION 2.5f
 #define EMERGENCY_DIST_MM 300.0f
 #define FAST_DIST_MM 1500.0f
 #define STEER_SAT 1.0f
@@ -24,7 +24,7 @@
 #define STEER_GAIN (STEER_SAT / STEER_SAT_DEG)
 
 #define WALL_HALF_DEG 80
-#define WALL_DIST_MM 400.0f
+#define WALL_DIST_MM 500.0f
 #define WALL_CORRECTION_GAIN (0.5f / WALL_DIST_MM)
 
 #define CORNER_STEER_THRESHOLD 0.2f

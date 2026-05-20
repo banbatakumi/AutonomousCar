@@ -20,5 +20,9 @@ void RemoteManual_Run(const RemoteCommand* cmd, const LD06* lidar) {
     }
   }
 
-  Drive_SetVelocity(cmd->move_speed, cmd->acceleration, cmd->steer);
+  float steer = cmd->steer;
+  if (Abs(Drive_GetSpeed()) > 1.0) {
+    steer *= 1.0f - Constrain(Abs(Drive_GetSpeed()) / 5.0f, 0.0f, 0.8f);  // 高速域でステアリングを弱める
+  }
+  Drive_SetVelocity(cmd->move_speed, cmd->acceleration, steer);
 }
