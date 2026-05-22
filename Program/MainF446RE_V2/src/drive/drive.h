@@ -1,13 +1,22 @@
 #ifndef DRIVE_H_
 #define DRIVE_H_
 
-#define TORQUE_VECTORING_GAIN 0.3f
+#define TORQUE_VECTORING_GAIN 0.2f
 #define MAX_VOLTAGE 2.5f
 #define MAX_STEER_SPEED 3.0f  // ステアリングの最大回転速度 [rad/s]
 
 // 車体の物理パラメータ
 #define WHEEL_BASE 0.220f   // ホイールベース (前後軸間距離) [m]
 #define TREAD_WIDTH 0.143f  // トレッド幅 (左右車輪中心間距離) [m]
+
+// 最大操舵角
+#define MAX_STEER_ANGLE_DEG 45.0f
+#define MAX_STEER_ANGLE_RAD (MAX_STEER_ANGLE_DEG * 0.017453292519943f)  // 0.7854 rad
+
+// スタビリティコントロール (SC) パラメータ
+#define SC_MIN_SPEED 0.1f       // [m/s] この速度未満では SC を非作動
+#define SC_YAW_RATE_GAIN 0.3f   // ヨーレート誤差 [rad/s] → 差動電圧補正 [V]
+#define SC_MAX_CORRECTION 0.5f  // SC による差動電圧補正の上限 [V]
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -74,6 +83,9 @@ typedef struct {
   uint16_t slip_debounce_count;  // KFイノベーションのデバウンスカウンタ
   KalmanVelocity kalman_vel;     // カルマンフィルタによる車体速度推定器
   float kf_velocity;             // カルマンフィルタ推定速度 [m/s]
+  float imu_gyro_z;              // ヨーレート [deg/s]（MPU6050 body frame）
+  float sc_yaw_rate_error;       // SC ヨーレート誤差 [rad/s]（テレメトリ用）
+  bool stability_enabled;
 } Drive;
 
 // ペリフェラルを初期化する。
@@ -121,14 +133,21 @@ uint8_t Drive_GetLeftMotorTemperature();
 uint8_t Drive_GetRightMotorTemperature();
 uint8_t Drive_GetSteerMotorTemperature();
 
-// IMU の加速度・姿勢を渡す。Drive 側で摩擦推定と加速度上限に利用する。
-void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg);
+// IMU の加速度・姿勢・ヨーレートを渡す。Drive 側でトラクション推定と SC に利用する。
+void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg, float gyro_z_dps);
 
 // いずれかのモータコントローラが電圧異常または過熱を報告している場合に true を返す。
 bool Drive_HasError();
 
 // トラクション制御の有効/無効を切り替える。デフォルトは有効。
 void Drive_SetTractionEnabled(bool enabled);
+
+// スタビリティコントロールの有効/無効を切り替える。デフォルトは有効。
+void Drive_SetStabilityEnabled(bool enabled);
+
+// SC が算出した直近のヨーレート誤差を返す [rad/s]。
+// 正 = 実際が目標より左回転超過 (オーバーステア方向)。
+float Drive_GetYawRateError(void);
 
 // 現在スリップ中かどうかを返す。カルマンフィルタのイノベーション閾値判定。
 bool Drive_IsSlipping();

@@ -8,180 +8,120 @@
 #include "sensor.h"
 #include "timer.h"
 
-// 速度
-#define MIN_VELOCITY 1.5f
-#define MAX_VELOCITY 4.0f
-#define ACCELERATION 2.5f
+#define SEARCH_HALF_DEG 60
+#define SECTOR_HALF_DEG 10
+#define ACCELERATION 1.5f
 
-// 障害物
-#define EMERGENCY_DIST_MM 300.0f
-#define FAST_DIST_MM 1500.0f
-#define FRONT_ULTRASONIC_OFFSET_MM 150.0f
-#define STEER_SAT 1.0f
+// 速度パラメータ
+#define MIN_VELOCITY 1.0f     // 障害物が近い時の最低速度 [m/s]
+#define MAX_VELOCITY 3.0f     // 障害物が遠い時の最大速度 [m/s]
+#define STOP_DIST_MM 400.0f   // この距離以下で MIN_VELOCITY [mm]
+#define FAST_DIST_MM 1500.0f  // この距離以上で MAX_VELOCITY [mm]
 
-// Pure Pursuit
-// 先読み距離を速度に応じて動的に変化させる（速いほど遠くを見る）
-#define LOOKAHEAD_MIN_MM 400.0f
-#define LOOKAHEAD_MAX_MM 1500.0f
-#define LOOKAHEAD_VEL_GAIN 200.0f  // [mm / (m/s)]
-// 最大舵角 [rad]。steer=1.0 に対応する物理舵角。要チューニング。
-#define DELTA_MAX_RAD 0.5236f  // 30 deg
+// Pure Pursuit パラメータ
+#define LOOKAHEAD_TIME 0.5f        // 先読み時間 [s]: L_d = v × LOOKAHEAD_TIME
+#define MIN_LOOKAHEAD_M 0.75f      // 先読み距離の下限 [m]
+#define MAX_LOOKAHEAD_M 2.5f       // 先読み距離の上限 [m]
+#define LOOKAHEAD_DIST_RATIO 0.5f  // clear_dist に対する先読み距離の上限割合
 
-// LiDAR 探索
-#define SEARCH_HALF_DEG 90
-#define SECTOR_HALF_DEG 15
-#define FRONT_HALF_DEG 20
+// スローインファーストアウト
+#define CORNER_THRESHOLD_DEG 15  // この角度以上で速度上限を下げ始める
+#define CORNER_MAX_DEG 45        // この角度以上で MIN_VELOCITY に制限
+#define CORNER_BRAKE_DEG 25      // この角度かつ速度超過でアクティブブレーキ
+#define CORNER_BRAKE_STRENGTH 0.05f
+#define CORNER_BRAKE_MARGIN 0.2f  // MIN_VELOCITY + この値を超えたらブレーキ
 
-// コーナリング速度制限
-#define CORNER_STEER_THRESHOLD 0.25f
-#define CORNER_STEER_BRAKE_THRESHOLD 0.65f
-
-// 壁センタリング補正
+// 壁回避補正
 #define WALL_HALF_DEG 80
-#define WALL_DIST_MM 500.0f
-#define WALL_CORRECTION_GAIN (0.3f / WALL_DIST_MM)
+#define WALL_DIST_MM 600.0f
+#define WALL_CENTER_GAIN (0.5f / WALL_DIST_MM)  // 両壁時: 左右差 → 中央寄せゲイン
+#define WALL_SINGLE_GAIN (0.4f / WALL_DIST_MM)  // 片壁時: 個別回避ゲイン
 
-// 後退
-#define REVERSE_VELOCITY -0.5f
-#define REVERSE_ACCELERATION 1.0f
-#define REVERSE_DURATION_MS 1500
-#define BRAKE_COMPLETE_SPEED 0.1f
-#define REVERSE_STEER_SAT 1.0f
-#define REAR_HALF_DEG 20
-#define REAR_EMERGENCY_DIST_MM 350.0f
-
-typedef enum {
-  ALG_STATE_NORMAL,
-  ALG_STATE_BRAKING,
-  ALG_STATE_REVERSING,
-} AlgState;
-
-static AlgState alg_state = ALG_STATE_NORMAL;
-static float reverse_steer = 0.0f;
-static Timer reverse_timer;
-static bool alg_initialized = false;
-
-// 自転車モデル Pure Pursuit ステア計算。
-// alpha_rad: 目標方向と車体前方のなす角 [rad]（左正）
-// Ld_m: 先読み距離 [m]
-// 戻り値: ステア [-1.0=右最大, +1.0=左最大]
-static float PurePursuit_CalcSteer(float alpha_rad, float Ld_m) {
-  float delta_rad = Atan2(2.0f * WHEEL_BASE * Sin(alpha_rad), Ld_m);
-  return Constrain(delta_rad / DELTA_MAX_RAD, -STEER_SAT, STEER_SAT);
-}
+static bool initialized = false;
+static bool corner_brake_done = false;
 
 void RemoteAuto2_Run(const RemoteCommand* cmd, const LD06* lidar) {
   (void)cmd;
 
-  if (!alg_initialized) {
-    Timer_Init(&reverse_timer);
-    alg_initialized = true;
+  if (!initialized) {
+    initialized = true;
   }
 
-  uint16_t front_ultrasonic_mm = (uint16_t)Sensor_GetUltrasonicFront();
-
-  int clear_deg = Lidar_FindClearestDirection(
-      lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
-
+  float clear_dist_mm = 0.0f;
+  int clear_deg = Lidar_FindClearestDirection(lidar, 0, SEARCH_HALF_DEG, SECTOR_HALF_DEG, &clear_dist_mm);
   if (clear_deg == -1) {
-    Drive_Brake(0.3f, 0.0f);
+    Drive_Brake(0.1f, 0.0f);
     return;
   }
 
   int signed_deg = (clear_deg > 180) ? (clear_deg - 360) : clear_deg;
-  float alpha_rad = Radians((float)signed_deg);
 
-  float speed = Drive_GetSpeed();
-  float lookahead_mm = Constrain(
-      LOOKAHEAD_MIN_MM + speed * LOOKAHEAD_VEL_GAIN,
-      LOOKAHEAD_MIN_MM, LOOKAHEAD_MAX_MM);
-  float steer = PurePursuit_CalcSteer(alpha_rad, lookahead_mm / 1000.0f);
-
-  float front_nearest_mm = 0.0f;
-  const int front_nearest = Lidar_FindNearestSector(
-      lidar, (int)((float)signed_deg * 0.5f), FRONT_HALF_DEG, 5, 1.0f, 3, &front_nearest_mm);
-
-  const bool is_emergency =
-      (front_nearest != -1 && front_nearest_mm < EMERGENCY_DIST_MM + speed * 150.0f) ||
-      (front_ultrasonic_mm > 0 && front_ultrasonic_mm < EMERGENCY_DIST_MM - FRONT_ULTRASONIC_OFFSET_MM);
-
-  switch (alg_state) {
-    case ALG_STATE_BRAKING:
-      if (front_nearest_mm > EMERGENCY_DIST_MM * 1.5f &&
-          front_ultrasonic_mm > EMERGENCY_DIST_MM - FRONT_ULTRASONIC_OFFSET_MM) {
-        alg_state = ALG_STATE_NORMAL;
-        break;
-      }
-      Drive_Brake(0.3f, 0.0f);
-      if (Abs(speed) < BRAKE_COMPLETE_SPEED) {
-        int cd = Lidar_FindClearestDirection(
-            lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
-        if (cd != -1) {
-          int sd = (cd > 180) ? (cd - 360) : cd;
-          reverse_steer = -Constrain((float)sd * (STEER_SAT / 60.0f),
-                                     -REVERSE_STEER_SAT, REVERSE_STEER_SAT);
-        } else {
-          reverse_steer = 0.0f;
-        }
-        Timer_Reset(&reverse_timer);
-        alg_state = ALG_STATE_REVERSING;
-      }
-      return;
-
-    case ALG_STATE_REVERSING: {
-      const LidarSector rear = Lidar_GetSector(lidar, 180, REAR_HALF_DEG);
-      if (rear.count > 0 && rear.avg < REAR_EMERGENCY_DIST_MM) {
-        alg_state = ALG_STATE_NORMAL;
-        Drive_Brake(0.3f, 0.0f);
-        return;
-      }
-      Drive_SetVelocity(REVERSE_VELOCITY, REVERSE_ACCELERATION, reverse_steer);
-      if (Timer_ReadMs(&reverse_timer) >= REVERSE_DURATION_MS) {
-        alg_state = ALG_STATE_NORMAL;
-      }
-      return;
-    }
-
-    default:  // ALG_STATE_NORMAL
-      if (is_emergency) {
-        alg_state = ALG_STATE_BRAKING;
-        Drive_Brake(0.3f, 0.0f);
-        return;
-      }
-      break;
+  // --- Pure Pursuit ステアリング ---
+  // 先読み距離 L_d: 速度に比例し、clear_dist の LOOKAHEAD_DIST_RATIO 倍を超えない
+  float speed = Drive_GetKfVelocity();
+  float L_d = Constrain(speed * LOOKAHEAD_TIME, MIN_LOOKAHEAD_M, MAX_LOOKAHEAD_M);
+  float clear_limit_m = clear_dist_mm * 0.001f * LOOKAHEAD_DIST_RATIO;
+  if (clear_limit_m > MIN_LOOKAHEAD_M && clear_limit_m < L_d) {
+    L_d = clear_limit_m;
   }
 
-  // 左右壁から等距離を保つ補正
+  // δ = atan(2L sin(α) / L_d)  自転車モデルの幾何学的操舵角
+  float alpha = (float)signed_deg * (float)DEG_TO_RAD;
+  float delta = Atan2(2.0f * WHEEL_BASE * Sin(alpha), L_d);
+  float steer = Constrain(delta / MAX_STEER_ANGLE_RAD, -1.0f, 1.0f);
+
+  // --- 壁回避補正 ---
   float left_dist_mm = 0.0f, right_dist_mm = 0.0f;
-  const int left_nearest =
-      Lidar_FindNearestSector(lidar, 90, WALL_HALF_DEG, 5, 1.0f, 3, &left_dist_mm);
-  const int right_nearest =
-      Lidar_FindNearestSector(lidar, 270, WALL_HALF_DEG, 5, 1.0f, 3, &right_dist_mm);
+  const int left_nearest = Lidar_FindNearestSector(lidar, 270, WALL_HALF_DEG, 5, 1.0f, 3, &left_dist_mm);
+  const int right_nearest = Lidar_FindNearestSector(lidar, 90, WALL_HALF_DEG, 5, 1.0f, 3, &right_dist_mm);
 
   float wall_correction = 0.0f;
-  if (left_nearest != -1 && left_dist_mm < WALL_DIST_MM) {
-    wall_correction -= (WALL_DIST_MM - left_dist_mm) * WALL_CORRECTION_GAIN;
+  if (left_nearest != -1 && right_nearest != -1) {
+    // 両壁検出: 左右距離の差で中央に寄せる（差がゼロ=中央が平衡点）
+    float center_error = Constrain(left_dist_mm, 0.0f, WALL_DIST_MM) - Constrain(right_dist_mm, 0.0f, WALL_DIST_MM);
+    wall_correction = -center_error * WALL_CENTER_GAIN;
+  } else {
+    // 片壁のみ: 個別回避
+    if (left_nearest != -1 && left_dist_mm < WALL_DIST_MM) {
+      wall_correction -= (WALL_DIST_MM - left_dist_mm) * WALL_SINGLE_GAIN;
+    }
+    if (right_nearest != -1 && right_dist_mm < WALL_DIST_MM) {
+      wall_correction += (WALL_DIST_MM - right_dist_mm) * WALL_SINGLE_GAIN;
+    }
   }
-  if (right_nearest != -1 && right_dist_mm < WALL_DIST_MM) {
-    wall_correction += (WALL_DIST_MM - right_dist_mm) * WALL_CORRECTION_GAIN;
+  steer = Constrain(steer + wall_correction, -1.0f, 1.0f);
+
+  // --- clear_dist_mm による速度計画 ---
+  float t = Constrain((clear_dist_mm - STOP_DIST_MM) / (FAST_DIST_MM - STOP_DIST_MM), 0.0f, 1.0f);
+  float base_velocity = MIN_VELOCITY + (MAX_VELOCITY - MIN_VELOCITY) * t;
+
+  // --- スローインファーストアウト ---
+  // signed_deg の絶対値がコーナー度合いを表す
+  int abs_deg = Abs(signed_deg);
+
+  // コーナー角度に応じた速度上限 (THRESHOLD〜MAX_DEG で MAX→MIN に線形低下)
+  float velocity_limit = MAX_VELOCITY;
+  if (abs_deg > CORNER_THRESHOLD_DEG) {
+    float ct = Constrain((float)(abs_deg - CORNER_THRESHOLD_DEG) /
+                             (float)(CORNER_MAX_DEG - CORNER_THRESHOLD_DEG),
+                         0.0f, 1.0f);
+    velocity_limit = MAX_VELOCITY - ct * (MAX_VELOCITY - MIN_VELOCITY);
   }
-  steer = Constrain(steer + wall_correction, -STEER_SAT, STEER_SAT);
+  float velocity = Constrain(base_velocity, MIN_VELOCITY, velocity_limit);
 
-  // 前方の開放度で目標速度を決定
-  float front_avg_mm = 0.0f;
-  Lidar_FindNearestSector(lidar, 0, 45, 5, 10, 3, &front_avg_mm);
-  float ratio = Constrain(front_avg_mm / FAST_DIST_MM, 0.0f, 1.0f);
-  float target_vel = MIN_VELOCITY + ratio * (MAX_VELOCITY - MIN_VELOCITY);
-
-  // コーナリング時の速度上限（steer が大きいほど速度を絞る）
-  float steer_abs = Abs(steer);
-  if (steer_abs > CORNER_STEER_THRESHOLD) {
-    float t = Constrain((steer_abs - CORNER_STEER_THRESHOLD) /
-                            (CORNER_STEER_BRAKE_THRESHOLD - CORNER_STEER_THRESHOLD),
-                        0.0f, 1.0f);
-    float corner_vel_limit = MAX_VELOCITY - t * (MAX_VELOCITY - MIN_VELOCITY);
-    target_vel = Constrain(target_vel, MIN_VELOCITY, corner_vel_limit);
+  // スローイン: 速度超過かつ急カーブならブレーキ優先
+  if (abs_deg > CORNER_BRAKE_DEG) {
+    if (!corner_brake_done &&
+        Drive_GetKfVelocity() > MIN_VELOCITY + CORNER_BRAKE_MARGIN) {
+      Drive_Brake(CORNER_BRAKE_STRENGTH, steer);
+      return;
+    }
+    corner_brake_done = true;
+    Drive_SetVelocity(MIN_VELOCITY, ACCELERATION, steer);
+    return;
   }
 
-  Drive_SetVelocity(target_vel, ACCELERATION, steer);
+  // ファーストアウト: コーナーを抜けたらブレーキ解除して加速
+  corner_brake_done = false;
+  Drive_SetVelocity(velocity, ACCELERATION, steer);
 }

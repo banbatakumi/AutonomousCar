@@ -63,9 +63,8 @@ void Algorithm_Run(const LD06* lidar, uint16_t front_ultrasonic_mm) {
   }
   // 通常走行ロジック
   // 前方 ±SEARCH_HALF_DEG の範囲で最も開けた方向を探す
-  // start = 360 - SEARCH_HALF_DEG、end = SEARCH_HALF_DEG で 0° またぎに対応
   int clear_deg = Lidar_FindClearestDirection(
-      lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
+      lidar, 0, SEARCH_HALF_DEG, SECTOR_HALF_DEG, NULL);
 
   if (clear_deg == -1) {
     Drive_Brake(0.3f, 0.0f);
@@ -97,7 +96,7 @@ void Algorithm_Run(const LD06* lidar, uint16_t front_ultrasonic_mm) {
         // 停止完了: 前方の最も開けた方向を検出し、後退中に前部がその方向を向くよう
         // 逆符号のステアを設定する（後退 + 右ステア → 前部が左へ向く）
         int clear_deg = Lidar_FindClearestDirection(
-            lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
+            lidar, 0, SEARCH_HALF_DEG, SECTOR_HALF_DEG, NULL);
         if (clear_deg != -1) {
           int signed_deg = (clear_deg > 180) ? (clear_deg - 360) : clear_deg;
           reverse_steer = -Constrain((float)signed_deg * STEER_GAIN,

@@ -49,17 +49,14 @@ int Lidar_FindNearestSector(const LD06* lidar, int center_deg,
   return best_deg;
 }
 
-int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
-                                int sector_half_width) {
+int Lidar_FindClearestDirection(const LD06* lidar, int center_deg,
+                                int half_width_deg, int sector_half_width,
+                                float* out_avg_mm) {
   int best_angle = -1;
   float best_avg = -1.0f;
 
-  // 全周のとき start_deg を 2 回スキャンしないよう 359 にする
-  int span = (end_deg - start_deg + 360) % 360;
-  if (span == 0) span = 359;
-
-  for (int i = 0; i <= span; i++) {
-    int center = (start_deg + i) % 360;
+  for (int d = -half_width_deg; d <= half_width_deg; d++) {
+    int center = (center_deg + d + 360) % 360;
     LidarSector s = Lidar_GetSector(lidar, center, sector_half_width);
     if (s.count == 0) continue;
     if (s.avg > best_avg) {
@@ -68,6 +65,7 @@ int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
     }
   }
 
+  if (out_avg_mm) *out_avg_mm = best_avg;
   return best_angle;
 }
 
@@ -86,8 +84,14 @@ void Lidar_FilterSpikes(uint16_t points_360[360], int window_deg,
     for (int d = 1; d <= window_deg; d++) {
       uint16_t left = orig[(i - d + 360) % 360];
       uint16_t right = orig[(i + d) % 360];
-      if (left > 0) { sum += left; count++; }
-      if (right > 0) { sum += right; count++; }
+      if (left > 0) {
+        sum += left;
+        count++;
+      }
+      if (right > 0) {
+        sum += right;
+        count++;
+      }
     }
 
     if (count == 0) continue;
@@ -134,10 +138,9 @@ void Lidar_BuildFilledPoints(const LD06* lidar, uint16_t out_360[360],
       //   out = left_dist * (r/(l+r)) + right_dist * (l/(l+r))
       int l = (i - left_idx + 360) % 360;
       int r = (right_idx - i + 360) % 360;
-      out_360[i] = (uint16_t)(
-          ((uint32_t)lidar->distances_360[left_idx] * r +
-           (uint32_t)lidar->distances_360[right_idx] * l) /
-          (l + r));
+      out_360[i] = (uint16_t)(((uint32_t)lidar->distances_360[left_idx] * r +
+                               (uint32_t)lidar->distances_360[right_idx] * l) /
+                              (l + r));
     }
   }
 }

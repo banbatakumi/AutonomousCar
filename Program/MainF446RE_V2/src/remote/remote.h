@@ -13,6 +13,7 @@ typedef struct {
   bool play_sound;
   bool enable_auto_brake;
   bool enable_traction_control;
+  bool enable_stability_control;
   uint8_t mode;        // 0:停止 1:手動 2:自動1 3:自動2
   float move_speed;    // [m/s]
   float acceleration;  // [m/s²]

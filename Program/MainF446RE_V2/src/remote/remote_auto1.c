@@ -8,26 +8,26 @@
 #include "sensor.h"
 #include "timer.h"
 
-#define MIN_VELOCITY 1.5f
-#define MAX_VELOCITY 4.0f
-#define ACCELERATION 2.5f
-#define EMERGENCY_DIST_MM 300.0f
+#define MIN_VELOCITY 1.0f
+#define MAX_VELOCITY 2.0f
+#define ACCELERATION 2.0f
+#define EMERGENCY_DIST_MM 250.0f
 #define FAST_DIST_MM 1500.0f
 #define STEER_SAT 1.0f
 #define FRONT_ULTRASONIC_OFFSET_MM 150.0f
 
-#define SEARCH_HALF_DEG 90
-#define SECTOR_HALF_DEG 15
+#define SEARCH_HALF_DEG 60
+#define SECTOR_HALF_DEG 10
 #define FRONT_HALF_DEG 20
 
 #define STEER_SAT_DEG 60
 #define STEER_GAIN (STEER_SAT / STEER_SAT_DEG)
 
-#define WALL_HALF_DEG 80
+#define WALL_HALF_DEG 60
 #define WALL_DIST_MM 500.0f
-#define WALL_CORRECTION_GAIN (0.5f / WALL_DIST_MM)
+#define WALL_CORRECTION_GAIN (1.0f / WALL_DIST_MM)
 
-#define CORNER_STEER_THRESHOLD 0.2f
+#define CORNER_STEER_THRESHOLD 0.1f
 #define CORNER_STEER_BRAKE_THRESHOLD 0.6f
 
 #define REVERSE_VELOCITY -0.5f
@@ -36,7 +36,7 @@
 #define BRAKE_COMPLETE_SPEED 0.1f
 #define REVERSE_STEER_SAT 1.0f
 #define REAR_HALF_DEG 20
-#define REAR_EMERGENCY_DIST_MM 350.0f
+#define REAR_EMERGENCY_DIST_MM 300.0f
 
 typedef enum {
   ALG_STATE_NORMAL,
@@ -60,8 +60,9 @@ void RemoteAuto1_Run(const RemoteCommand* cmd, const LD06* lidar) {
     alg_initialized = true;
   }
 
+  float clear_dist_mm = 0.0f;
   int clear_deg = Lidar_FindClearestDirection(
-      lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
+      lidar, 0, SEARCH_HALF_DEG, SECTOR_HALF_DEG, &clear_dist_mm);
 
   if (clear_deg == -1) {
     Drive_Brake(0.3f, 0.0f);
@@ -75,9 +76,7 @@ void RemoteAuto1_Run(const RemoteCommand* cmd, const LD06* lidar) {
   const int front_nearest = Lidar_FindNearestSector(lidar, signed_deg * 0.5, FRONT_HALF_DEG, 5, 1.0f, 3,
                                                     &front_nearest_mm);
 
-  const bool is_emergency =
-      (front_nearest != -1 && front_nearest_mm < EMERGENCY_DIST_MM + Drive_GetSpeed() * 150.0f) ||
-      (front_ultrasonic_mm > 0 && front_ultrasonic_mm < EMERGENCY_DIST_MM - FRONT_ULTRASONIC_OFFSET_MM);
+  const bool is_emergency = front_nearest != -1 && front_nearest_mm < EMERGENCY_DIST_MM + Drive_GetSpeed() * 150.0f;
 
   switch (alg_state) {
     case ALG_STATE_BRAKING:
@@ -88,8 +87,8 @@ void RemoteAuto1_Run(const RemoteCommand* cmd, const LD06* lidar) {
       }
       Drive_Brake(0.3f, 0.0f);
       if (Abs(Drive_GetSpeed()) < BRAKE_COMPLETE_SPEED) {
-        int cd = Lidar_FindClearestDirection(
-            lidar, 360 - SEARCH_HALF_DEG, SEARCH_HALF_DEG, SECTOR_HALF_DEG);
+                int cd = Lidar_FindClearestDirection(
+            lidar, 0, SEARCH_HALF_DEG, SECTOR_HALF_DEG, &clear_dist_mm);
         if (cd != -1) {
           int sd = (cd > 180) ? (cd - 360) : cd;
           reverse_steer = -Constrain((float)sd * STEER_GAIN, -REVERSE_STEER_SAT, REVERSE_STEER_SAT);
@@ -150,7 +149,7 @@ void RemoteAuto1_Run(const RemoteCommand* cmd, const LD06* lidar) {
     float corner_vel_limit = MAX_VELOCITY - t * (MAX_VELOCITY - MIN_VELOCITY);
     target_vel = Constrain(target_vel, MIN_VELOCITY, corner_vel_limit);
   }
-  if (steer_abs > CORNER_STEER_THRESHOLD) {
+  if (steer_abs > CORNER_STEER_BRAKE_THRESHOLD) {
     if (!curve_brake_done && Drive_GetSpeed() > MIN_VELOCITY + 0.2f) {
       Drive_Brake(0.1f, steer);
       return;

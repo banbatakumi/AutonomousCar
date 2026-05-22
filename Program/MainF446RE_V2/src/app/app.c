@@ -66,7 +66,7 @@ void MainApp() {
 
     const MPU6050_Data* imu_data = Sensor_GetImuData();
     if (imu_data != NULL) {
-      Drive_SetImuData(imu_data->accel_x, imu_data->accel_y, imu_data->pitch, imu_data->roll);
+      Drive_SetImuData(imu_data->accel_x, imu_data->accel_y, imu_data->pitch, imu_data->roll, imu_data->gyro_z);
     }
 
     if (Sensor_GetBatteryError()) {

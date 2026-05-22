@@ -29,7 +29,7 @@ extern Timer control_interval_timer;
 
 extern Serial serial6;
 
-#define CONTRO_FREQUENCY_HZ 10000
+#define CONTRO_FREQUENCY_HZ 5000
 #define CONTROL_INTERVAL_US (1000000 / CONTRO_FREQUENCY_HZ)
 
 #endif  // APP_H_

@@ -16,7 +16,7 @@
 
 #define TRACTION_BIAS_ALPHA 0.01f           // 静止時IMUバイアス学習レート
 #define TRACTION_BIAS_SPEED_THRESHOLD 0.5f  // [m/s] スリップ判定を行う最低速度
-#define TRACTION_VOLT_REDUCE_RATE 6.0f      // [V/s] スリップ中の電圧上限削減レート
+#define TRACTION_VOLT_REDUCE_RATE 4.0f      // [V/s] スリップ中の電圧上限削減レート
 #define TRACTION_VOLT_RECOVER_RATE 2.0f     // [V/s] 非スリップ時の電圧上限回復レート
 
 // カルマンフィルタ速度推定器のパラメータ
@@ -24,8 +24,8 @@
 // R: 観測ノイズ分散 [m²/s²]。オドメトリの計測誤差の大きさで調整。
 #define KV_PROCESS_NOISE_Q 0.5f
 #define KV_MEAS_NOISE_R 1.0f
-#define KV_SLIP_THRESHOLD 0.1f       // [m/s] イノベーション閾値（空転スリップ検知）
-#define KV_SLIP_DEBOUNCE_SAMPLES 10  // スリップ確定サンプル数 (≈5ms @ 10kHz)
+#define KV_SLIP_THRESHOLD 0.15f      // [m/s] イノベーション閾値（空転スリップ検知）
+#define KV_SLIP_DEBOUNCE_SAMPLES 50  // スリップ確定サンプル数 (≈5ms @ 10kHz)
 
 #define SERIAL_SEND_FREQUENCY_HZ 1000
 #define SERIAL_SEND_INTERVAL_MS 1  // 1000 / SERIAL_SEND_FREQUENCY_HZ
@@ -151,8 +151,6 @@ static void Drive_UpdateTractionEstimator(void) {
     drive.traction_volt_limit += TRACTION_VOLT_RECOVER_RATE * dt;
     if (drive.traction_volt_limit > MAX_VOLTAGE) drive.traction_volt_limit = MAX_VOLTAGE;
   }
-  printf("Traction estimator: accel=%.2f m/s², innovation=%.3f m/s, slip=%d, volt_limit=%.2f V\n",
-         body_accel, drive.kalman_vel.innovation, drive.is_slipping, drive.traction_volt_limit);
 }
 
 void Drive_Update() {
@@ -171,7 +169,7 @@ void Drive_Update() {
   Lighting_SetBrake(send_data.do_brake, send_data.brake_strength, drive.speed);
 
   WinkerDirection winker_dir = WINKER_OFF;
-  if (!send_data.do_brake && !drive.is_free && drive.speed >= 0.0f) {
+  if (!send_data.do_brake && !drive.is_free) {
     if (drive.steer_logical > WINKER_STEER_THRESHOLD) {
       winker_dir = WINKER_RIGHT;
     } else if (drive.steer_logical < -WINKER_STEER_THRESHOLD) {
@@ -224,7 +222,10 @@ void Drive_Init(bool do_steer_setup) {
   drive.imu_long_bias = 0.0f;
   drive.traction_volt_limit = MAX_VOLTAGE;
   drive.slip_debounce_count = 0;
-  drive.traction_enabled = false;
+  drive.imu_gyro_z = 0.0f;
+  drive.sc_yaw_rate_error = 0.0f;
+  drive.traction_enabled = true;
+  drive.stability_enabled = true;
   KalmanVelocity_Init(&drive.kalman_vel, KV_PROCESS_NOISE_Q, KV_MEAS_NOISE_R, KV_SLIP_THRESHOLD);
   drive.kf_velocity = 0.0f;
   Timer_Init(&drive.voltage_timer);
@@ -283,6 +284,28 @@ bool Drive_SetupSteer() {
   return true;
 }
 
+// スタビリティコントロール: 実ヨーレートと自転車モデル目標ヨーレートの差を
+// 差動電圧で打ち消す。低速 (< SC_MIN_SPEED) では非作動。
+static void Drive_UpdateStabilityControl(void) {
+  if (!drive.stability_enabled || !drive.imu_valid) return;
+  if (Abs(drive.kf_velocity) < SC_MIN_SPEED) {
+    drive.sc_yaw_rate_error = 0.0f;
+    return;
+  }
+
+  float delta_rad = drive.steer_logical * MAX_STEER_ANGLE_RAD;
+  float desired_yaw_rate = drive.kf_velocity * tanf(delta_rad) / WHEEL_BASE;
+  float actual_yaw_rate = drive.imu_gyro_z * (float)DEG_TO_RAD;
+  drive.sc_yaw_rate_error = actual_yaw_rate - desired_yaw_rate;
+
+  float correction = Constrain(drive.sc_yaw_rate_error * SC_YAW_RATE_GAIN,
+                               -SC_MAX_CORRECTION, SC_MAX_CORRECTION);
+
+  if (drive.kf_velocity < 0) correction = -correction;  // 後退時は補正方向を逆転
+  send_data.voltage_left = Constrain(send_data.voltage_left - correction, -MAX_VOLTAGE, MAX_VOLTAGE);
+  send_data.voltage_right = Constrain(send_data.voltage_right + correction, -MAX_VOLTAGE, MAX_VOLTAGE);
+}
+
 static void Drive_ApplyVoltageAndSteer(float voltage, float steer) {
   if (drive.traction_enabled && voltage > drive.traction_volt_limit) {
     voltage = drive.traction_volt_limit;
@@ -297,6 +320,8 @@ static void Drive_ApplyVoltageAndSteer(float voltage, float steer) {
   // 最終的なモータ出力をクリップ
   send_data.voltage_left = Constrain(voltage_left, -MAX_VOLTAGE, MAX_VOLTAGE);
   send_data.voltage_right = Constrain(voltage_right, -MAX_VOLTAGE, MAX_VOLTAGE);
+
+  Drive_UpdateStabilityControl();
 
   // steer を物理角度 [rad] に変換（-1=右最小, +1=左最大）
   drive.steer_logical = Constrain(steer, -1.0f, 1.0f);
@@ -389,12 +414,13 @@ uint8_t Drive_GetLeftMotorTemperature() { return left_protocol.data.temperature;
 uint8_t Drive_GetRightMotorTemperature() { return right_protocol.data.temperature; }
 uint8_t Drive_GetSteerMotorTemperature() { return steer_protocol.data.temperature; }
 
-void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg) {
+void Drive_SetImuData(float accel_x, float accel_y, float pitch_deg, float roll_deg, float gyro_z_dps) {
   // app 層から渡された IMU 値を保持し、推定器は drive 層の中だけで回す。
   drive.imu_accel_x = accel_x;
   drive.imu_accel_y = accel_y;
   drive.imu_pitch_deg = pitch_deg;
   drive.imu_roll_deg = roll_deg;
+  drive.imu_gyro_z = gyro_z_dps;
   drive.imu_valid = true;
 }
 
@@ -415,3 +441,7 @@ bool Drive_IsSlipping() { return drive.is_slipping; }
 float Drive_GetKfVelocity() { return drive.kf_velocity; }
 
 float Drive_GetKfInnovation() { return drive.kalman_vel.innovation; }
+
+void Drive_SetStabilityEnabled(bool enabled) { drive.stability_enabled = enabled; }
+
+float Drive_GetYawRateError(void) { return drive.sc_yaw_rate_error; }

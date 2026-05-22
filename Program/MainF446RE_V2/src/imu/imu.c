@@ -38,11 +38,69 @@ typedef struct {
 #define IMU_MOUNT_Y_SIGN (-1.0f)
 #define IMU_MOUNT_Z_SIGN (1.0f)
 
+// I2C1 バス回復用 GPIO ピン (i2c.c の MX_I2C1_Init に対応)
+#define IMU_I2C_SCL_PORT GPIOB
+#define IMU_I2C_SCL_PIN  GPIO_PIN_8
+#define IMU_I2C_SDA_PORT GPIOB
+#define IMU_I2C_SDA_PIN  GPIO_PIN_9
+
 // 出力 Euler 角の取付起因の補正
 //   yaw   : 回転方向反転 (true なら符号反転)
 //   roll  : 静止水平で 180° となる原点を 0° へシフト
 #define IMU_YAW_INVERT 1
 #define IMU_ROLL_OFFSET_DEG 180.0f
+
+// STMリセット後に非同期I2C転送が中断し SDA がスタックする問題を回復する。
+// SCLを9回手動トグル → STOPコンディション発行 → I2C再初期化。
+static void RecoverI2CBus(I2C_HandleTypeDef* i2c) {
+  HAL_I2C_DeInit(i2c);
+  HAL_Delay(5);
+
+  GPIO_InitTypeDef gpio = {0};
+
+  // SCL (PB8): オープンドレイン出力
+  gpio.Pin   = IMU_I2C_SCL_PIN;
+  gpio.Mode  = GPIO_MODE_OUTPUT_OD;
+  gpio.Pull  = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(IMU_I2C_SCL_PORT, &gpio);
+  HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_SET);
+
+  // SDA (PB9): 入力でスタック状態をモニタ
+  gpio.Pin  = IMU_I2C_SDA_PIN;
+  gpio.Mode = GPIO_MODE_INPUT;
+  gpio.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(IMU_I2C_SDA_PORT, &gpio);
+
+  // SDAがHighになるまで最大9クロック
+  for (int i = 0; i < 9; i++) {
+    HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_RESET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_SET);
+    HAL_Delay(1);
+    if (HAL_GPIO_ReadPin(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN) == GPIO_PIN_SET) {
+      break;
+    }
+  }
+
+  // STOPコンディション: SCL=H中にSDA L→H
+  gpio.Pin  = IMU_I2C_SDA_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_OD;
+  gpio.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(IMU_I2C_SDA_PORT, &gpio);
+  HAL_GPIO_WritePin(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN, GPIO_PIN_RESET);
+  HAL_Delay(1);
+  HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_SET);
+  HAL_Delay(1);
+  HAL_GPIO_WritePin(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN, GPIO_PIN_SET);
+  HAL_Delay(1);
+
+  // GPIOをリセットして HAL_I2C_Init の MspInit がピンを正しく設定できるようにする
+  HAL_GPIO_DeInit(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN);
+  HAL_GPIO_DeInit(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN);
+  HAL_I2C_Init(i2c);
+  HAL_Delay(10);
+}
 
 static uint32_t ComputeChecksum(const ImuCalibrationFlash* data) {
   return data->magic ^ data->version ^
@@ -144,6 +202,9 @@ void Imu_Init(Imu* imu, I2C_HandleTypeDef* i2c, bool calibrate_on_boot) {
     return;
   }
   memset(imu, 0, sizeof(*imu));
+
+  // STMリセット時に非同期I2C転送が中断してSDAがスタックする場合があるため回復する
+  RecoverI2CBus(i2c);
 
   if (!MPU6050_Init(&imu->mpu, i2c, MPU6050_I2C_ADDR_DEFAULT)) {
     printf("[IMU] MPU6050 init failed\n");

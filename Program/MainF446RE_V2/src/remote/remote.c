@@ -41,6 +41,7 @@ static void ParseSerial(void) {
         cmd.play_sound = (recv_buf[0] >> 4) & 0x01;
         cmd.enable_auto_brake = (recv_buf[0] >> 5) & 0x01;
         cmd.enable_traction_control = (recv_buf[0] >> 6) & 0x01;
+        cmd.enable_stability_control = (recv_buf[0] >> 7) & 0x01;
         cmd.mode = recv_buf[1];
         cmd.move_speed = (int8_t)recv_buf[2] * 0.1f;
         cmd.acceleration = (int8_t)recv_buf[3] * 0.1f;
@@ -104,10 +105,11 @@ void Remote_Update(void) {
   Lighting_SetHazard(cmd.on_hazard);
   Buzzer_SetTone(&buzzer, cmd.play_sound ? 500 : 0);
   Drive_SetTractionEnabled(cmd.enable_traction_control);
+  Drive_SetStabilityEnabled(cmd.enable_stability_control);
 
   if (cmd.do_stop || watchdog_stop) {
     if (Abs(Drive_GetSpeed()) >= 0.5f) {
-      Drive_Brake(0.5, 0.0f);
+      Drive_Brake(0.05, 0.0f);
     } else {
       Drive_Free();
     }

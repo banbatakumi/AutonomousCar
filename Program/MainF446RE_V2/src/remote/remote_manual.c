@@ -3,7 +3,7 @@
 #include "drive.h"
 #include "lidar_utils.h"
 
-#define AUTO_BRAKE_DISTANCE_MM 350.0f
+#define AUTO_BRAKE_DISTANCE_MM 300.0f
 
 void RemoteManual_Run(const RemoteCommand* cmd, const LD06* lidar) {
   if (cmd->do_brake) {
@@ -12,8 +12,12 @@ void RemoteManual_Run(const RemoteCommand* cmd, const LD06* lidar) {
   }
 
   if (cmd->enable_auto_brake) {
-    bool front_blocked = Lidar_GetSector(lidar, 0, 20).avg < AUTO_BRAKE_DISTANCE_MM + Drive_GetSpeed() * 200.0f && cmd->move_speed > 0;
-    bool rear_blocked = Lidar_GetSector(lidar, 180, 20).avg < AUTO_BRAKE_DISTANCE_MM - Drive_GetSpeed() * 200.0f && cmd->move_speed < 0;
+    float front_distance;
+    Lidar_FindNearestSector(lidar, 0, 30, 5, 10, 3, &front_distance);  // 前方20度のセクタで最も近い点を探す
+    bool front_blocked = front_distance < AUTO_BRAKE_DISTANCE_MM + Drive_GetSpeed() * 250.0f && cmd->move_speed > 0;
+    float rear_distance;
+    Lidar_FindNearestSector(lidar, 180, 30, 5, 10, 3, &rear_distance);  // 後方20度のセクタで最も近い点を探す
+    bool rear_blocked = rear_distance < AUTO_BRAKE_DISTANCE_MM - Drive_GetSpeed() * 250.0f && cmd->move_speed < 0;
     if (front_blocked || rear_blocked) {
       Drive_Brake(0.5, cmd->steer);
       return;

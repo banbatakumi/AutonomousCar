@@ -38,11 +38,12 @@ int Lidar_FindNearestSector(const LD06* lidar, int center_deg,
                             float* out_avg_mm);
 
 // 指定範囲内で最も開けた（平均距離が最大の）方向を返す。
-// start_deg から end_deg（時計回り）の範囲を sector_half_width 幅のセクタで評価し、
-// 平均距離が最大のセクタの中心角度を返す。有効点が全くなければ -1。
-// 全周探索は start_deg=0, end_deg=359 で指定する。
-int Lidar_FindClearestDirection(const LD06* lidar, int start_deg, int end_deg,
-                                int sector_half_width);
+// center_deg ± half_width_deg の範囲を sector_half_width 幅のセクタで評価し、
+// 平均距離が最大のセクタの中心角度（0〜359）を返す。有効点が全くなければ -1。
+// out_avg_mm は戻り値 != -1 のときのみ書き込まれる。NULL 可。
+int Lidar_FindClearestDirection(const LD06* lidar, int center_deg,
+                                int half_width_deg, int sector_half_width,
+                                float* out_avg_mm);
 
 // confidence_threshold 未満または distance == 0 の点を無効とし、
 // 両隣の有効点間で角度距離ベースの線形補間を行った新しい点群を生成する。
