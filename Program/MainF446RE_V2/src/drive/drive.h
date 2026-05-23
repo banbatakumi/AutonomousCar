@@ -1,10 +1,6 @@
 #ifndef DRIVE_H_
 #define DRIVE_H_
 
-#define TORQUE_VECTORING_GAIN 0.2f
-#define MAX_VOLTAGE 2.5f
-#define MAX_STEER_SPEED 3.0f  // ステアリングの最大回転速度 [rad/s]
-
 // 車体の物理パラメータ
 #define WHEEL_BASE 0.220f   // ホイールベース (前後軸間距離) [m]
 #define TREAD_WIDTH 0.143f  // トレッド幅 (左右車輪中心間距離) [m]
@@ -12,11 +8,6 @@
 // 最大操舵角
 #define MAX_STEER_ANGLE_DEG 45.0f
 #define MAX_STEER_ANGLE_RAD (MAX_STEER_ANGLE_DEG * 0.017453292519943f)  // 0.7854 rad
-
-// スタビリティコントロール (SC) パラメータ
-#define SC_MIN_SPEED 0.1f       // [m/s] この速度未満では SC を非作動
-#define SC_YAW_RATE_GAIN 0.3f   // ヨーレート誤差 [rad/s] → 差動電圧補正 [V]
-#define SC_MAX_CORRECTION 0.5f  // SC による差動電圧補正の上限 [V]
 
 #include <stdbool.h>
 #include <stdint.h>

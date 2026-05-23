@@ -53,13 +53,18 @@ int Lidar_FindClearestDirection(const LD06* lidar, int center_deg,
                                 int half_width_deg, int sector_half_width,
                                 float* out_avg_mm) {
   int best_angle = -1;
-  float best_avg = -1.0f;
+  float best_score = -1.0f;
+  float best_avg = 0.0f;
 
   for (int d = -half_width_deg; d <= half_width_deg; d++) {
     int center = (center_deg + d + 360) % 360;
     LidarSector s = Lidar_GetSector(lidar, center, sector_half_width);
-    if (s.count == 0) continue;
-    if (s.avg > best_avg) {
+    if (s.count < 3) continue;
+    // Score by minimum distance: avoids grazing obstacle edges even when
+    // the sector average looks clear.
+    float score = (float)s.min;
+    if (score > best_score) {
+      best_score = score;
       best_avg = s.avg;
       best_angle = center;
     }

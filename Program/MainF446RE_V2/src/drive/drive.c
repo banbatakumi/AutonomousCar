@@ -7,6 +7,11 @@
 #include "flash.h"
 #include "lighting.h"
 
+#define MAX_VOLTAGE 2.5f  // モータコントローラへの最大印加電圧 [V]
+
+#define TORQUE_VECTORING_GAIN 0.25f
+#define MAX_STEER_SPEED 3.0f  // ステアリングの最大回転速度 [rad/s]
+
 // モータコントローラへのコマンドヘッダ
 #define POSITION_HEADER 0xFD
 #define VOLTAGE_HEADER 0xFC
@@ -14,18 +19,24 @@
 
 #define WHEEL_RADIUS 0.0275f  // [m]
 
+// トラクションコントロール (TC) パラメータ
 #define TRACTION_BIAS_ALPHA 0.01f           // 静止時IMUバイアス学習レート
 #define TRACTION_BIAS_SPEED_THRESHOLD 0.5f  // [m/s] スリップ判定を行う最低速度
 #define TRACTION_VOLT_REDUCE_RATE 4.0f      // [V/s] スリップ中の電圧上限削減レート
 #define TRACTION_VOLT_RECOVER_RATE 2.0f     // [V/s] 非スリップ時の電圧上限回復レート
 
+// スタビリティコントロール (SC) パラメータ
+#define SC_MIN_SPEED 0.1f       // [m/s] この速度未満では SC を非作動
+#define SC_YAW_RATE_GAIN 0.3f   // ヨーレート誤差 [rad/s] → 差動電圧補正 [V]
+#define SC_MAX_CORRECTION 0.5f  // SC による差動電圧補正の上限 [V]
+
 // カルマンフィルタ速度推定器のパラメータ
 // Q: プロセスノイズ分散 [m²/s²/s]。未モデル化加速度・IMUドリフトの大きさで調整。
 // R: 観測ノイズ分散 [m²/s²]。オドメトリの計測誤差の大きさで調整。
-#define KV_PROCESS_NOISE_Q 0.5f
-#define KV_MEAS_NOISE_R 1.0f
-#define KV_SLIP_THRESHOLD 0.15f      // [m/s] イノベーション閾値（空転スリップ検知）
-#define KV_SLIP_DEBOUNCE_SAMPLES 50  // スリップ確定サンプル数 (≈5ms @ 10kHz)
+#define KV_PROCESS_NOISE_Q 1.0f
+#define KV_MEAS_NOISE_R 0.01f
+#define KV_SLIP_THRESHOLD 0.2f        // [m/s] イノベーション閾値（空転スリップ検知）
+#define KV_SLIP_DEBOUNCE_SAMPLES 100  // スリップ確定サンプル数 (≈5ms @ 10kHz)
 
 #define SERIAL_SEND_FREQUENCY_HZ 1000
 #define SERIAL_SEND_INTERVAL_MS 1  // 1000 / SERIAL_SEND_FREQUENCY_HZ
