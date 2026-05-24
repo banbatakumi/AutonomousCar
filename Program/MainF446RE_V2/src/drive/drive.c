@@ -7,7 +7,7 @@
 #include "flash.h"
 #include "lighting.h"
 
-#define MAX_VOLTAGE 2.5f  // モータコントローラへの最大印加電圧 [V]
+#define MAX_VOLTAGE 2.0f  // モータコントローラへの最大印加電圧 [V]
 
 #define TORQUE_VECTORING_GAIN 0.25f
 #define MAX_STEER_SPEED 3.0f  // ステアリングの最大回転速度 [rad/s]
@@ -24,6 +24,10 @@
 #define TRACTION_BIAS_SPEED_THRESHOLD 0.5f  // [m/s] スリップ判定を行う最低速度
 #define TRACTION_VOLT_REDUCE_RATE 4.0f      // [V/s] スリップ中の電圧上限削減レート
 #define TRACTION_VOLT_RECOVER_RATE 2.0f     // [V/s] 非スリップ時の電圧上限回復レート
+
+// フィードフォワード (FF) パラメータ
+// 速度 [m/s] → 電圧 [V] の逆モデル係数。走行テストで定常速度と印加電圧から実測して決める。
+#define FF_VELOCITY_GAIN 0.5f
 
 // スタビリティコントロール (SC) パラメータ
 #define SC_MIN_SPEED 0.1f       // [m/s] この速度未満では SC を非作動
@@ -243,7 +247,7 @@ void Drive_Init(bool do_steer_setup) {
   Timer_Init(&drive.velocity_timer);
   Timer_Init(&drive.steer_timer);
   Timer_Init(&drive.traction_timer);
-  PID_Init(&drive.pid_velocity, 1.0f, 1.5f, 0.0f, -MAX_VOLTAGE, MAX_VOLTAGE);
+  PID_Init(&drive.pid_velocity, 1.0f, 1.0f, 0.0f, -MAX_VOLTAGE, MAX_VOLTAGE);
 
   if (do_steer_setup) {
     printf("Steer setup: calibrating...\n");
@@ -387,9 +391,10 @@ void Drive_SetVelocity(float target_velocity, float acceleration, float steer) {
   drive.current_target_velocity = Constrain(drive.current_target_velocity,
                                             -Abs(target_velocity), Abs(target_velocity));
 
-  float voltage_output = PID_Update(&drive.pid_velocity,
-                                    drive.current_target_velocity, drive.speed);
-  Drive_ApplyVoltageAndSteer(voltage_output, steer);
+  float ff_voltage = drive.current_target_velocity * FF_VELOCITY_GAIN;
+  float fb_voltage = PID_Update(&drive.pid_velocity,
+                                drive.current_target_velocity, drive.speed);
+  Drive_ApplyVoltageAndSteer(ff_voltage + fb_voltage, steer);
 }
 
 void Drive_Brake(float deceleration, float steer) {

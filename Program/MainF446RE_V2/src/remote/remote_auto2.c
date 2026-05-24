@@ -5,45 +5,46 @@
 
 #include "drive.h"
 #include "lidar_utils.h"
+#include "lighting.h"
 #include "mymath.h"
 #include "sensor.h"
 #include "timer.h"
 
 #define SEARCH_HALF_DEG 90
-#define SECTOR_HALF_DEG 15
+#define SECTOR_HALF_DEG 20
 #define ACCELERATION 2.0f
 
 // 速度パラメータ
 #define MIN_VELOCITY 1.0f     // 障害物が近い時の最低速度 [m/s]
-#define MAX_VELOCITY 3.0f     // 障害物が遠い時の最大速度 [m/s]
-#define STOP_DIST_MM 1500.0f  // この距離以下で MIN_VELOCITY [mm]
-#define FAST_DIST_MM 2000.0f  // この距離以上で MAX_VELOCITY [mm]
+#define MAX_VELOCITY 1.0f     // 障害物が遠い時の最大速度 [m/s]
+#define STOP_DIST_MM 1000.0f  // この距離以下で MIN_VELOCITY [mm]
+#define FAST_DIST_MM 1500.0f  // この距離以上で MAX_VELOCITY [mm]
 
 // Pure Pursuit パラメータ
 #define LOOKAHEAD_TIME 0.5         // 先読み時間 [s]: L_d = v × LOOKAHEAD_TIME
 #define MIN_LOOKAHEAD_M 0.5f       // 先読み距離の下限 [m]
 #define MAX_LOOKAHEAD_M 3.0f       // 先読み距離の上限 [m]
-#define LOOKAHEAD_DIST_RATIO 1.0f  // clear_dist に対する先読み距離の上限割合
+#define LOOKAHEAD_DIST_RATIO 0.5f  // clear_dist に対する先読み距離の上限割合
 
 // スローインファーストアウト
-#define CORNER_THRESHOLD_DEG 15  // この角度以上で速度上限を下げ始める
-#define CORNER_MAX_DEG 45        // この角度以上で MIN_VELOCITY に制限
-#define CORNER_BRAKE_DEG 45      // この角度かつ速度超過でアクティブブレーキ
+#define CORNER_THRESHOLD_DEG 20  // この角度以上で速度上限を下げ始める
+#define CORNER_MAX_DEG 60        // この角度以上で MIN_VELOCITY に制限
+#define CORNER_BRAKE_DEG 60      // この角度かつ速度超過でアクティブブレーキ
 #define CORNER_BRAKE_STRENGTH 0.05f
 #define CORNER_BRAKE_MARGIN 0.5f  // MIN_VELOCITY + この値を超えたらブレーキ
 
 // 壁回避補正
-#define WALL_HALF_DEG 60
-#define WALL_DIST_MM 400.0f
-#define WALL_CENTER_GAIN (0.5f / WALL_DIST_MM)
+#define WALL_HALF_DEG 80
+#define WALL_DIST_MM 500.0f
+#define WALL_CENTER_GAIN (0 / WALL_DIST_MM)
 
 // 障害物緊急停止・切り返し
-#define FRONT_HALF_DEG 20
+#define FRONT_HALF_DEG 15
 #define EMERGENCY_DIST_MM 300.0f
-#define EMERGENCY_SPEED_FACTOR 100.0f  // v[m/s] × この値[mm] を動的マージンに加算
+#define EMERGENCY_SPEED_FACTOR 150.0f  // v[m/s] × この値[mm] を動的マージンに加算
 #define REVERSE_VELOCITY -0.5f
 #define REVERSE_ACCELERATION 1.0f
-#define REVERSE_DURATION_MS 1500
+#define REVERSE_DURATION_MS 1000
 #define POST_CLEAR_REVERSE_MS 250  // is_emergency 解除後もこの時間[ms]だけ後退を継続
 #define BRAKE_COMPLETE_SPEED 0.1f
 #define REAR_HALF_DEG 15
@@ -120,6 +121,7 @@ void RemoteAuto2_Run(const RemoteCommand* cmd, const LD06* lidar) {
 
   switch (alg_state) {
     case ALG_STATE_BRAKING:
+      Lighting_Passing();
       if (front_nearest_mm > EMERGENCY_DIST_MM * 1.1f) {
         // 前方クリア: 切り返しを省略して通常走行に即復帰
         alg_state = ALG_STATE_NORMAL;
@@ -179,6 +181,11 @@ void RemoteAuto2_Run(const RemoteCommand* cmd, const LD06* lidar) {
   // --- clear_dist_mm による速度計画 ---
   float t = Constrain((clear_dist_mm - STOP_DIST_MM) / (FAST_DIST_MM - STOP_DIST_MM), 0.0f, 1.0f);
   float base_velocity = MIN_VELOCITY + (MAX_VELOCITY - MIN_VELOCITY) * t;
+
+  if (clear_dist_mm < STOP_DIST_MM && Drive_GetSpeed() > MIN_VELOCITY + 0.5) {
+    Drive_Brake(0.05, steer);
+    return;
+  }
 
   // --- スローインファーストアウト ---
   int abs_deg = Abs(signed_deg);

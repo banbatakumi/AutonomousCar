@@ -59,13 +59,15 @@ void Sensor_Init(bool recalibrate_imu) {
   LPF_Init(&voltage_power_lpf, 0.8, 0.0);
 }
 
-void Sensor_Update(void) {
+void Sensor_Update(bool update_ultrasonic) {
   LD06_Update(&lidar);
 
-  Ultrasonic_Update(&ultrasonic_front);
-  Ultrasonic_Update(&ultrasonic_right);
-  Ultrasonic_Update(&ultrasonic_left);
-  Ultrasonic_Update(&ultrasonic_back);
+  if (update_ultrasonic) {
+    Ultrasonic_Update(&ultrasonic_front);
+    Ultrasonic_Update(&ultrasonic_right);
+    Ultrasonic_Update(&ultrasonic_left);
+    Ultrasonic_Update(&ultrasonic_back);
+  }
 
   double raw_voltage_signal = adc_value[4] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
   double raw_voltage_power = adc_value[3] * ADC2VOLT * VOLTAGE_DIVIDER_RATIO;
@@ -74,12 +76,13 @@ void Sensor_Update(void) {
 
   Imu_Update(&imu);
 
-  if (voltage_signal < MIN_VOLTAGE) {
+  if (voltage_signal < MIN_VOLTAGE || voltage_power < MIN_VOLTAGE) {
     if (!battery_error) {
-      printf("Battery voltage critical: %.2fV (minimum: %.2fV)\n", voltage_signal, MIN_VOLTAGE);
+      printf("Battery voltage critical: signal=%.2fV power=%.2fV (minimum: %.2fV)\n",
+             voltage_signal, voltage_power, MIN_VOLTAGE);
       battery_error = true;
     }
-  } else if (voltage_signal >= MIN_VOLTAGE + 0.5) {
+  } else if (voltage_signal >= MIN_VOLTAGE + 0.5 && voltage_power >= MIN_VOLTAGE + 0.5) {
     battery_error = false;
   }
 }

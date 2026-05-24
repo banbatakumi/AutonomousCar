@@ -102,7 +102,7 @@ static void UpdateFrontLed(void) {
     PwmOut_Write(&front_led, s.headlight_brightness);
     return;
   }
-  PwmOut_Write(&front_led, (flash_index % 2 == 0) ? 1.0f : s.headlight_brightness);
+  PwmOut_Write(&front_led, (flash_index % 2 == 0) ? 0.5f : s.headlight_brightness);
 }
 
 void Lighting_Init(void) {
@@ -176,6 +176,6 @@ void Lighting_SetHazard(bool active) {
 }
 
 void Lighting_Passing(void) {
+  if (!s.passing_active) Timer_Reset(&s.passing_timer);
   s.passing_active = true;
-  Timer_Reset(&s.passing_timer);
 }

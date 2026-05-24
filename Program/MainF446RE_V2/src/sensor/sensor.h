@@ -13,6 +13,8 @@
 #define VOLTAGE_DIVIDER_RATIO ((10.0 + 1.0) / 1.0)
 #define MIN_VOLTAGE 8.0
 #define MAX_VOLTAGE 11.0
+// この電圧以下はラズパイ等の低電圧電源とみなし、バッテリーエラー表示を抑制する
+#define RASPBERRY_POWER_MAX_VOLTAGE 6.5
 #define BLINK_PERIOD_US_AT_MIN_VOLTAGE 100U
 #define BLINK_PERIOD_US_AT_MAX_VOLTAGE 1000000U
 
@@ -27,8 +29,9 @@ void Sensor_Init(bool recalibrate_imu);
  *        バッテリー低電圧時は Sensor_GetBatteryError() が true を返す。
  *        IMU データは Sensor_GetImuData() で取得すること。
  *        毎制御ループの先頭で呼ぶこと。
+ * @param update_ultrasonic true のとき超音波センサを更新する。
  */
-void Sensor_Update(void);
+void Sensor_Update(bool update_ultrasonic);
 
 /**
  * @brief バッテリー電圧をSin波で輝度変調した PWM LED に反映する。

@@ -62,14 +62,22 @@ void Setup() {
 
 void MainApp() {
   while (1) {
-    Sensor_Update();
+    Sensor_Update(Mode_Get() != MODE_STANDBY);
 
     const MPU6050_Data* imu_data = Sensor_GetImuData();
     if (imu_data != NULL) {
       Drive_SetImuData(imu_data->accel_x, imu_data->accel_y, imu_data->pitch, imu_data->roll, imu_data->gyro_z);
     }
 
-    if (Sensor_GetBatteryError()) {
+    bool tilted = (imu_data != NULL) &&
+                  (imu_data->pitch >  IMU_TILT_LIMIT_DEG || imu_data->pitch < -IMU_TILT_LIMIT_DEG ||
+                   imu_data->roll  >  IMU_TILT_LIMIT_DEG || imu_data->roll  < -IMU_TILT_LIMIT_DEG);
+
+    bool battery_err = Sensor_GetBatteryError() &&
+                       (Sensor_GetVoltageSignal() > RASPBERRY_POWER_MAX_VOLTAGE ||
+                        Sensor_GetVoltagePower() > RASPBERRY_POWER_MAX_VOLTAGE);
+
+    if (battery_err || tilted) {
       Drive_Free();
     }
 
@@ -77,7 +85,7 @@ void MainApp() {
     Buzzer_Update(&buzzer);
     Lighting_Update();
     Sensor_UpdateVoltageLeds(&user_led3, &user_led4);
-    DigitalOut_Write(&user_led1, (Drive_HasError() || Sensor_GetBatteryError()) ? 1 : 0);
+    DigitalOut_Write(&user_led1, (Drive_HasError() || battery_err || tilted) ? 1 : 0);
 
     if (Mode_Update(DigitalIn_Read(&button1), DigitalIn_Read(&button2))) {
       Buzzer_Beep(&buzzer, 1000, 80);
@@ -102,10 +110,10 @@ void MainApp() {
         break;
     }
 
-    // 制御周期
-    while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US) {
-      DigitalOut_Write(&user_led2, 1);
-    }
+    // 制御周期 (STANDBY は低速)
+    uint32_t interval_us = (Mode_Get() == MODE_STANDBY) ? STANDBY_CONTROL_INTERVAL_US : CONTROL_INTERVAL_US;
+    DigitalOut_Write(&user_led2, 1);
+    while (Timer_ReadUs(&control_interval_timer) < interval_us);
     DigitalOut_Write(&user_led2, 0);
     Timer_Reset(&control_interval_timer);
   }
