@@ -11,14 +11,14 @@
 #include "timer.h"
 
 #define SEARCH_HALF_DEG 90
-#define SECTOR_HALF_DEG 20
-#define ACCELERATION 2.0f
+#define SECTOR_HALF_DEG 25
+#define ACCELERATION 1.0f
 
 // 速度パラメータ
-#define MIN_VELOCITY 1.0f     // 障害物が近い時の最低速度 [m/s]
+#define MIN_VELOCITY 0.5f     // 障害物が近い時の最低速度 [m/s]
 #define MAX_VELOCITY 1.0f     // 障害物が遠い時の最大速度 [m/s]
 #define STOP_DIST_MM 1000.0f  // この距離以下で MIN_VELOCITY [mm]
-#define FAST_DIST_MM 1500.0f  // この距離以上で MAX_VELOCITY [mm]
+#define FAST_DIST_MM 2000.0f  // この距離以上で MAX_VELOCITY [mm]
 
 // Pure Pursuit パラメータ
 #define LOOKAHEAD_TIME 0.5         // 先読み時間 [s]: L_d = v × LOOKAHEAD_TIME
@@ -36,7 +36,7 @@
 // 壁回避補正
 #define WALL_HALF_DEG 80
 #define WALL_DIST_MM 500.0f
-#define WALL_CENTER_GAIN (0 / WALL_DIST_MM)
+#define WALL_CENTER_GAIN (0.25 / WALL_DIST_MM)
 
 // 障害物緊急停止・切り返し
 #define FRONT_HALF_DEG 15

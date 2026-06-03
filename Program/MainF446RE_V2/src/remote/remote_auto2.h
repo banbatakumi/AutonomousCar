@@ -1,7 +1,6 @@
 #ifndef REMOTE_AUTO2_H_
 #define REMOTE_AUTO2_H_
 
-#include "buzzer.h"
 #include "ld06.h"
 #include "lidar_utils.h"
 #include "remote.h"

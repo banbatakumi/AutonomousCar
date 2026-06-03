@@ -114,19 +114,39 @@ void Remote_Update(void) {
       Drive_Free();
     }
   } else {
+    static int pre_mode = 0;
     const LD06* lidar = Sensor_GetLidar();
     switch (cmd.mode) {
       case 1:
         RemoteManual_Run(&cmd, lidar);
+        pre_mode = cmd.mode;
         break;
       case 2:
         RemoteAuto1_Run(&cmd, lidar);
+        pre_mode = cmd.mode;
         break;
       case 3:
         RemoteAuto2_Run(&cmd, lidar);
+        pre_mode = cmd.mode;
         break;
       default:
-        Drive_Free();
+        if (pre_mode == 1) {
+          if (Abs(Drive_GetSpeed()) >= 0.5f) {
+            Drive_Brake(0.05, 0.0f);
+          } else {
+            Drive_Free();
+          }
+        } else if (pre_mode == 2) {
+          RemoteAuto1_Run(&cmd, lidar);
+        } else if (pre_mode == 3) {
+          RemoteAuto2_Run(&cmd, lidar);
+        } else {
+          if (Abs(Drive_GetSpeed()) >= 0.5f) {
+            Drive_Brake(0.05, 0.0f);
+          } else {
+            Drive_Free();
+          }
+        }
         break;
     }
   }
