@@ -125,7 +125,7 @@
         "max_error": 0.005,
         "min_clearance": 0.2,
         "min_connection": 0.25,
-        "min_copper_edge_clearance": 0.25,
+        "min_copper_edge_clearance": 0.2,
         "min_groove_width": 0.0,
         "min_hole_clearance": 0.25,
         "min_hole_to_hole": 0.25,
@@ -188,10 +188,8 @@
       ],
       "track_widths": [
         0.0,
-        0.25,
-        0.5,
-        1.0,
-        1.5
+        0.0,
+        0.25
       ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
@@ -468,7 +466,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "MainBoard_V3.kicad_pro",
+    "filename": "OtherBoard_V1.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -628,7 +626,7 @@
   },
   "sheets": [
     [
-      "82c1f385-b98b-40ef-9728-ce204bc5c807",
+      "4e009137-9200-40e0-9372-4fad3c31f745",
       "Root"
     ]
   ],
