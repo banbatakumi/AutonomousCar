@@ -13347,6 +13347,28 @@
 			)
 		)
 	)
+	(global_label "RAS_SIG"
+		(shape output)
+		(at 140.97 193.04 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "1ebabb49-4d64-4227-8276-23130fa030b2")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 151.5752 193.04 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+				(hide yes)
+			)
+		)
+	)
 	(global_label "BRAKE_LED"
 		(shape output)
 		(at 328.93 210.82 0)
@@ -15239,6 +15261,28 @@
 			)
 		)
 	)
+	(global_label "RAS_SIG"
+		(shape input)
+		(at 345.44 113.03 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "e82539dd-2384-45c0-b04a-d20ad82bd176")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 356.0452 113.03 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+				(hide yes)
+			)
+		)
+	)
 	(global_label "ENCODER_LEFT"
 		(shape output)
 		(at 290.83 187.96 0)
@@ -15406,6 +15450,28 @@
 		(uuid "faa4e212-4c8d-4fda-a8d5-cff0f97e1298")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
 			(at 361.7299 57.15 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+				(hide yes)
+			)
+		)
+	)
+	(global_label "RAS_SIG"
+		(shape output)
+		(at 138.43 157.48 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "fb87e9cc-9d28-4c6c-b493-65f81fd926c4")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 149.0352 157.48 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -21402,6 +21468,73 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:R")
+		(at 134.62 157.48 270)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "61f57665-367b-4a4a-880d-f574ce2c79a7")
+		(property "Reference" "R45"
+			(at 134.62 157.48 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "10k"
+			(at 134.62 160.02 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 134.62 155.702 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 134.62 157.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 134.62 157.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "11c6a536-5dbb-4802-8771-d7aa847ceedc")
+		)
+		(pin "2"
+			(uuid "954208c5-cc21-4cbb-ade3-1f6cdb4f73d4")
+		)
+		(instances
+			(project "MainBoard_V3_2"
+				(path "/82c1f385-b98b-40ef-9728-ce204bc5c807"
+					(reference "R45")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:GND")
 		(at 43.18 130.81 0)
 		(unit 1)
@@ -23050,6 +23183,71 @@
 			(project "MainBoard_V3"
 				(path "/82c1f385-b98b-40ef-9728-ce204bc5c807"
 					(reference "#PWR03")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:+3V3")
+		(at 130.81 157.48 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "7ba98408-a8b3-4867-b1cf-4592790c5a85")
+		(property "Reference" "#PWR048"
+			(at 130.81 161.29 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "+3V3"
+			(at 130.81 153.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 130.81 157.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 130.81 157.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"+3V3\""
+			(at 130.81 157.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "19e9a05c-72cd-441e-b8b3-a848201fc9d7")
+		)
+		(instances
+			(project "MainBoard_V3_2"
+				(path "/82c1f385-b98b-40ef-9728-ce204bc5c807"
+					(reference "#PWR048")
 					(unit 1)
 				)
 			)
