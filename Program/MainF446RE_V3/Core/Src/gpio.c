@@ -52,24 +52,31 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, LIDAR_5V_SIG_Pin|TRIG2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, LIDAR_POWER_Pin|TRIG_REAR_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, POWER_SIG_Pin|USER_LED1_Pin|USER_LED2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, DRIVE_POWER_Pin|LED1_Pin|LED2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(TRIG2A12_GPIO_Port, TRIG2A12_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(TRIG_FRONT_GPIO_Port, TRIG_FRONT_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : LIDAR_5V_SIG_Pin TRIG2_Pin */
-  GPIO_InitStruct.Pin = LIDAR_5V_SIG_Pin|TRIG2_Pin;
+  /*Configure GPIO pins : LIDAR_POWER_Pin TRIG_REAR_Pin */
+  GPIO_InitStruct.Pin = LIDAR_POWER_Pin|TRIG_REAR_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : INT_Pin ECHO2_Pin */
-  GPIO_InitStruct.Pin = INT_Pin|ECHO2_Pin;
+  /*Configure GPIO pin : INT_Pin */
+  GPIO_InitStruct.Pin = INT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ECHO_REAR_Pin */
+  // ECHOの立ち上がり/立ち下がりをピン変化割り込みで検知する (メインループの制御周期に依存せず正確にパルス幅を測るため)
+  GPIO_InitStruct.Pin = ECHO_REAR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
@@ -79,25 +86,32 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : POWER_SIG_Pin USER_LED1_Pin USER_LED2_Pin */
-  GPIO_InitStruct.Pin = POWER_SIG_Pin|USER_LED1_Pin|USER_LED2_Pin;
+  /*Configure GPIO pins : DRIVE_POWER_Pin LED1_Pin LED2_Pin */
+  GPIO_InitStruct.Pin = DRIVE_POWER_Pin|LED1_Pin|LED2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : ECHO2A11_Pin */
-  GPIO_InitStruct.Pin = ECHO2A11_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(ECHO2A11_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : TRIG2A12_Pin */
-  GPIO_InitStruct.Pin = TRIG2A12_Pin;
+  /*Configure GPIO pin : TRIG_FRONT_Pin */
+  GPIO_InitStruct.Pin = TRIG_FRONT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(TRIG2A12_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(TRIG_FRONT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ECHO_FRONT_Pin */
+  // ECHOの立ち上がり/立ち下がりをピン変化割り込みで検知する (メインループの制御周期に依存せず正確にパルス幅を測るため)
+  GPIO_InitStruct.Pin = ECHO_FRONT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(ECHO_FRONT_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init */
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);   // ECHO_REAR (PC9)
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0); // ECHO_FRONT (PA12)
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
 

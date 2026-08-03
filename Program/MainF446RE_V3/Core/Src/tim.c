@@ -345,14 +345,14 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef* timHandle)
     PB0     ------> TIM3_CH3
     PB1     ------> TIM3_CH4
     */
-    GPIO_InitStruct.Pin = LED4_Pin|LED3_Pin;
+    GPIO_InitStruct.Pin = FRONT_LED_Pin|LW_LED_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    GPIO_InitStruct.Pin = LED2_Pin|LED1_Pin;
+    GPIO_InitStruct.Pin = REAR_LED_Pin|RW_LED_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -374,7 +374,7 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef* timHandle)
     PB6     ------> TIM4_CH1
     PB7     ------> TIM4_CH2
     */
-    GPIO_InitStruct.Pin = USER_LED3_Pin|USER_LED4_Pin;
+    GPIO_InitStruct.Pin = LED3_Pin|LED4_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;

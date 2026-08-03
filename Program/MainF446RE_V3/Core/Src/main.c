@@ -108,6 +108,7 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
   Setup();
   MainApp();

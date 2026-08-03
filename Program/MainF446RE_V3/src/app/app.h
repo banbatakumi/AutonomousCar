@@ -3,11 +3,17 @@
 
 #include <stdio.h>
 
+#include "adc.h"
+#include "adc_dma.h"
 #include "buzzer.h"
 #include "digitalinout.h"
+#include "encoder.h"
+#include "lighting.h"
 #include "main.h"
+#include "power.h"
 #include "pwm_out.h"
 #include "timer.h"
+#include "ultrasonic.h"
 
 void Setup();
 void MainApp();
