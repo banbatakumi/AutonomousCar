@@ -8,6 +8,7 @@ AdcDma adc2;
 
 Power power;
 Encoder encoder;
+Imu imu;
 Ultrasonic ultrasonic_front;
 Ultrasonic ultrasonic_rear;
 
@@ -23,6 +24,7 @@ Serial rear_left_serial;
 Serial rear_right_serial;
 Motors motors;
 Steering steering;
+Drive drive;
 
 DigitalIn button1;
 DigitalIn button2;
@@ -63,6 +65,11 @@ void Setup() {
   // ボタン1を押しながら起動 → 現在のステアリング角度を直進中心点として記録・保存する
   Steering_Init(&steering, &motors.steering, DigitalIn_Read(&button1));
 
+  // ボタン2を押しながら起動 → 静止キャリブレーションをやり直して Flash に保存する (数秒かかる)
+  Imu_Init(&imu, &hi2c1, DigitalIn_Read(&button2));
+
+  Drive_Init(&drive, &motors, &encoder, &steering, &imu);
+
   // TIM2 CH3: BUZZER, APB1 タイマクロック 90MHz, Prescaler=0 (tim.c の MX_TIM2_Init と一致させる)
   Buzzer_Init(&buzzer, &htim2, TIM_CHANNEL_3, 90000000U, 0U);
 
@@ -78,11 +85,27 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     Ultrasonic_OnEchoEdge(&ultrasonic_front);
   } else if (GPIO_Pin == ECHO_REAR_Pin) {
     Ultrasonic_OnEchoEdge(&ultrasonic_rear);
+  } else if (GPIO_Pin == INT_Pin) {
+    // MPU6050 の新しいサンプルが揃った → 非同期I2C読み出しを開始する
+    Imu_OnDataReady(&imu);
   }
 }
 
+// MPU6050 の非同期読み出し完了 (HAL_I2C_Mem_Read_IT の完了コールバック)
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
+  Imu_OnI2cRxComplete(&imu, hi2c);
+}
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef* hi2c) {
+  Imu_OnI2cError(&imu, hi2c);
+}
+
+void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
+  Imu_OnI2cError(&imu, hi2c);
+}
+
 void MainApp() {
-  Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_DAYTIME);
+  Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_NORMAL);
 
   // 起動時にハザードを2回点滅させる
   Lighting_SetWinker(&lighting, LIGHTING_WINKER_HAZARD);
@@ -93,15 +116,24 @@ void MainApp() {
   }
   Lighting_SetWinker(&lighting, LIGHTING_WINKER_OFF);
 
+  Drive_Enable(&drive);  // 現状は無効のまま。Drive_Update() は観測量だけ更新する
   while (1) {
     Power_Update(&power);
     Lighting_Update(&lighting);
     Encoder_Update(&encoder);
+    Imu_Update(&imu);
     Ultrasonic_Update(&ultrasonic_front);
     Ultrasonic_Update(&ultrasonic_rear);
+    // Drive_Enable(&drive);                // 現状は無効のまま。Drive_Update() は観測量だけ更新する
+    Drive_SetTargetSpeed(&drive, 0.05f);    // 現状
+    Steering_SetAngleRad(&steering, 1.0f);  // 現状
+
+    // Drive_SetTargetSpeed() / Drive_Enable() を呼ぶ上位ロジック (Raspberry Pi 通信) は未実装のため、
+    // 現状は無効のまま = トルク指令を出さない。Drive_Update はセンサ由来の観測量だけ更新する
+    Drive_Update(&drive);
     Motors_Update(&motors);
-    Steering_SetAngleRad(&steering, 1);  // 直進指令
-    uint32_t interval_us = 1000;
+
+    uint32_t interval_us = 500;
     DigitalOut_Write(&led2, 1);
     while (Timer_ReadUs(&control_interval_timer) < interval_us);
     DigitalOut_Write(&led2, 0);

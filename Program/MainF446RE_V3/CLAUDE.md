@@ -36,19 +36,27 @@ Core/           STM32CubeMX 生成コード。main.h に GPIO ピン定義、Src
 Drivers/        STM32F4xx HAL ドライバ (CubeMX 生成、編集しない)
 src/app/        エントリポイント。Setup() でペリフェラル初期化、MainApp() がメインループ (app.h/app.c)
 src/lighting/   前照灯・尾灯・ウィンカー/ハザードの制御 (Lighting_*)
-src/sensing/    純粋な計測のみを行うセンサモジュール (Encoder_* : 車輪エンコーダの角度・角速度)
+src/sensing/    純粋な計測のみを行うセンサモジュール (Encoder_* : 車輪エンコーダの角度・角速度、
+                Imu_* : MPU6050 + AHRS を束ねた姿勢 (yaw/pitch/roll) と加速度。取付方向の軸符号変換・
+                Flash 永続キャリブレーション・静止時のジャイロバイアス追従もここ)
 src/power/      電源の計測 (電圧・電流・温度) と電源スイッチ (DRIVE_POWER/LIDAR_POWER) の制御を担う (Power_*)。
                 駆動電流が閾値を超えると DRIVE_POWER を自動遮断する過電流保護もここに実装
 src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ステアリング/左後輪/右後輪)のBLDC MD通信まとめ、
-                Steering_* : ステアリング中心点キャリブレーションと相対角度指令)
+                Steering_* : ステアリング中心点キャリブレーションと相対角度指令、
+                Drive_* : 車速のトルクベース閉ループ制御。後輪MDはトルク(Nm)モードで駆動し、
+                車速PI → 左右等配分 → 各輪スリップ率によるTCリミッタ、という構造。車速の真値は
+                非駆動輪である前輪エンコーダから取る。トルクベクタリング項の入口も用意済み)
 lib/            特定の車両ロジックに依存しない汎用ライブラリ群 (単一責任、Module_FunctionName 形式)
   adc_dma/      ADC を DMA (Circular+ContinuousConvMode) で連続変換させ最新値を非ブロッキングで読む薄いラッパ
+  ahrs/         6軸 (ジャイロ+加速度) Mahony 相補フィルタによる姿勢推定 (HAL 非依存)
   bldc_motor/   BLDC モータドライバ (MD) とのシリアル通信プロトコル実装 (指令送信・状態フレーム受信/パース)
   buzzer/       PWM ブザー制御 (パターン再生、起動メロディ)
   digitalinout/ GPIO 入出力の薄いラッパ (DigitalOut/DigitalIn)
   filter/       LPF (1次ローパス) / MAF (移動平均) フィルタ
-  flash/        内部 Flash 読み書き (Sector 7 をユーザーデータ用、Sector 6 を MPU6050 キャリブレーション用に予約 — MPU6050 モジュール自体は書き直しで未移植)
+  flash/        内部 Flash 読み書き (Sector 7 をユーザーデータ用、Sector 6 を MPU6050 キャリブレーション用に予約)
   ld06/         LD06 LiDAR パケットパース (Serial* 経由で受信、360度分の距離配列を保持)
+  mpu6050/      MPU6050 の I2C ドライバ。DATA_RDY 割り込み起点の非同期読み出し (HAL_I2C_Mem_Read_IT) +
+                ISR 側リングバッファ。姿勢計算は持たず生値→物理量までを担当
   mymath/       角度正規化・三角関数近似 (SinDeg/CosDeg/Atan2) など、HAL 非依存の数値ユーティリティ
   pid/          PID コントローラ (アンチワインドアップ付き)
   pwm_out/      TIM PWM 出力の薄いラッパ (duty 0.0–1.0 で指定)
@@ -65,6 +73,8 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
 
 | 信号名 | ポート/ピン | 用途 |
 |--------|-----------|------|
+| I2C1_SCL/SDA | PB8/PB9 | MPU6050 (400kHz) |
+| INT | PC5 | MPU6050 DATA_RDY 割り込み (EXTI9_5) |
 | CURRENT_P/S | PC0/PC1 | 電流センサ ADC (Primary/Secondary) |
 | VOLTAGE_S/P | PC2/PC3 | バッテリー電圧 ADC |
 | ENCODER_LEFT/RIGHT | PA5/PA4 | 車輪エンコーダ入力 |
@@ -88,6 +98,15 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
 - **TIM4**: Prescaler 9, Period 899 — LED3/LED4 PWM
 
 UART は USART1/2/3/6, UART4/5 の 6 系統が CubeMX で設定済み (USART3 のみ 230400bps、USART6 のみ 1Mbps、他は 250000bps)。現状 `src/app/app.c` はどの UART も未使用で、Raspberry Pi 通信・LiDAR・モータードライバ通信などへの割り当ては未実装。`Buzzer_Init` に渡すクロック/プリスケーラ値は `Core/Src/tim.c` の `MX_TIMx_Init` の設定値と必ず一致させること (不一致は無音・音程ズレの原因になる)。
+
+DMA の割り当て (`Core/Src/dma.c`): **DMA1 の Stream0–7 はすべて UART が使用済み**。STM32F446 の I2C1 は DMA1 (RX: Stream0/5、TX: Stream6/7) しか使えないため、UART の DMA を潰さない限り I2C に DMA は割り当てられない。そのため MPU6050 は割り込み駆動 I2C (`HAL_I2C_Mem_Read_IT`) で読んでいる。
+
+EXTI (優先度 5、`.ioc` の NVIC 設定):
+
+- **EXTI9_5**: INT (PC5, 立ち上がり = MPU6050 DATA_RDY) と ECHO_REAR (PC9, 両エッジ)
+- **EXTI15_10**: ECHO_FRONT (PA12, 両エッジ)
+
+いずれも `HAL_GPIO_EXTI_Callback` (`src/app/app.c`) でピン番号を見て各モジュールへ振り分ける。PC5 と PC9 はベクタを共有しているため、IMU 側で DATA_RDY を一時停止するときは NVIC ごと止めず `EXTI->IMR` で PC5 のラインだけをマスクしている (`src/sensing/imu.c` の `EnableDataReadyInterrupt`)。
 
 ---
 
