@@ -38,7 +38,6 @@
         * Output
         * EVENT_OUT
         * EXTI
-     PB10   ------> S_TIM2_CH3
 */
 void MX_GPIO_Init(void)
 {
@@ -53,47 +52,39 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, POWER_SIG_Pin|GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, LIDAR_5V_SIG_Pin|TRIG2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(TRIG2_GPIO_Port, TRIG2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, POWER_SIG_Pin|USER_LED1_Pin|USER_LED2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(TRIG2A12_GPIO_Port, TRIG2A12_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PB10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  /*Configure GPIO pins : LIDAR_5V_SIG_Pin TRIG2_Pin */
+  GPIO_InitStruct.Pin = LIDAR_5V_SIG_Pin|TRIG2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : BTN2_Pin BTN1_Pin */
-  GPIO_InitStruct.Pin = BTN2_Pin|BTN1_Pin;
+  /*Configure GPIO pins : INT_Pin ECHO2_Pin */
+  GPIO_InitStruct.Pin = INT_Pin|ECHO2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : RAS_SIG_Pin BUTTON2_Pin BUTTON1_Pin */
+  GPIO_InitStruct.Pin = RAS_SIG_Pin|BUTTON2_Pin|BUTTON1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : POWER_SIG_Pin PB4 PB5 */
-  GPIO_InitStruct.Pin = POWER_SIG_Pin|GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pins : POWER_SIG_Pin USER_LED1_Pin USER_LED2_Pin */
+  GPIO_InitStruct.Pin = POWER_SIG_Pin|USER_LED1_Pin|USER_LED2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : TRIG2_Pin */
-  GPIO_InitStruct.Pin = TRIG2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(TRIG2_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : ECHO2_Pin */
-  GPIO_InitStruct.Pin = ECHO2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(ECHO2_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : ECHO2A11_Pin */
   GPIO_InitStruct.Pin = ECHO2A11_Pin;

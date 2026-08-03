@@ -22,6 +22,9 @@ static void SetTone(Buzzer* obj, uint32_t freq_hz) {
   arr = (obj->timer_clock_hz / ((obj->prescaler + 1) * freq_hz)) - 1;
   __HAL_TIM_SET_AUTORELOAD(obj->htim, arr);
   __HAL_TIM_SET_COMPARE(obj->htim, obj->channel, arr / 2);
+  // ARR はプリロード無効で即時反映されるため、CNT が新 ARR を超えたままだと
+  // 次の一致まで最大値までカウントし続けてしまう。CNT を 0 に戻して回避する。
+  __HAL_TIM_SET_COUNTER(obj->htim, 0);
 }
 
 static void BuzzerOn(Buzzer* obj) {

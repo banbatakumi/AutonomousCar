@@ -60,7 +60,7 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 int _write(int file, char* ptr, int len) {
-  HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, 10);
+  HAL_UART_Transmit(&huart5, (uint8_t*)ptr, len, 10);
   return len;
 }
 
@@ -107,9 +107,9 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_TIM1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   Setup();
-
   MainApp();
 
   /* USER CODE END 2 */
