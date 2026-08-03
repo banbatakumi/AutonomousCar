@@ -36,7 +36,14 @@ Core/           STM32CubeMX 生成コード。main.h に GPIO ピン定義、Src
 Drivers/        STM32F4xx HAL ドライバ (CubeMX 生成、編集しない)
 src/app/        エントリポイント。Setup() でペリフェラル初期化、MainApp() がメインループ (app.h/app.c)
 src/lighting/   前照灯・尾灯・ウィンカー/ハザードの制御 (Lighting_*)
+src/sensing/    純粋な計測のみを行うセンサモジュール (Encoder_* : 車輪エンコーダの角度・角速度)
+src/power/      電源の計測 (電圧・電流・温度) と電源スイッチ (DRIVE_POWER/LIDAR_POWER) の制御を担う (Power_*)。
+                駆動電流が閾値を超えると DRIVE_POWER を自動遮断する過電流保護もここに実装
+src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ステアリング/左後輪/右後輪)のBLDC MD通信まとめ、
+                Steering_* : ステアリング中心点キャリブレーションと相対角度指令)
 lib/            特定の車両ロジックに依存しない汎用ライブラリ群 (単一責任、Module_FunctionName 形式)
+  adc_dma/      ADC を DMA (Circular+ContinuousConvMode) で連続変換させ最新値を非ブロッキングで読む薄いラッパ
+  bldc_motor/   BLDC モータドライバ (MD) とのシリアル通信プロトコル実装 (指令送信・状態フレーム受信/パース)
   buzzer/       PWM ブザー制御 (パターン再生、起動メロディ)
   digitalinout/ GPIO 入出力の薄いラッパ (DigitalOut/DigitalIn)
   filter/       LPF (1次ローパス) / MAF (移動平均) フィルタ
@@ -47,9 +54,10 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
   pwm_out/      TIM PWM 出力の薄いラッパ (duty 0.0–1.0 で指定)
   serial/       UART + DMA 受信によるリングバッファ通信ラッパ
   timer/        DWT サイクルカウンタベースのマイクロ秒精度タイマ
+  ultrasonic/   HC-SR04 系超音波センサのトリガ送出・ECHOパルス幅からの距離計算 (ピン変化割り込み駆動)
 ```
 
-`lib/` のほとんどのヘッダは `static inline` 実装のみでヘッダオンリー。今後モーター制御・トラクションコントロール・ライト制御・Raspberry Pi 通信プロトコルなどを実装する際は、ハードウェア依存部分 (ドライバ) は `lib/` に薄く切り出し、車両固有のロジック (制御アルゴリズム・状態遷移・通信プロトコルの解釈) は `src/` 側に置く。
+`lib/` のほとんどのヘッダは `static inline` 実装のみでヘッダオンリー。今後トラクションコントロール・Raspberry Pi 通信プロトコルなどを実装する際は、ハードウェア依存部分 (ドライバ) は `lib/` に薄く切り出し、車両固有のロジック (制御アルゴリズム・状態遷移・通信プロトコルの解釈) は `src/` 側に置く。`src/sensing/` は計測専用、電源の計測+スイッチ制御のように読み書き両方を担うモジュールは `src/power/` のように役割ごとのディレクトリに分ける。
 
 ---
 

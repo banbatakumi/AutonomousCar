@@ -6,10 +6,10 @@
 // マツダ車のような上品な点滅を再現するため、単純な on/off ではなく
 // 「素早く点灯 → 一定時間保持 → ゆっくり消灯 → 間隔を空ける」の
 // 4 フェーズで duty を連続的に変化させる。
-#define LIGHTING_WINKER_FADE_IN_MS 100u
-#define LIGHTING_WINKER_HOLD_MS 400u
-#define LIGHTING_WINKER_FADE_OUT_MS 150u
-#define LIGHTING_WINKER_GAP_MS 350u
+#define LIGHTING_WINKER_FADE_IN_MS 50u
+#define LIGHTING_WINKER_HOLD_MS 300u
+#define LIGHTING_WINKER_FADE_OUT_MS 100u
+#define LIGHTING_WINKER_GAP_MS 500u
 #define LIGHTING_WINKER_PERIOD_MS \
   (LIGHTING_WINKER_FADE_IN_MS + LIGHTING_WINKER_HOLD_MS + LIGHTING_WINKER_FADE_OUT_MS + LIGHTING_WINKER_GAP_MS)
 
@@ -116,4 +116,8 @@ void Lighting_Update(Lighting* obj) {
   }
   PwmOut_Write(&obj->left_winker, left_duty);
   PwmOut_Write(&obj->right_winker, right_duty);
+}
+
+uint32_t Lighting_GetWinkerPeriodMs(void) {
+  return LIGHTING_WINKER_PERIOD_MS;
 }

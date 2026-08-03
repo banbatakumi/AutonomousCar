@@ -10,8 +10,11 @@
 #include "encoder.h"
 #include "lighting.h"
 #include "main.h"
+#include "motors.h"
 #include "power.h"
 #include "pwm_out.h"
+#include "serial.h"
+#include "steering.h"
 #include "timer.h"
 #include "ultrasonic.h"
 

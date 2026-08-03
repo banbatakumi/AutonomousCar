@@ -62,4 +62,10 @@ void Lighting_SetWinker(Lighting* obj, LightingWinkerState state);
  */
 void Lighting_Update(Lighting* obj);
 
+/**
+ * @brief ウィンカー/ハザードの点滅1周期分の時間 [ms] を取得する。
+ * 起動時に指定回数だけ点滅させたい場合など、この値の倍数だけ待てばよい。
+ */
+uint32_t Lighting_GetWinkerPeriodMs(void);
+
 #endif  // LIGHTING_H_

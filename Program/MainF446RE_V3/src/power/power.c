@@ -15,8 +15,32 @@
 #define TEMP_V25 0.76f
 #define TEMP_AVG_SLOPE_V_PER_C 0.0025f
 
-void Power_Init(Power *obj, AdcDma *adc1) {
+void Power_Init(Power *obj, AdcDma *adc1,
+                 GPIO_TypeDef *drive_power_port, uint16_t drive_power_pin,
+                 GPIO_TypeDef *lidar_power_port, uint16_t lidar_power_pin) {
   obj->adc1 = adc1;
+  obj->drive_tripped = 0;
+  DigitalOut_Init(&obj->drive_power, drive_power_port, drive_power_pin);
+  DigitalOut_Init(&obj->lidar_power, lidar_power_port, lidar_power_pin);
+  DigitalOut_Write(&obj->drive_power, 1);
+}
+
+void Power_Update(Power *obj) {
+  if (obj->drive_tripped) {
+    return;
+  }
+  if (Power_GetCurrentDrive(obj) > POWER_DRIVE_OVERCURRENT_THRESHOLD_A) {
+    obj->drive_tripped = 1;
+    DigitalOut_Write(&obj->drive_power, 0);
+  }
+}
+
+int Power_IsDriveTripped(Power *obj) {
+  return obj->drive_tripped;
+}
+
+void Power_SetLidarPower(Power *obj, int on) {
+  DigitalOut_Write(&obj->lidar_power, on);
 }
 
 float Power_GetVoltageSignal(Power *obj) {
