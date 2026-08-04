@@ -7,7 +7,8 @@
 #include "timer.h"
 
 #define STEERING_CALIB_MAGIC 0x53544545u  // "STEE"
-#define STEERING_CALIB_TIMEOUT_S 2.0f     // MD起動直後は状態フレーム送信開始まで時間がかかりうるため、待つ上限
+// 駆動電源の投入直後に呼ばれるため、MDのブートから状態フレーム送信開始までを待てる長さにしてある
+#define STEERING_CALIB_TIMEOUT_S 5.0f
 
 typedef struct {
   uint32_t magic;

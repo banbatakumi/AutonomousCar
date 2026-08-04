@@ -1,7 +1,7 @@
 #include "lighting.h"
 
-#define LIGHTING_DAYTIME_DUTY 0.1f
-#define LIGHTING_TAILLIGHT_DUTY 0.1f
+#define LIGHTING_DAYTIME_DUTY 0.05f
+#define LIGHTING_TAILLIGHT_DUTY 0.05f
 
 // マツダ車のような上品な点滅を再現するため、単純な on/off ではなく
 // 「素早く点灯 → 一定時間保持 → ゆっくり消灯 → 間隔を空ける」の

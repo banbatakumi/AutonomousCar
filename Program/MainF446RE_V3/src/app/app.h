@@ -14,6 +14,7 @@
 #include "lighting.h"
 #include "main.h"
 #include "motors.h"
+#include "mymath.h"
 #include "power.h"
 #include "pwm_out.h"
 #include "serial.h"
