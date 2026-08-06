@@ -32,7 +32,6 @@
 // ===========================================================================
 #define DRIVE_FRONT_WHEEL_RADIUS_M 0.030f  // 前輪 (非駆動輪) の有効転がり半径 [m]
 #define DRIVE_REAR_WHEEL_RADIUS_M 0.030f   // 後輪 (駆動輪) の有効転がり半径 [m]
-#define DRIVE_GEAR_RATIO 1.0f              // モータ回転数 / 後輪回転数 (ダイレクトドライブなら 1.0)
 #define DRIVE_WHEELBASE_M 0.230f           // 前後車軸間距離 [m]
 #define DRIVE_REAR_TRACK_M 0.155f          // 後輪左右間距離 (トレッド) [m]
 
@@ -50,7 +49,11 @@
 #define DRIVE_SPEED_KI 0.25f  // 車速PIの積分ゲイン [Nm / (m/s) / s]
 #define DRIVE_SPEED_KD 0.0f   // 車速は微分ノイズが乗りやすいため既定では使わない
 
-#define DRIVE_MAX_TORQUE_NM 0.1f     // 1輪あたりの指令トルク上限 [Nm] (プロトコル上の絶対上限は ±3.2767)
+// 1輪あたりのトルク上限 [Nm] (プロトコル上の絶対上限は ±3.2767)。
+// この値は指令のクランプに使うと同時に MD 側のトルク上限としても設定するため、
+// このマイコンのバグや通信異常で過大な指令が出ても最終段で頭打ちになる。
+// 停車保持の制動トルク (DRIVE_STANDSTILL_BRAKE_NM) もこの上限を超えないこと
+#define DRIVE_MAX_TORQUE_NM 0.1f
 #define DRIVE_MAX_SPEED_M_S 3.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
 #define DRIVE_ANTIWINDUP_TT_S 0.10f  // TC/リミッタで飽和したときに積分を巻き戻す時定数 [s]
 

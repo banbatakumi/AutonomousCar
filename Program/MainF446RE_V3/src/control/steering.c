@@ -54,6 +54,8 @@ static bool Calibrate(Steering* obj) {
 void Steering_Init(Steering* obj, BldcMotor* motor, bool do_calibrate) {
   obj->motor = motor;
 
+  BldcMotor_SetTorqueLimitNm(motor, STEERING_MAX_TORQUE_NM);
+
   if (do_calibrate && Calibrate(obj)) {
     return;
   }
@@ -67,6 +69,6 @@ void Steering_SetAngleRad(Steering* obj, float angle_rad) {
   BldcMotor_SetPosition(obj->motor, target_rad);
 }
 
-float Steering_GetAngleRad(Steering* obj) {
+float Steering_GetAngleRad(const Steering* obj) {
   return GapRadians(BldcMotor_GetMechAngle(obj->motor), obj->center_rad);
 }

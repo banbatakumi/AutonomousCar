@@ -1,6 +1,7 @@
 #ifndef APP_H_
 #define APP_H_
 
+#include <stdbool.h>
 #include <stdio.h>
 
 #include "adc.h"

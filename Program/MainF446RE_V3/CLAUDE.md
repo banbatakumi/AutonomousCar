@@ -59,8 +59,30 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
 lib/            特定の車両ロジックに依存しない汎用ライブラリ群 (単一責任、Module_FunctionName 形式)
   adc_dma/      ADC を DMA (Circular+ContinuousConvMode) で連続変換させ最新値を非ブロッキングで読む薄いラッパ
   ahrs/         6軸 (ジャイロ+加速度) Mahony 相補フィルタによる姿勢推定 (HAL 非依存)
-  bldc_motor/   BLDC モータドライバ (MD) とのシリアル通信プロトコル実装 (指令送信・状態フレーム受信/パース)
+  bldc_motor/   BLDC モータドライバ (MD) とのシリアル通信プロトコル実装 (指令送信・状態フレーム受信/パース)。
+                送信のみ 1kHz (BLDC_MOTOR_TX_INTERVAL_US) に間引かれ、受信は呼ばれるたびに処理する
+                (Serial のリングバッファ 64 バイトを溢れさせないため)。
+                指令フレームは 6 バイト固定長で、モード・指令値に加えてトルク上限を毎回載せる
+                (CANopen の RxPDO 相当。フレーム1つが常に完結した状態を表すので、取りこぼしや
+                MD 単独のリセットがあっても次のフレームで復元され、設定値を別途同期する
+                仕組みが要らない)。末尾は CRC-8/AUTOSAR で、フッタは置かない
+                (固定値のフッタはペイロードの情報を含まないためデータ化けを検出できない)。
+                トルク上限は uint8 で符号なし・切り捨て量子化・レンジ外飽和とし、初期値 0 は
+                「無制限」ではなく「上限 0」= 動かない側に倒してある。
+                速度上限は持たない。位置制御では速度指令が Kp × 位置偏差 で決まり舵角が
+                ±60度に有界なので位置ゲイン自体がリミッタとして働き、後輪はトルクモードなので
+                過速度の歯止めは Drive_Update の車速リミッタ側にある。
+                MD からの状態フレーム (11バイト) も同じ方針で CRC-8 + フッタ無しとし、末尾に
+                MD が適用中のトルク上限をエコーバックさせている。CRC 不一致のフレームは破棄して
+                前回値を保持する (誤った角度・速度で制御するより保持する方が安全)。
+                指令した制限値と一致しているかは BldcMotor_IsLimitSynced() で確認できる。
+                Serial_Write は先頭で HAL_UART_AbortTransmit を呼ぶため、1回の送信
+                (6バイト=240us) は必ず次の送信までに完了させること
   buzzer/       PWM ブザー制御 (パターン再生、起動メロディ)
+  crc8/         CRC-8/AUTOSAR (poly=0x2F)。ヘッダオンリー。MD との通信で使用し、Raspberry Pi との
+                通信プロトコルでも使う想定。**BLDC リポジトリ (ProgramV4/lib/crc8/crc8.h) と
+                バイト単位で同一に保つこと** (diff で実装一致を検証できるようにするため)。
+                多項式を変えると HD (ハミング距離) が落ちるので通信相手と揃えたまま触らない
   digitalinout/ GPIO 入出力の薄いラッパ (DigitalOut/DigitalIn)
   filter/       LPF (1次ローパス) / MAF (移動平均) フィルタ
   flash/        内部 Flash 読み書き (Sector 7 をユーザーデータ用、Sector 6 を MPU6050 キャリブレーション用に予約)
@@ -107,7 +129,7 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
 - **TIM3**: Prescaler 9, Period 899 — ライト系 PWM (前照灯/尾灯/左右ウィンカー)
 - **TIM4**: Prescaler 9, Period 899 — LED3/LED4 PWM
 
-UART は USART1/2/3/6, UART4/5 の 6 系統が CubeMX で設定済み (USART3 のみ 230400bps、USART6 のみ 1Mbps、他は 250000bps)。現状 `src/app/app.c` はどの UART も未使用で、Raspberry Pi 通信・LiDAR・モータードライバ通信などへの割り当ては未実装。`Buzzer_Init` に渡すクロック/プリスケーラ値は `Core/Src/tim.c` の `MX_TIMx_Init` の設定値と必ず一致させること (不一致は無音・音程ズレの原因になる)。
+UART は USART1/2/3/6, UART4/5 の 6 系統が CubeMX で設定済み (USART6 のみ 230400bps、他は 250000bps)。BLDC MD は USART2 (ステアリング) / USART3 (左後輪) / UART4 (右後輪) に割り当て済み。250000bps 8N1 は 1 バイト 40us なので、5 バイトのフレーム 1 つに 200us かかる (送信周期を決めるときはこれを基準にする)。`Buzzer_Init` に渡すクロック/プリスケーラ値は `Core/Src/tim.c` の `MX_TIMx_Init` の設定値と必ず一致させること (不一致は無音・音程ズレの原因になる)。
 
 DMA の割り当て (`Core/Src/dma.c`): **DMA1 の Stream0–7 はすべて UART が使用済み**。STM32F446 の I2C1 は DMA1 (RX: Stream0/5、TX: Stream6/7) しか使えないため、UART の DMA を潰さない限り I2C に DMA は割り当てられない。そのため MPU6050 は割り込み駆動 I2C (`HAL_I2C_Mem_Read_IT`) で読んでいる。
 

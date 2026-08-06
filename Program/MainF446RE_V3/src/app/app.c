@@ -1,5 +1,9 @@
 #include "app.h"
 
+// メインループの周期 [us]。Drive のフィルタ係数がこの周期を前提にしているため、
+// 変更したら DRIVE_LPF_K_* も見直すこと
+#define CONTROL_INTERVAL_US 500
+
 static uint16_t adc1_buffer[POWER_ADC1_NUM_CH];
 static uint16_t adc2_buffer[ENCODER_ADC2_NUM_CH];
 
@@ -33,12 +37,186 @@ Buzzer buzzer;
 
 Timer control_interval_timer;
 
+// ---------------------------------------------------------------------------
+// 電源状態の表示 (LED3: シグナル系, LED4: 駆動系)
+//
+// 電圧を「呼吸」の周期にマップして脈打たせる。周期から電圧の目安が読めるうえ、脈が
+// 止まれば制御ループが回っていないことも同時に分かる。輝度に連続量を載せても人間には
+// 読めないため、輝度は1bitの情報として使い、その系統にフォールトが出たときだけ最大にする。
+// ---------------------------------------------------------------------------
+#define BREATH_PERIOD_FULL_MS 2000.0f  // 満充電時はゆったり脈打つ
+#define BREATH_PERIOD_EMPTY_MS 300.0f  // 終止電圧に近いほど速く脈打つ (速い=危険、警報の慣習に合わせる)
+#define BREATH_DUTY_NORMAL 0.1f        // 正常時のピーク輝度
+#define BREATH_DUTY_FAULT 1.0f         // フォールト時のピーク輝度
+
+typedef struct {
+  PwmOut* led;
+  Timer timer;
+} BreathLed;
+
+static BreathLed breath_signal;
+static BreathLed breath_drive;
+
+static void BreathLed_Init(BreathLed* obj, PwmOut* led) {
+  obj->led = led;
+  Timer_Init(&obj->timer);
+}
+
+// voltage には Power 側で LPF を通した値を渡すこと。生値だと周期がガタついて読めない
+static void BreathLed_Update(BreathLed* obj, float voltage, bool fault) {
+  float level = (voltage - POWER_UNDERVOLTAGE_THRESHOLD_V) /
+                (POWER_BATTERY_FULL_V - POWER_UNDERVOLTAGE_THRESHOLD_V);
+  level = Constrain(level, 0.0f, 1.0f);
+  float period_ms = BREATH_PERIOD_EMPTY_MS + level * (BREATH_PERIOD_FULL_MS - BREATH_PERIOD_EMPTY_MS);
+
+  uint32_t elapsed_ms = Timer_ReadMs(&obj->timer);
+  if ((float)elapsed_ms >= period_ms) {
+    Timer_Reset(&obj->timer);
+    elapsed_ms = 0;
+  }
+
+  // 波形全体を周期に比例させることで、周期が変わっても点灯時間の割合 (=平均輝度) が変わらない。
+  // 点灯時間を固定したまま周期だけ縮めると明るさまで変化し、輝度の1bit情報と混ざってしまう
+  float shape = (1.0f - CosDeg((int)(360.0f * elapsed_ms / period_ms))) * 0.5f;
+  // 人間の輝度知覚は対数的なので、shape をそのまま duty にすると暗い側が潰れる
+  float peak = fault ? BREATH_DUTY_FAULT : BREATH_DUTY_NORMAL;
+  PwmOut_Write(obj->led, peak * shape * shape);
+}
+
+static void UpdatePowerIndication() {
+  uint32_t faults = Power_GetFaults(&power);
+  BreathLed_Update(&breath_signal, Power_GetVoltageSignalFiltered(&power),
+                   (faults & POWER_FAULT_SIGNAL_ANY) != 0);
+  BreathLed_Update(&breath_drive, Power_GetVoltageDriveFiltered(&power),
+                   (faults & POWER_FAULT_DRIVE_ANY) != 0);
+}
+
+// 何らかの異常が出ていればハザードを点滅させ、車外から異常だと分かるようにする。
+// 復帰しうる異常 (電圧低下) もあるため、消えたらハザードも消す。
+// 電源系以外のモジュールのエラーも、実装したらここに集約する。
+// ハザードはウィンカーと灯火を共有するので、方向指示を実装したらここで優先度を調停すること。
+static void UpdateFaultIndication() {
+  bool fault = Power_GetFaults(&power) != POWER_FAULT_NONE;
+  Lighting_SetWinker(&lighting, fault ? LIGHTING_WINKER_HAZARD : LIGHTING_WINKER_OFF);
+}
+
+// ---------------------------------------------------------------------------
+// 走行テスト (ボタン1で開始 → 最大加速 → 前方の障害物を検知したら急停止)
+//
+// Raspberry Pi からの走行指令が未実装のため、駆動系と前方超音波センサの動作を
+// 車両単体で確認するための仮ロジック。上位通信を実装したらここを差し替える。
+// ---------------------------------------------------------------------------
+
+// 到達し得ない目標を与えて車速PIを飽和させ、常に最大トルク = 最大加速にする
+#define TEST_TARGET_SPEED_M_S DRIVE_MAX_SPEED_M_S
+// 制動距離に加え、超音波の更新間隔 (60ms) の間に進む距離が空走になるため大きめに取る
+#define TEST_STOP_DISTANCE_CM 100.0f
+// 障害物を検知できないまま走り続けないための保険
+#define TEST_TIMEOUT_MS 3000
+// ボタンから手を離してテスト車両から離れるための猶予
+#define TEST_COUNTDOWN_MS 2000
+#define TEST_COUNTDOWN_BEEP_ON_MS 100
+#define TEST_COUNTDOWN_BEEP_OFF_MS 400
+#define TEST_BUTTON_DEBOUNCE_MS 20
+
+typedef enum {
+  TEST_STATE_IDLE = 0,   // ボタン待ち (Drive は目標車速0 = 停車保持)
+  TEST_STATE_COUNTDOWN,  // 発進前のカウントダウン
+  TEST_STATE_ACCEL,      // 最大加速中
+  TEST_STATE_BRAKE,      // 急停止中
+} TestState;
+
+static TestState test_state = TEST_STATE_IDLE;
+static Timer test_timer;
+
+static Timer button1_debounce_timer;
+// 起動時のボタン1押下 (ステアリング較正) を押しっぱなしのままメインループへ入っても
+// テスト開始と誤認しないよう、押されている状態から始める
+static int button1_stable = 1;
+
+// チャタリングを除いたうえで「押された瞬間」の1回だけ真を返す
+static bool IsButton1Pressed() {
+  int raw = DigitalIn_Read(&button1);
+  if (raw == button1_stable) {
+    Timer_Reset(&button1_debounce_timer);
+    return false;
+  }
+  if (Timer_ReadMs(&button1_debounce_timer) < TEST_BUTTON_DEBOUNCE_MS) return false;
+  button1_stable = raw;
+  return raw != 0;
+}
+
+static void StopTest(bool beep) {
+  Drive_SetTargetSpeed(&drive, 0.0f);
+  Lighting_SetBrake(&lighting, true);
+  if (beep) Buzzer_Beep(&buzzer, 3000, 200);
+  Timer_Reset(&test_timer);
+  test_state = TEST_STATE_BRAKE;
+}
+
+static void UpdateDriveTest() {
+  bool pressed = IsButton1Pressed();
+  bool fault = Power_GetFaults(&power) != POWER_FAULT_NONE;
+  float front_cm = Ultrasonic_GetDistanceCm(&ultrasonic_front);
+  // 計測不能 (ULTRASONIC_NO_ECHO = -1) を至近距離と読み違えないよう、正の値だけを障害物とみなす
+  bool obstacle = front_cm > 0.0f && front_cm < TEST_STOP_DISTANCE_CM;
+
+  switch (test_state) {
+    case TEST_STATE_IDLE:
+      // 障害物の目の前や電源異常の状態では発進させない
+      if (pressed && !obstacle && !fault) {
+        Buzzer_BeepPattern(&buzzer, 2000, TEST_COUNTDOWN_BEEP_ON_MS, TEST_COUNTDOWN_BEEP_OFF_MS,
+                           TEST_COUNTDOWN_MS / (TEST_COUNTDOWN_BEEP_ON_MS + TEST_COUNTDOWN_BEEP_OFF_MS));
+        Timer_Reset(&test_timer);
+        test_state = TEST_STATE_COUNTDOWN;
+      }
+      break;
+
+    case TEST_STATE_COUNTDOWN:
+      // カウントダウン中のもう一度の押下は中止 (発進前なので制動もブザーも不要)
+      if (pressed || fault) {
+        Buzzer_Stop(&buzzer);
+        test_state = TEST_STATE_IDLE;
+        break;
+      }
+      if (Timer_ReadMs(&test_timer) >= TEST_COUNTDOWN_MS) {
+        Steering_SetAngleRad(&steering, 0.0f);  // 直進で走らせる
+        Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_NORMAL);
+        Drive_SetTargetSpeed(&drive, TEST_TARGET_SPEED_M_S);
+        Timer_Reset(&test_timer);
+        test_state = TEST_STATE_ACCEL;
+      }
+      break;
+
+    case TEST_STATE_ACCEL:
+      // 障害物のほか、手動停止 (ボタン)・電源異常・時間切れでも同じ急停止へ落とす
+      if (obstacle || pressed || fault || Timer_ReadMs(&test_timer) >= TEST_TIMEOUT_MS) {
+        StopTest(obstacle);
+      }
+      break;
+
+    case TEST_STATE_BRAKE:
+      // 目標車速0に対する車速PIが負トルク (回生制動) を出し、車速がほぼ0になった時点で
+      // Drive 側が自動的に制動モード (停車保持) へ移る。そこまで見届けてから待機に戻す
+      if (Abs(Drive_GetVehicleSpeed(&drive)) < DRIVE_STANDSTILL_SPEED_M_S) {
+        Lighting_SetBrake(&lighting, false);
+        Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_DAYTIME);
+        test_state = TEST_STATE_IDLE;
+      }
+      break;
+  }
+
+  DigitalOut_Write(&led1, test_state != TEST_STATE_IDLE);
+}
+
 void Setup() {
   printf("Setup started\n");
   DigitalOut_Init(&led1, LED1_GPIO_Port, LED1_Pin);
   DigitalOut_Init(&led2, LED2_GPIO_Port, LED2_Pin);
   PwmOut_Init(&led3, &htim4, TIM_CHANNEL_1);
   PwmOut_Init(&led4, &htim4, TIM_CHANNEL_2);
+  BreathLed_Init(&breath_signal, &led3);
+  BreathLed_Init(&breath_drive, &led4);
 
   Lighting_Init(&lighting, &htim3, TIM_CHANNEL_1, &htim3, TIM_CHANNEL_3,
                 &htim3, TIM_CHANNEL_2, &htim3, TIM_CHANNEL_4);
@@ -101,6 +279,9 @@ void Setup() {
 
   Drive_Init(&drive, &motors, &encoder, &steering, &imu);
 
+  Timer_Init(&test_timer);
+  Timer_Init(&button1_debounce_timer);
+
   Timer_Init(&control_interval_timer);
   printf("Setup finished\n");
 }
@@ -130,95 +311,29 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
   Imu_OnI2cError(&imu, hi2c);
 }
 
-// 何らかの異常が出ていればハザードを点滅させ、車外から異常だと分かるようにする。
-// 復帰しうる異常 (電圧低下) もあるため、消えたらハザードも消す。
-// 電源系以外のモジュールのエラーも、実装したらここに集約する。
-// ハザードはウィンカーと灯火を共有するので、方向指示を実装したらここで優先度を調停すること。
-static void UpdateFaultIndication() {
-  bool fault = Power_GetFaults(&power) != POWER_FAULT_NONE;
-  Lighting_SetWinker(&lighting, fault ? LIGHTING_WINKER_HAZARD : LIGHTING_WINKER_OFF);
-}
-
-// ---------------------------------------------------------------------------
-// 電源状態の表示 (LED3: シグナル系, LED4: 駆動系)
-//
-// 電圧を「呼吸」の周期にマップして脈打たせる。周期から電圧の目安が読めるうえ、脈が
-// 止まれば制御ループが回っていないことも同時に分かる。輝度に連続量を載せても人間には
-// 読めないため、輝度は1bitの情報として使い、その系統にフォールトが出たときだけ最大にする。
-// ---------------------------------------------------------------------------
-#define BREATH_PERIOD_FULL_MS 2000.0f  // 満充電時はゆったり脈打つ
-#define BREATH_PERIOD_EMPTY_MS 300.0f  // 終止電圧に近いほど速く脈打つ (速い=危険、警報の慣習に合わせる)
-#define BREATH_DUTY_NORMAL 0.1f        // 正常時のピーク輝度
-#define BREATH_DUTY_FAULT 1.0f         // フォールト時のピーク輝度
-
-typedef struct {
-  PwmOut* led;
-  Timer timer;
-} BreathLed;
-
-static BreathLed breath_signal;
-static BreathLed breath_drive;
-
-static void BreathLed_Init(BreathLed* obj, PwmOut* led) {
-  obj->led = led;
-  Timer_Init(&obj->timer);
-}
-
-// voltage には Power 側で LPF を通した値を渡すこと。生値だと周期がガタついて読めない
-static void BreathLed_Update(BreathLed* obj, float voltage, bool fault) {
-  float level = (voltage - POWER_UNDERVOLTAGE_THRESHOLD_V) /
-                (POWER_BATTERY_FULL_V - POWER_UNDERVOLTAGE_THRESHOLD_V);
-  level = Constrain(level, 0.0f, 1.0f);
-  float period_ms = BREATH_PERIOD_EMPTY_MS + level * (BREATH_PERIOD_FULL_MS - BREATH_PERIOD_EMPTY_MS);
-
-  uint32_t elapsed_ms = Timer_ReadMs(&obj->timer);
-  if ((float)elapsed_ms >= period_ms) {
-    Timer_Reset(&obj->timer);
-    elapsed_ms = 0;
-  }
-
-  // 波形全体を周期に比例させることで、周期が変わっても点灯時間の割合 (=平均輝度) が変わらない。
-  // 点灯時間を固定したまま周期だけ縮めると明るさまで変化し、輝度の1bit情報と混ざってしまう
-  float shape = (1.0f - CosDeg((int)(360.0f * elapsed_ms / period_ms))) * 0.5f;
-  // 人間の輝度知覚は対数的なので、shape をそのまま duty にすると暗い側が潰れる
-  float peak = fault ? BREATH_DUTY_FAULT : BREATH_DUTY_NORMAL;
-  PwmOut_Write(obj->led, peak * shape * shape);
-}
-
-static void UpdatePowerIndication() {
-  uint32_t faults = Power_GetFaults(&power);
-  BreathLed_Update(&breath_signal, Power_GetVoltageSignalFiltered(&power),
-                   (faults & POWER_FAULT_SIGNAL_ANY) != 0);
-  BreathLed_Update(&breath_drive, Power_GetVoltageDriveFiltered(&power),
-                   (faults & POWER_FAULT_DRIVE_ANY) != 0);
-}
-
 void MainApp() {
-  BreathLed_Init(&breath_signal, &led3);
-  BreathLed_Init(&breath_drive, &led4);
+  // 目標車速・舵角を与える上位ロジック (Raspberry Pi 通信) は未実装。
+  // 目標車速は UpdateDriveTest() が与え、待機中は0のままなので Drive は停車保持
+  // (制動モード) で後輪を押さえる
+  Drive_Enable(&drive);
 
-  Drive_Enable(&drive);  // 現状は無効のまま。Drive_Update() は観測量だけ更新する
   while (1) {
     Power_Update(&power);
     UpdateFaultIndication();
     UpdatePowerIndication();
     Lighting_Update(&lighting);
+    Buzzer_Update(&buzzer);
     Encoder_Update(&encoder);
     Imu_Update(&imu);
     Ultrasonic_Update(&ultrasonic_front);
     Ultrasonic_Update(&ultrasonic_rear);
-    // Drive_Enable(&drive);                // 現状は無効のまま。Drive_Update() は観測量だけ更新する
-    // Drive_SetTargetSpeed(&drive, 0.2f);  // 現状
-    Steering_SetAngleRad(&steering, 0);  // 現状
-
-    // Drive_SetTargetSpeed() / Drive_Enable() を呼ぶ上位ロジック (Raspberry Pi 通信) は未実装のため、
-    // 現状は無効のまま = トルク指令を出さない。Drive_Update はセンサ由来の観測量だけ更新する
+    UpdateDriveTest();
     Drive_Update(&drive);
     Motors_Update(&motors);
 
-    uint32_t interval_us = 500;
+    // LED2 の点灯幅がループ1周の処理時間になる (オシロで余裕を見るため)
     DigitalOut_Write(&led2, 1);
-    while (Timer_ReadUs(&control_interval_timer) < interval_us);
+    while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US);
     DigitalOut_Write(&led2, 0);
     Timer_Reset(&control_interval_timer);
   }
