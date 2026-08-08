@@ -20,9 +20,11 @@ static void LoadFromFlash(Steering* obj) {
   Flash_ReadData(FLASH_USER_START_ADDR, &calib, sizeof(calib));
   if (calib.magic == STEERING_CALIB_MAGIC) {
     obj->center_rad = calib.center_rad;
+    obj->center_valid = true;
     printf("Steering: loaded center_rad=%.3f\n", obj->center_rad);
   } else {
     obj->center_rad = 0.0f;
+    obj->center_valid = false;
     printf("Steering: no calibration data found, using center_rad=0\n");
   }
 }
@@ -53,10 +55,12 @@ static bool Calibrate(Steering* obj) {
 
 void Steering_Init(Steering* obj, BldcMotor* motor, bool do_calibrate) {
   obj->motor = motor;
+  obj->center_valid = false;
 
   BldcMotor_SetTorqueLimitNm(motor, STEERING_MAX_TORQUE_NM);
 
   if (do_calibrate && Calibrate(obj)) {
+    obj->center_valid = true;
     return;
   }
 
@@ -65,10 +69,26 @@ void Steering_Init(Steering* obj, BldcMotor* motor, bool do_calibrate) {
 
 void Steering_SetAngleRad(Steering* obj, float angle_rad) {
   angle_rad = Constrain(angle_rad, -STEERING_MAX_ANGLE_RAD, STEERING_MAX_ANGLE_RAD);
-  float target_rad = NormalizeRadians(obj->center_rad + angle_rad);
+  float target_rad = NormalizeRadians(obj->center_rad + STEERING_DIRECTION_SIGN * angle_rad);
   BldcMotor_SetPosition(obj->motor, target_rad);
 }
 
 float Steering_GetAngleRad(const Steering* obj) {
-  return GapRadians(BldcMotor_GetMechAngle(obj->motor), obj->center_rad);
+  return STEERING_DIRECTION_SIGN * GapRadians(BldcMotor_GetMechAngle(obj->motor), obj->center_rad);
+}
+
+void Steering_SetRoadWheelAngleRad(Steering* obj, float angle_rad) {
+  Steering_SetAngleRad(obj, angle_rad / STEERING_LINKAGE_RATIO);
+}
+
+float Steering_GetRoadWheelAngleRad(const Steering* obj) {
+  return Steering_GetAngleRad(obj) * STEERING_LINKAGE_RATIO;
+}
+
+float Steering_GetMaxRoadWheelAngleRad(void) {
+  return STEERING_MAX_ANGLE_RAD * STEERING_LINKAGE_RATIO;
+}
+
+bool Steering_IsCenterValid(const Steering* obj) {
+  return obj->center_valid;
 }

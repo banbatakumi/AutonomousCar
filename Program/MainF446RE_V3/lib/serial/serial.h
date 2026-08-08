@@ -61,6 +61,25 @@ static inline void Serial_Write(Serial* self, const uint8_t* data, uint16_t len)
   HAL_UART_Transmit_DMA(self->huart, (uint8_t*)data, len);
 }
 
+// 送信中かどうか
+static inline bool Serial_IsTxBusy(Serial* self) {
+  return self->huart->gState != HAL_UART_STATE_READY;
+}
+
+// 送信中なら何もせず false を返す、中断を伴わない送信。
+//
+// Serial_Write は進行中の DMA を叩き切るため「次の送信までに必ず完了する」用途にしか使えず、
+// 連続的にストリームを流す通信 (Raspberry Pi 側) では前のフレームが途中で切れてしまう。
+// こちらは前の送信が終わるまで単に送らないので、呼び出し側でキューを持てば取りこぼしなく流せる。
+//
+// 注意: HAL は DMA 完了後に UART の TC 割り込みで gState を READY に戻すため、
+// この関数を使う UART は NVIC の割り込みを有効にしておくこと (無効だと初回の1回しか送れない)。
+// data の指す領域は送信完了まで有効なままにすること (DMA が直接読むため)。
+static inline bool Serial_WriteAsync(Serial* self, const uint8_t* data, uint16_t len) {
+  if (Serial_IsTxBusy(self)) return false;
+  return HAL_UART_Transmit_DMA(self->huart, (uint8_t*)data, len) == HAL_OK;
+}
+
 static inline void Serial_Reset(Serial* self) {
   HAL_UART_AbortReceive(self->huart);
   HAL_UART_DMAStop(self->huart);

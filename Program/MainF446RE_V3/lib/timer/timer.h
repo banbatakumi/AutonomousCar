@@ -50,4 +50,16 @@ static inline void Wait(uint32_t seconds) {
   }
 }
 
+/**
+ * @brief 単調増加するマイクロ秒カウンタを初期化する。他のどの初期化よりも先に呼ぶこと。
+ */
+void Micros_Init(void);
+
+/**
+ * @brief 起動からの経過時間 [us] を返す。約71.6分でラップするため、時刻の差分は
+ * 必ず符号なし演算 ((uint32_t)(a - b)) で取ること。割り込みからも呼んでよい。
+ * ラップ周期より長く呼ばれない期間があると時刻が飛ぶため、制御周期ごとに呼ぶこと。
+ */
+uint32_t Micros(void);
+
 #endif  // TIMER_H_

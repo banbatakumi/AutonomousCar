@@ -28,15 +28,24 @@
 // 直接計算でき、トラクションコントロール (TC) が成立する。
 
 // ===========================================================================
-// 車両パラメータ ★実機の実測値に必ず差し替えること★
+// 車両パラメータ (実測値)
+//
+// 後輪は減速機を挟まないダイレクトドライブのため、モータ角速度がそのまま車輪角速度になる。
+// 減速比の定数を置いていないのはこのため (減速機を入れたら車輪速の換算に比を掛けること)。
 // ===========================================================================
-#define DRIVE_FRONT_WHEEL_RADIUS_M 0.030f  // 前輪 (非駆動輪) の有効転がり半径 [m]
-#define DRIVE_REAR_WHEEL_RADIUS_M 0.030f   // 後輪 (駆動輪) の有効転がり半径 [m]
+#define DRIVE_FRONT_WHEEL_RADIUS_M 0.030f  // 前輪 (非駆動輪) の有効転がり半径 [m] (直径60mm)
+#define DRIVE_REAR_WHEEL_RADIUS_M 0.030f   // 後輪 (駆動輪) の有効転がり半径 [m] (直径60mm)
 #define DRIVE_WHEELBASE_M 0.230f           // 前後車軸間距離 [m]
 #define DRIVE_REAR_TRACK_M 0.155f          // 後輪左右間距離 (トレッド) [m]
 
+// 半径は幾何寸法 (直径60mm) から入れてある。ゴムタイヤは荷重で潰れるぶん実際の転がり半径が
+// 数%小さくなり、その誤差はそのまま車速とオドメトリの倍率誤差になる。精度が要るなら
+// メジャーで測った距離を転がして Encoder_GetAccumAngleLeftMrad() の累積値から逆算すること。
+
 // 各センサ・アクチュエータの符号。左右のモータ/エンコーダは鏡像に取り付くため、
-// 「車体前進方向を正」に揃えるための符号をここで吸収する (実機で1輪ずつ回して確認すること)。
+// 「車体前進方向を正」に揃えるための符号をここで吸収する。
+// ★未確認: 実機で1輪ずつ回して確認すること。符号を間違えると車が逆に走るだけでなく、
+// TCがスリップ率を符号ごと誤読して、滑っていないのにトルクを削る (逆に足す) side に倒れる★
 #define DRIVE_REAR_LEFT_DIR (-1.0f)
 #define DRIVE_REAR_RIGHT_DIR (+1.0f)
 #define DRIVE_FRONT_LEFT_DIR (+1.0f)
@@ -53,13 +62,13 @@
 // この値は指令のクランプに使うと同時に MD 側のトルク上限としても設定するため、
 // このマイコンのバグや通信異常で過大な指令が出ても最終段で頭打ちになる。
 // 停車保持の制動トルク (DRIVE_STANDSTILL_BRAKE_NM) もこの上限を超えないこと
-#define DRIVE_MAX_TORQUE_NM 0.1f
+#define DRIVE_MAX_TORQUE_NM 0.075f
 #define DRIVE_MAX_SPEED_M_S 3.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
 #define DRIVE_ANTIWINDUP_TT_S 0.10f  // TC/リミッタで飽和したときに積分を巻き戻す時定数 [s]
 
 // 停車保持: 目標車速がほぼ0かつ実車速もほぼ0のとき、トルク制御では保持剛性が無いため制動モードに切り替える
 #define DRIVE_STANDSTILL_SPEED_M_S 0.05f
-#define DRIVE_STANDSTILL_BRAKE_NM 0.10f
+#define DRIVE_STANDSTILL_BRAKE_NM 0.075f
 
 // ===========================================================================
 // トラクションコントロール (TC) パラメータ
@@ -94,10 +103,15 @@ typedef struct {
   float yaw_moment_torque_nm;  // トルクベクタリング項 (正 = 左旋回方向のヨーモーメント)
 
   // --- 以下は Drive_Update が更新する観測量 (デバッグ・上位への報告用) ---
-  float vehicle_speed_m_s;     // 前輪から推定した車体前後方向の速度
-  float yaw_rate_rad_s;        // スリップ率の基準速度を作るのに使ったヨーレート
-  float rear_speed_left_m_s;   // 左後輪の周速
-  float rear_speed_right_m_s;  // 右後輪の周速
+  // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
+  // 1LSB = 2pi/4096 = 1.53mrad で、これを 500us で微分すると 1LSB あたり 3.07rad/s
+  // (= 0.09m/s) に化ける。実測ではノイズが ±100mV 程度あり、静止中でも生値は ±12m/s 振れる
+  float vehicle_speed_m_s;      // 前輪から推定した車体前後方向の速度 (舵角で射影済み)
+  float yaw_rate_rad_s;         // スリップ率の基準速度を作るのに使ったヨーレート
+  float front_speed_left_m_s;   // 左前輪の周速 (射影前。車体速度ではなく車輪自身の軌跡上の速度)
+  float front_speed_right_m_s;  // 右前輪の周速
+  float rear_speed_left_m_s;    // 左後輪の周速
+  float rear_speed_right_m_s;   // 右後輪の周速
   float slip_left;             // 左後輪のスリップ率 (正 = 空転, 負 = ロック傾向)
   float slip_right;            // 右後輪のスリップ率
   float tc_limit_left_nm;      // TCが動的に決めた左輪のトルク上限

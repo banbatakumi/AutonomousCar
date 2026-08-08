@@ -32,12 +32,12 @@ typedef enum {
 } PowerFault;
 
 // 駆動系の過電流保護閾値 [A]。超えたら DRIVE_POWER を遮断する。
-#define POWER_DRIVE_OVERCURRENT_THRESHOLD_A 5.0f
+#define POWER_DRIVE_OVERCURRENT_THRESHOLD_A 12.0f
 
 // シグナル系の過電流保護閾値 [A] (仮値、実機の定常消費電流を測ってから決めること)。
 // シグナル系はマイコン・Raspberry Pi・LiDAR・ライト類をまとめて賄うため、通常時のピークより
 // 十分上に置く。超えたら切れる負荷 (LiDAR・駆動系) を落とす。
-#define POWER_SIGNAL_OVERCURRENT_THRESHOLD_A 3.0f
+#define POWER_SIGNAL_OVERCURRENT_THRESHOLD_A 6.0f
 
 // 電圧低下の判定閾値 [V]。駆動系・シグナル系とも 8セルのニッケル水素電池を電源とするため共通。
 // ニッケル水素の放電終止電圧は 1セルあたり約1.0V で、これを下回ると過放電でセルを傷める。
@@ -72,7 +72,7 @@ typedef struct {
 } PowerDetector;
 
 typedef struct {
-  AdcDma *adc1;
+  AdcDma* adc1;
   DigitalOut drive_power;  // DRIVE_POWER: モータードライバ電源スイッチ
   DigitalOut lidar_power;  // LIDAR_POWER: LiDAR 電源スイッチ
 
@@ -94,9 +94,9 @@ typedef struct {
  * 駆動電源 (DRIVE_POWER) / LiDAR 電源 (LIDAR_POWER) スイッチのポート・ピンを渡す。
  * 初期化時は駆動電源・LiDAR 電源とも OFF。駆動電源は起動処理が終わってから Power_SetDrivePower() で入れる。
  */
-void Power_Init(Power *obj, AdcDma *adc1,
-                 GPIO_TypeDef *drive_power_port, uint16_t drive_power_pin,
-                 GPIO_TypeDef *lidar_power_port, uint16_t lidar_power_pin);
+void Power_Init(Power* obj, AdcDma* adc1,
+                GPIO_TypeDef* drive_power_port, uint16_t drive_power_pin,
+                GPIO_TypeDef* lidar_power_port, uint16_t lidar_power_pin);
 
 /**
  * @brief 電源の監視とフォールト時の保護動作を更新する。制御周期ごとに呼ぶこと。
@@ -105,66 +105,66 @@ void Power_Init(Power *obj, AdcDma *adc1,
  * - 電圧低下: 走行を止めると復帰できなくなるため遮断はせず、フォールトを立てるだけ (上位が停止を判断する)。
  * 過電流のフォールトはラッチされリセットするまで復帰しないが、電圧低下は電圧が戻れば自動でクリアされる。
  */
-void Power_Update(Power *obj);
+void Power_Update(Power* obj);
 
 /**
  * @brief 発生中のフォールトを PowerFault のビットマスクで取得する。異常がなければ POWER_FAULT_NONE。
  * 過電流のビットは一度立つと消えないが、電圧低下のビットは電圧が復帰すると消える。
  */
-uint32_t Power_GetFaults(Power *obj);
+uint32_t Power_GetFaults(Power* obj);
 
 /**
  * @brief 駆動電源 (DRIVE_POWER) の ON/OFF を要求する。待機状態では OFF にしてモーターを無力化する。
  * 過電流でトリップ済みの場合は ON を要求しても投入されない。
  */
-void Power_SetDrivePower(Power *obj, int on);
+void Power_SetDrivePower(Power* obj, int on);
 
 /**
  * @brief 駆動電源が実際に投入されているかを取得する。
  */
-int Power_IsDriveOn(Power *obj);
+int Power_IsDriveOn(Power* obj);
 
 /**
  * @brief LiDAR 電源 (LIDAR_POWER) の ON/OFF を切り替える。
  * シグナル系が過電流でトリップ済みの場合は ON を要求しても投入されない。
  */
-void Power_SetLidarPower(Power *obj, int on);
+void Power_SetLidarPower(Power* obj, int on);
 
 /**
  * @brief シグナル系(ロジック電源)の入力電圧 [V] を取得する (R17=10k/R18=1k 分圧、MainBoard_V3_2 回路図実測)。
  * ADC の瞬時値。負荷変動によるリプルがそのまま乗るため、判定や表示には Filtered 版を使うこと。
  */
-float Power_GetVoltageSignal(Power *obj);
+float Power_GetVoltageSignal(Power* obj);
 
 /**
  * @brief 駆動系(モーター電源)の入力電圧 [V] を取得する (R19=10k/R20=1k 分圧、MainBoard_V3_2 回路図実測)。
  * ADC の瞬時値。負荷変動によるリプルがそのまま乗るため、判定や表示には Filtered 版を使うこと。
  */
-float Power_GetVoltageDrive(Power *obj);
+float Power_GetVoltageDrive(Power* obj);
 
 /**
  * @brief LPF を通したシグナル系の入力電圧 [V] を取得する。値は Power_Update() で更新される。
  */
-float Power_GetVoltageSignalFiltered(Power *obj);
+float Power_GetVoltageSignalFiltered(Power* obj);
 
 /**
  * @brief LPF を通した駆動系の入力電圧 [V] を取得する。値は Power_Update() で更新される。
  */
-float Power_GetVoltageDriveFiltered(Power *obj);
+float Power_GetVoltageDriveFiltered(Power* obj);
 
 /**
  * @brief シグナル系の消費電流 [A] を取得する (INA180A2 ゲイン50V/V, シャント R3=5mΩ)。
  */
-float Power_GetCurrentSignal(Power *obj);
+float Power_GetCurrentSignal(Power* obj);
 
 /**
  * @brief 駆動系の消費電流 [A] を取得する (INA180A2 ゲイン50V/V, シャント R28=5mΩ)。
  */
-float Power_GetCurrentDrive(Power *obj);
+float Power_GetCurrentDrive(Power* obj);
 
 /**
  * @brief マイコン内蔵温度センサの温度 [degC] を取得する (工場較正なし、データシート標準値による概算)。
  */
-float Power_GetTemperatureC(Power *obj);
+float Power_GetTemperatureC(Power* obj);
 
 #endif  // POWER_H_

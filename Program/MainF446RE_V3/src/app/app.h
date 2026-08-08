@@ -10,18 +10,22 @@
 #include "digitalinout.h"
 #include "drive.h"
 #include "encoder.h"
+#include "heartbeat.h"
 #include "i2c.h"
 #include "imu.h"
+#include "lidar.h"
 #include "lighting.h"
 #include "main.h"
 #include "motors.h"
 #include "mymath.h"
 #include "power.h"
 #include "pwm_out.h"
+#include "ras_link.h"
 #include "serial.h"
 #include "steering.h"
 #include "timer.h"
 #include "ultrasonic.h"
+#include "watchdog.h"
 
 void Setup();
 void MainApp();

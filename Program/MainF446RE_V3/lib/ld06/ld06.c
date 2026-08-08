@@ -1,7 +1,4 @@
-
 #include "ld06.h"
-
-#define ANGLE_OFFSET 90.0f
 
 // マニュアル記載のCRC8用計算テーブル
 static const uint8_t CrcTable[256] = {
@@ -34,26 +31,24 @@ static uint8_t CalCRC8(const uint8_t* p, uint8_t len) {
 void LD06_Init(LD06* lidar, Serial* serial, PwmOut* motor_control) {
   lidar->serial = serial;
   lidar->motor = motor_control;
-  PwmOut_Write(lidar->motor, 0);  // LD06モーター起動（100% duty）
   lidar->rx_state = 0;
-  lidar->speed = 0.0f;
-  lidar->timestamp = 0;
+  lidar->speed_dps = 0.0f;
+  lidar->span_deg = 0.0f;
+  lidar->rx_time_us = 0;
+  lidar->timestamp_ms = 0;
+  lidar->rx_count = 0;
+  lidar->rx_error_count = 0;
 
   for (int i = 0; i < LD06_POINT_PER_PACK; i++) {
     lidar->points[i].distance = 0;
     lidar->points[i].confidence = 0;
     lidar->points[i].angle = 0.0f;
   }
-  for (int i = 0; i < 360; i++) {
-    lidar->distances_360[i] = 0;
-    lidar->confidences_360[i] = 0;
-  }
 }
 
+// 1パケット分だけ処理して返す。points[] は次のパケットで上書きされるため、まとめて
+// 読み進めると溜まっていた分の点を取りこぼす。呼び出し側は false が返るまで繰り返すこと
 bool LD06_Update(LD06* lidar) {
-  bool is_updated = false;
-
-  // バッファに溜まっているUARTデータを順番に処理する
   while (Serial_Available(lidar->serial)) {
     uint8_t b = Serial_Read(lidar->serial);
 
@@ -84,61 +79,46 @@ bool LD06_Update(LD06* lidar) {
           uint8_t crc = CalCRC8(lidar->rx_buf, LD06_PACKET_SIZE - 1);
 
           if (crc == lidar->rx_buf[LD06_PACKET_SIZE - 1]) {
-            // パケットが正しいのでデータを展開
-            lidar->speed = (float)((lidar->rx_buf[3] << 8) | lidar->rx_buf[2]);
+            // 上位へ送るタイムスタンプの基準。パケット末尾を処理した時刻なので、
+            // 各点の取得時刻はここから回転速度で遡って求める (点群の歪み補正に使う)
+            lidar->rx_time_us = Micros();
+            lidar->speed_dps = (float)((lidar->rx_buf[3] << 8) | lidar->rx_buf[2]);
 
             // 単位は 0.01 degree なので 100 で割る
             float start_angle = ((lidar->rx_buf[5] << 8) | lidar->rx_buf[4]) / 100.0f;
             float end_angle = ((lidar->rx_buf[43] << 8) | lidar->rx_buf[42]) / 100.0f;
-            lidar->timestamp = (lidar->rx_buf[45] << 8) | lidar->rx_buf[44];
+            lidar->timestamp_ms = (lidar->rx_buf[45] << 8) | lidar->rx_buf[44];
 
             // 12個のポイントの角度差分（ステップ）を計算。360度を跨ぐ場合を考慮。
-            float step;
-            if (end_angle < start_angle) {
-              step = (end_angle + 360.0f - start_angle) / (LD06_POINT_PER_PACK - 1);
-            } else {
-              step = (end_angle - start_angle) / (LD06_POINT_PER_PACK - 1);
-            }
+            lidar->span_deg = (end_angle < start_angle) ? (end_angle + 360.0f - start_angle)
+                                                        : (end_angle - start_angle);
+            float step = lidar->span_deg / (LD06_POINT_PER_PACK - 1);
 
             for (int i = 0; i < LD06_POINT_PER_PACK; i++) {
               int base_idx = 6 + i * 3;
               lidar->points[i].distance = (lidar->rx_buf[base_idx + 1] << 8) | lidar->rx_buf[base_idx];
               lidar->points[i].confidence = lidar->rx_buf[base_idx + 2];
 
-              // 元のLiDARの角度
               float angle = start_angle + step * i;
-
-              // 【追加】ここでロボット基準の角度に変換（オフセットを加算）
-              angle += ANGLE_OFFSET;
-
-              // 角度を 0.0 ~ 359.9 の範囲に正規化する
-              while (angle >= 360.0f) {
-                angle -= 360.0f;
-              }
-              while (angle < 0.0f) {
-                angle += 360.0f;
-              }
-
+              while (angle >= 360.0f) angle -= 360.0f;
               lidar->points[i].angle = angle;
-
-              // ロボット基準に直った角度で、0~359度のマップ(配列)を更新
-              int angle_idx = (int)(angle + 0.5f) % 360;
-              lidar->distances_360[angle_idx] = lidar->points[i].distance;
-              lidar->confidences_360[angle_idx] = lidar->points[i].confidence;
             }
 
-            is_updated = true;
+            lidar->rx_count++;
+            lidar->rx_state = 0;
+            return true;
           } else {
-            // 【追加】CRCエラーが起きているか確認する
-            printf("CRC Error! Calc: %02X, Recv: %02X\n", crc, lidar->rx_buf[LD06_PACKET_SIZE - 1]);
+            // ここで printf を出すと、ノイズが乗ったときに毎パケット出力して制御ループを
+            // 止めてしまう。件数だけ数え、通信品質は rx_count との比で判断する
+            lidar->rx_error_count++;
           }
 
-          // 次のパケットのためにステートを初期化
+          // CRC不一致だったパケットを捨てて、次のパケットの頭を探し直す
           lidar->rx_state = 0;
         }
         break;
     }
   }
 
-  return is_updated;
+  return false;
 }

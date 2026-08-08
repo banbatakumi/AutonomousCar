@@ -30,6 +30,26 @@ Motors motors;
 Steering steering;
 Drive drive;
 
+// Raspberry Pi (上位) との通信。USART1、250000bps。
+// 受信リングバッファは 25kB/s に対して 64バイトでは 2.5ms 分しかなく、制御ループが
+// 一度でも詰まると取りこぼすため大きめに取る
+#define RAS_SERIAL_RX_BUF_SIZE 512
+Serial ras_serial;
+RasLink ras_link;
+
+// LD06 LiDAR (USART6, 230400bps)。約17.6kB/s 流れ込むため、制御周期 500us の間に
+// 溜まる分 (約9バイト) に対して十分な余裕を取る
+#define LIDAR_SERIAL_RX_BUF_SIZE 256
+Serial lidar_serial;
+Lidar lidar;
+
+// Raspberry Pi の生存監視 (RAS_SIG = PB12 の 100Hz 矩形波)
+Heartbeat heartbeat;
+
+// 独立ウォッチドッグのタイムアウト [ms]。メインループは 500us 周期なので3桁の余裕がある。
+// LSI のばらつき (17〜47kHz) で実際は 340ms〜940ms に振れる
+#define WATCHDOG_TIMEOUT_MS 500
+
 DigitalIn button1;
 DigitalIn button2;
 
@@ -95,121 +115,291 @@ static void UpdatePowerIndication() {
 // 復帰しうる異常 (電圧低下) もあるため、消えたらハザードも消す。
 // 電源系以外のモジュールのエラーも、実装したらここに集約する。
 // ハザードはウィンカーと灯火を共有するので、方向指示を実装したらここで優先度を調停すること。
+static bool estop_latched;
+
 static void UpdateFaultIndication() {
-  bool fault = Power_GetFaults(&power) != POWER_FAULT_NONE;
+  bool fault = Power_GetFaults(&power) != POWER_FAULT_NONE || estop_latched;
   Lighting_SetWinker(&lighting, fault ? LIGHTING_WINKER_HAZARD : LIGHTING_WINKER_OFF);
 }
 
 // ---------------------------------------------------------------------------
-// 走行テスト (ボタン1で開始 → 最大加速 → 前方の障害物を検知したら急停止)
-//
-// Raspberry Pi からの走行指令が未実装のため、駆動系と前方超音波センサの動作を
-// 車両単体で確認するための仮ロジック。上位通信を実装したらここを差し替える。
+// Raspberry Pi (上位) との連携
 // ---------------------------------------------------------------------------
 
-// 到達し得ない目標を与えて車速PIを飽和させ、常に最大トルク = 最大加速にする
-#define TEST_TARGET_SPEED_M_S DRIVE_MAX_SPEED_M_S
-// 制動距離に加え、超音波の更新間隔 (60ms) の間に進む距離が空走になるため大きめに取る
-#define TEST_STOP_DISTANCE_CM 100.0f
-// 障害物を検知できないまま走り続けないための保険
-#define TEST_TIMEOUT_MS 3000
-// ボタンから手を離してテスト車両から離れるための猶予
-#define TEST_COUNTDOWN_MS 2000
-#define TEST_COUNTDOWN_BEEP_ON_MS 100
-#define TEST_COUNTDOWN_BEEP_OFF_MS 400
-#define TEST_BUTTON_DEBOUNCE_MS 20
+// MDからの状態フレームがこの時間更新されなければ通信断とみなす [ms]。
+// MDが無言になっても保持している値は最後の正常値のまま固まるため、これが無いと
+// 上位は「古い正常値」を現在値だと信じ続けることになる
+#define MD_COMM_TIMEOUT_MS 100
 
-typedef enum {
-  TEST_STATE_IDLE = 0,   // ボタン待ち (Drive は目標車速0 = 停車保持)
-  TEST_STATE_COUNTDOWN,  // 発進前のカウントダウン
-  TEST_STATE_ACCEL,      // 最大加速中
-  TEST_STATE_BRAKE,      // 急停止中
-} TestState;
+typedef struct {
+  uint32_t last_rx_count;
+  Timer timer;
+  bool ok;
+} MdCommWatch;
 
-static TestState test_state = TEST_STATE_IDLE;
-static Timer test_timer;
+// [左後輪, 右後輪, ステアリング] の順 (プロトコルの配列インデックス規約に合わせる)
+static MdCommWatch md_comm_watch[3];
 
-static Timer button1_debounce_timer;
-// 起動時のボタン1押下 (ステアリング較正) を押しっぱなしのままメインループへ入っても
-// テスト開始と誤認しないよう、押されている状態から始める
-static int button1_stable = 1;
+// 上位から指令された目標値。accel_limit / steer_rate_limit でレート制限したあとの値で、
+// 実際に Drive / Steering へ渡している量。テレメトリの steer_cmd_echo もこれを返す
+static float applied_speed_m_s;
+static float applied_steer_rad;
+static Timer command_rate_timer;
+static uint8_t vehicle_mode = RAS_MODE_DISARM;
+static bool horn_was_on;
 
-// チャタリングを除いたうえで「押された瞬間」の1回だけ真を返す
-static bool IsButton1Pressed() {
-  int raw = DigitalIn_Read(&button1);
-  if (raw == button1_stable) {
-    Timer_Reset(&button1_debounce_timer);
-    return false;
+static BldcMotor* MotorByIndex(int index) {
+  switch (index) {
+    case 0:
+      return &motors.rear_left;
+    case 1:
+      return &motors.rear_right;
+    default:
+      return &motors.steering;
   }
-  if (Timer_ReadMs(&button1_debounce_timer) < TEST_BUTTON_DEBOUNCE_MS) return false;
-  button1_stable = raw;
-  return raw != 0;
 }
 
-static void StopTest(bool beep) {
+static void UpdateMdCommWatch() {
+  for (int i = 0; i < 3; i++) {
+    uint32_t count = BldcMotor_GetRxCount(MotorByIndex(i));
+    if (count != md_comm_watch[i].last_rx_count) {
+      md_comm_watch[i].last_rx_count = count;
+      Timer_Reset(&md_comm_watch[i].timer);
+      md_comm_watch[i].ok = true;
+    } else if (Timer_ReadMs(&md_comm_watch[i].timer) > MD_COMM_TIMEOUT_MS) {
+      md_comm_watch[i].ok = false;
+    }
+  }
+}
+
+static uint8_t BuildMdStatus(int index) {
+  const BldcMotor* motor = MotorByIndex(index);
+  uint8_t status = 0;
+  if (BldcMotor_IsRunning(motor)) status |= RAS_MD_STATUS_RUNNING;
+  if (BldcMotor_IsVoltageOutOfRange(motor)) status |= RAS_MD_STATUS_VOLTAGE_OUT_OF_RANGE;
+  if (BldcMotor_IsOverheat(motor)) status |= RAS_MD_STATUS_OVERHEAT;
+  if (BldcMotor_IsOvercurrent(motor)) status |= RAS_MD_STATUS_OVERCURRENT;
+  if (md_comm_watch[index].ok) status |= RAS_MD_STATUS_COMM_OK;
+  if (BldcMotor_IsLimitSynced(motor)) status |= RAS_MD_STATUS_LIMIT_SYNCED;
+  return status;
+}
+
+static uint32_t BuildTelemetryFlags() {
+  uint32_t faults = Power_GetFaults(&power);
+  uint32_t flags = (uint32_t)vehicle_mode & RAS_FLAG_MODE_MASK;
+
+  if (Power_IsDriveOn(&power)) flags |= RAS_FLAG_ARMED;
+  if (estop_latched) flags |= RAS_FLAG_ESTOP_ACTIVE;
+  if (RasLink_HasCommand(&ras_link) && !RasLink_IsCommandAlive(&ras_link)) flags |= RAS_FLAG_UART_TIMEOUT;
+  if (Drive_IsTractionControlActive(&drive)) flags |= RAS_FLAG_TC_ACTIVE;
+  if (Imu_IsReady(&imu)) flags |= RAS_FLAG_IMU_OK;
+  if (Lidar_IsOk(&lidar)) flags |= RAS_FLAG_LIDAR_OK;
+  if (Steering_IsCenterValid(&steering)) flags |= RAS_FLAG_STEER_CENTER_VALID;
+
+  if (faults & POWER_FAULT_DRIVE_OVERCURRENT) flags |= RAS_FLAG_FAULT_DRIVE_OVERCURRENT;
+  if (faults & POWER_FAULT_SIGNAL_OVERCURRENT) flags |= RAS_FLAG_FAULT_SIGNAL_OVERCURRENT;
+  if (faults & POWER_FAULT_DRIVE_UNDERVOLTAGE) flags |= RAS_FLAG_FAULT_DRIVE_UNDERVOLTAGE;
+  if (faults & POWER_FAULT_SIGNAL_UNDERVOLTAGE) flags |= RAS_FLAG_FAULT_SIGNAL_UNDERVOLTAGE;
+  // 過電流はラッチするため、以降は arm を要求されても駆動電源が入らない。
+  // 上位が「arm したのに armed が立たない」を異常と誤認しないよう明示する
+  if (faults & (POWER_FAULT_DRIVE_OVERCURRENT | POWER_FAULT_SIGNAL_OVERCURRENT)) {
+    flags |= RAS_FLAG_DRIVE_POWER_LOCKED;
+  }
+  return flags;
+}
+
+// 組み上がった LiDAR のセクタを送信キューへ積む。1周を12分割して送るため 120Hz で呼ばれる
+static void PublishLidarSector() {
+  const LidarSector* sector = Lidar_TakeReadySector(&lidar);
+  if (sector == NULL) return;
+  RasLink_PublishLidarSector(&ras_link, sector->sector_idx, sector->t_start_us,
+                             sector->duration_us, sector->rot_speed_dps,
+                             sector->distance_mm, sector->intensity);
+}
+
+// 前輪の累積回転角 [1e-3 rad] を走行距離 [0.1mm] へ換算する。
+// 上位は舵角で射影してから使うこと (操舵輪なので車輪の軌跡長 = 車体中心線距離ではない)
+static int32_t AccumAngleToOdom(int32_t mrad, float direction) {
+  return (int32_t)((float)mrad * direction * DRIVE_FRONT_WHEEL_RADIUS_M * 10.0f);
+}
+
+static void PublishTelemetry() {
+  const ImuData* imu_data = Imu_GetData(&imu);
+  RasTelemetry telemetry;
+
+  telemetry.flags = BuildTelemetryFlags();
+  telemetry.speed_m_s = Drive_GetVehicleSpeed(&drive);  // Drive 側で車体中心線方向へ射影済み
+  telemetry.yaw_rate_rad_s = Radians(imu_data->gyro_z);
+  telemetry.steer_actual_rad = Steering_GetRoadWheelAngleRad(&steering);
+  telemetry.steer_cmd_rad = applied_steer_rad;
+
+  // 4輪ともフィルタ後の値で揃える。以前は前輪だけ生の角速度を渡しており、静止中でも
+  // ±12m/s 振れて上位が使えなかった (12bit ADC の 1LSB を 500us で微分すると 0.09m/s に
+  // 化けるため。生値をそのまま出すと配列の中で前輪だけ意味が違うことになる)
+  telemetry.wheel_speed_m_s[0] = drive.front_speed_left_m_s;
+  telemetry.wheel_speed_m_s[1] = drive.front_speed_right_m_s;
+  telemetry.wheel_speed_m_s[2] = drive.rear_speed_left_m_s;
+  telemetry.wheel_speed_m_s[3] = drive.rear_speed_right_m_s;
+
+  telemetry.odom_dist_0p1mm[0] =
+      AccumAngleToOdom(Encoder_GetAccumAngleLeftMrad(&encoder), DRIVE_FRONT_LEFT_DIR);
+  telemetry.odom_dist_0p1mm[1] =
+      AccumAngleToOdom(Encoder_GetAccumAngleRightMrad(&encoder), DRIVE_FRONT_RIGHT_DIR);
+
+  telemetry.accel_m_s2[0] = imu_data->accel_x;
+  telemetry.accel_m_s2[1] = imu_data->accel_y;
+  telemetry.accel_m_s2[2] = imu_data->accel_z;
+  telemetry.pitch_rad = Radians(imu_data->pitch);
+  telemetry.roll_rad = Radians(imu_data->roll);
+
+  for (int i = 0; i < 3; i++) {
+    telemetry.motor_current_a[i] = BldcMotor_GetIq(MotorByIndex(i));
+    telemetry.temp_c[i] = BldcMotor_GetTemperatureC(MotorByIndex(i));
+    telemetry.md_status[i] = BuildMdStatus(i);
+  }
+  telemetry.temp_c[3] = (uint8_t)Constrain(Power_GetTemperatureC(&power), 0.0f, 255.0f);
+
+  telemetry.torque_cmd_nm[0] = Drive_GetTorqueLeft(&drive);
+  telemetry.torque_cmd_nm[1] = Drive_GetTorqueRight(&drive);
+
+  telemetry.batt_voltage_v[0] = Power_GetVoltageDriveFiltered(&power);
+  telemetry.batt_voltage_v[1] = Power_GetVoltageSignalFiltered(&power);
+  telemetry.batt_current_a[0] = Power_GetCurrentDrive(&power);
+  telemetry.batt_current_a[1] = Power_GetCurrentSignal(&power);
+
+  // ULTRASONIC_NO_ECHO (負値) はそのまま渡す。RasLink 側で無効値 0 に落ちる
+  telemetry.us_distance_m[0] = Ultrasonic_GetDistanceCm(&ultrasonic_front) / 100.0f;
+  telemetry.us_distance_m[1] = Ultrasonic_GetDistanceCm(&ultrasonic_rear) / 100.0f;
+
+  RasLink_SetTelemetry(&ras_link, &telemetry);
+
+  uint32_t md_rx_count[3];
+  uint32_t md_rx_error[3];
+  for (int i = 0; i < 3; i++) {
+    md_rx_count[i] = BldcMotor_GetRxCount(MotorByIndex(i));
+    md_rx_error[i] = BldcMotor_GetRxErrorCount(MotorByIndex(i));
+  }
+  RasLink_SetMdStats(&ras_link, md_rx_count, md_rx_error);
+}
+
+// 上位の指令を車両へ適用する。目標値そのものではなく、加速度・舵角速度の上限で
+// レート制限した値を渡す (急な指令変化でタイヤを滑らせたり据え切りでラックを痛めないため)
+static void ApplyRasCommand() {
+  const RasCommand* command = RasLink_GetCommand(&ras_link);
+  const RasConfig* config = RasLink_GetConfig(&ras_link);
+  float dt_s = Timer_Read(&command_rate_timer);
+  Timer_Reset(&command_rate_timer);
+
+  // mode = 3 は v0.4 で予約になったため、受信しても現在のモードを維持する
+  if (command->mode != RAS_MODE_RESERVED) vehicle_mode = command->mode;
+
+  bool arm_requested = (command->flags & RAS_CMD_FLAG_ARM) != 0;
+  Power_SetDrivePower(&power, arm_requested);
+
+  // 中心点が未較正だと舵角の絶対値が信用できないため走行させない
+  bool armed = arm_requested && Steering_IsCenterValid(&steering) &&
+               (vehicle_mode == RAS_MODE_MANUAL || vehicle_mode == RAS_MODE_AUTO);
+  bool braking = (command->flags & RAS_CMD_FLAG_BRAKE) != 0;
+
+  float target_speed_m_s = 0.0f;
+  if (armed && !braking) {
+    target_speed_m_s = Constrain(command->target_speed_m_s, -config->max_speed_m_s, config->max_speed_m_s);
+  }
+  float target_steer_rad =
+      Constrain(command->target_steer_rad, -config->max_steer_rad, config->max_steer_rad);
+
+  // 上限0は「制限なし」ではなく「動かない」になってしまうため、0 のときは設定値で代替する
+  float accel_limit = command->accel_limit_m_s2 > 0.0f ? command->accel_limit_m_s2 : config->max_accel_m_s2;
+  accel_limit = Constrain(accel_limit, 0.01f, config->max_accel_m_s2);
+  float steer_rate_limit = command->steer_rate_limit_rad_s > 0.0f
+                               ? command->steer_rate_limit_rad_s
+                               : Steering_GetMaxRoadWheelAngleRad();
+
+  float speed_step = accel_limit * dt_s;
+  applied_speed_m_s += Constrain(target_speed_m_s - applied_speed_m_s, -speed_step, speed_step);
+  float steer_step = steer_rate_limit * dt_s;
+  applied_steer_rad += Constrain(target_steer_rad - applied_steer_rad, -steer_step, steer_step);
+
+  // Drive_Enable は積分項とTCの上限をリセットするため、状態が変わったときだけ呼ぶ
+  if (armed && !Drive_IsEnabled(&drive)) Drive_Enable(&drive);
+  if (!armed && Drive_IsEnabled(&drive)) Drive_Disable(&drive);
+
+  Drive_SetTargetSpeed(&drive, applied_speed_m_s);
+  Steering_SetRoadWheelAngleRad(&steering, applied_steer_rad);
+
+  Lighting_SetBrake(&lighting, braking);
+  Lighting_SetHeadlight(&lighting, (command->flags & RAS_CMD_FLAG_LIGHT) ? LIGHTING_HEADLIGHT_NORMAL
+                                                                         : LIGHTING_HEADLIGHT_DAYTIME);
+
+  bool horn = (command->flags & RAS_CMD_FLAG_HORN) != 0;
+  if (horn && !horn_was_on) Buzzer_Beep(&buzzer, 2500, 300);
+  horn_was_on = horn;
+}
+
+// ---------------------------------------------------------------------------
+// 緊急停止 (第1安全層)
+//
+// Raspberry Pi が出す 100Hz 矩形波が途切れたら発動する。UART の COMMAND 途絶検出とは
+// 別経路であることに意味があり、こちらの方が速い (50ms 対 100ms)。
+//
+// **発動しても駆動電源は切らない。** 電源を切るとMDが制動をかけられなくなり惰行に入るため、
+// 止まるまでの距離がかえって伸びる。電源を落とすのは過電流のように「流し続けること自体が
+// 危険」なときの処置で、緊急停止でやるべきなのは最短で止めることの方。
+//
+// 一度発動したらラッチし、人間が明示的に解除するまで復帰しない (原因が解消しないまま
+// 走り出さないため)。解除はハートビートが戻っている状態でボタン2を押す。
+// ---------------------------------------------------------------------------
+
+static void UpdateEstop() {
+  Heartbeat_Update(&heartbeat);
+
+  // ハートビートが配線されていない (単体でのベンチ確認中) 場合まで停止させない
+  if (Heartbeat_HasEverBeenSeen(&heartbeat) && !Heartbeat_IsAlive(&heartbeat)) {
+    estop_latched = true;
+  }
+
+  if (estop_latched && Heartbeat_IsAlive(&heartbeat) && DigitalIn_Read(&button2)) {
+    estop_latched = false;
+    Buzzer_Beep(&buzzer, 2000, 100);
+  }
+}
+
+static void ApplyEstop() {
+  applied_speed_m_s = 0.0f;
   Drive_SetTargetSpeed(&drive, 0.0f);
+  Steering_SetRoadWheelAngleRad(&steering, applied_steer_rad);
   Lighting_SetBrake(&lighting, true);
-  if (beep) Buzzer_Beep(&buzzer, 3000, 200);
-  Timer_Reset(&test_timer);
-  test_state = TEST_STATE_BRAKE;
 }
 
-static void UpdateDriveTest() {
-  bool pressed = IsButton1Pressed();
-  bool fault = Power_GetFaults(&power) != POWER_FAULT_NONE;
-  float front_cm = Ultrasonic_GetDistanceCm(&ultrasonic_front);
-  // 計測不能 (ULTRASONIC_NO_ECHO = -1) を至近距離と読み違えないよう、正の値だけを障害物とみなす
-  bool obstacle = front_cm > 0.0f && front_cm < TEST_STOP_DISTANCE_CM;
+// COMMAND が途絶したときの安全側の処置。上位が一度でも繋がった後は、通信が復帰するまで
+// 停車保持を続ける (ボタンによる走行テストへは戻さない)
+static void ApplyCommandTimeout() {
+  applied_speed_m_s = 0.0f;
+  Drive_SetTargetSpeed(&drive, 0.0f);
+  Steering_SetRoadWheelAngleRad(&steering, applied_steer_rad);
+  Lighting_SetBrake(&lighting, true);
+}
 
-  switch (test_state) {
-    case TEST_STATE_IDLE:
-      // 障害物の目の前や電源異常の状態では発進させない
-      if (pressed && !obstacle && !fault) {
-        Buzzer_BeepPattern(&buzzer, 2000, TEST_COUNTDOWN_BEEP_ON_MS, TEST_COUNTDOWN_BEEP_OFF_MS,
-                           TEST_COUNTDOWN_MS / (TEST_COUNTDOWN_BEEP_ON_MS + TEST_COUNTDOWN_BEEP_OFF_MS));
-        Timer_Reset(&test_timer);
-        test_state = TEST_STATE_COUNTDOWN;
-      }
-      break;
+static void UpdateVehicleControl() {
+  UpdateEstop();
 
-    case TEST_STATE_COUNTDOWN:
-      // カウントダウン中のもう一度の押下は中止 (発進前なので制動もブザーも不要)
-      if (pressed || fault) {
-        Buzzer_Stop(&buzzer);
-        test_state = TEST_STATE_IDLE;
-        break;
-      }
-      if (Timer_ReadMs(&test_timer) >= TEST_COUNTDOWN_MS) {
-        Steering_SetAngleRad(&steering, 0.0f);  // 直進で走らせる
-        Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_NORMAL);
-        Drive_SetTargetSpeed(&drive, TEST_TARGET_SPEED_M_S);
-        Timer_Reset(&test_timer);
-        test_state = TEST_STATE_ACCEL;
-      }
-      break;
-
-    case TEST_STATE_ACCEL:
-      // 障害物のほか、手動停止 (ボタン)・電源異常・時間切れでも同じ急停止へ落とす
-      if (obstacle || pressed || fault || Timer_ReadMs(&test_timer) >= TEST_TIMEOUT_MS) {
-        StopTest(obstacle);
-      }
-      break;
-
-    case TEST_STATE_BRAKE:
-      // 目標車速0に対する車速PIが負トルク (回生制動) を出し、車速がほぼ0になった時点で
-      // Drive 側が自動的に制動モード (停車保持) へ移る。そこまで見届けてから待機に戻す
-      if (Abs(Drive_GetVehicleSpeed(&drive)) < DRIVE_STANDSTILL_SPEED_M_S) {
-        Lighting_SetBrake(&lighting, false);
-        Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_DAYTIME);
-        test_state = TEST_STATE_IDLE;
-      }
-      break;
+  // 緊急停止は上位の指令より優先する
+  if (estop_latched) {
+    ApplyEstop();
+    return;
   }
 
-  DigitalOut_Write(&led1, test_state != TEST_STATE_IDLE);
+  if (RasLink_IsCommandAlive(&ras_link)) {
+    ApplyRasCommand();
+  } else {
+    // COMMAND が一度も届いていない間も含め、上位と繋がっていなければ停車保持
+    ApplyCommandTimeout();
+  }
 }
 
 void Setup() {
+  // 上位との通信が使う単調なマイクロ秒時計。他のどの初期化よりも先に立ち上げる
+  Micros_Init();
   printf("Setup started\n");
   DigitalOut_Init(&led1, LED1_GPIO_Port, LED1_Pin);
   DigitalOut_Init(&led2, LED2_GPIO_Port, LED2_Pin);
@@ -269,7 +459,11 @@ void Setup() {
   Lighting_SetWinker(&lighting, LIGHTING_WINKER_OFF);
 
   // 起動シーケンスがすべて終わってからモータードライバに給電する。給電中に初期化や
-  // 起動演出をしていると、指令を出せる状態になる前にMDが動き出す危険がある
+  // 起動演出をしていると、指令を出せる状態になる前にMDが動き出す危険がある。
+  // ここでの ON はステアリング原点較正で MD との通信が要るための一時的なもので、
+  // 較正が終わったら OFF に戻す (下で Power_SetDrivePower(&power, 0) している)。
+  // 上位が arm するまで駆動電源を入れっぱなしにしないことで、Pi が未接続/DISARM の
+  // 間は駆動系が無力化された状態を既定にする
   Power_SetDrivePower(&power, 1);
 
   // ボタン1を押しながら起動 → 現在のステアリング角度を直進中心点として記録・保存する。
@@ -279,11 +473,31 @@ void Setup() {
 
   Drive_Init(&drive, &motors, &encoder, &steering, &imu);
 
-  Timer_Init(&test_timer);
-  Timer_Init(&button1_debounce_timer);
+  // ステアリング較正用の給電はここまで。以降は ApplyRasCommand() が上位の arm 要求で
+  // 制御する
+  Power_SetDrivePower(&power, 0);
+
+  // LD06 LiDAR (USART6, 230400bps)。給電してから初期化する。
+  // 回転が安定するまで数秒かかるが、その間は Lidar_IsOk() が偽になるだけで待つ必要はない
+  Power_SetLidarPower(&power, 1);
+  Serial_Init(&lidar_serial, &huart6, LIDAR_SERIAL_RX_BUF_SIZE);
+  Lidar_Init(&lidar, &lidar_serial, &htim1, TIM_CHANNEL_1);
+
+  // Raspberry Pi (USART1)。MD3系統の初期化が終わってから立ち上げることで、
+  // 最初のテレメトリを送る時点でモータの状態が揃っている
+  Serial_Init(&ras_serial, &huart1, RAS_SERIAL_RX_BUF_SIZE);
+  RasLink_Init(&ras_link, &ras_serial);
+  Heartbeat_Init(&heartbeat, RAS_SIG_GPIO_Port, RAS_SIG_Pin);
+  for (int i = 0; i < 3; i++) Timer_Init(&md_comm_watch[i].timer);
+  Timer_Init(&command_rate_timer);
 
   Timer_Init(&control_interval_timer);
   printf("Setup finished\n");
+
+  // ウォッチドッグは一度起動すると止められないため、ブロッキングする初期化 (IMU の静止
+  // 較正・起動演出・ステアリング中心点の記録) がすべて終わってから最後に起動する。
+  // 裏を返すと Setup 中のハングは検出できない
+  Watchdog_Start(WATCHDOG_TIMEOUT_MS);
 }
 
 // ECHOピンの変化割り込み (stm32f4xx_it.c の EXTI9_5_IRQHandler/EXTI15_10_IRQHandler 経由) から呼ばれる
@@ -312,12 +526,16 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
 }
 
 void MainApp() {
-  // 目標車速・舵角を与える上位ロジック (Raspberry Pi 通信) は未実装。
-  // 目標車速は UpdateDriveTest() が与え、待機中は0のままなので Drive は停車保持
-  // (制動モード) で後輪を押さえる
+  // 上位 (Raspberry Pi) と繋がっていない/armされていない間は ApplyCommandTimeout() が
+  // 目標車速0を与え続けるので、Drive は停車保持 (制動モード) で後輪を押さえる
   Drive_Enable(&drive);
 
   while (1) {
+    // ループが回っていること自体が生存の証拠なので、先頭で無条件に叩く。
+    // 個々のモジュールの異常はフォールトとして別に扱う (ウォッチドッグを異常時の
+    // 停止手段に流用すると、リセットで状態が消えて原因が追えなくなる)
+    Watchdog_Refresh();
+
     Power_Update(&power);
     UpdateFaultIndication();
     UpdatePowerIndication();
@@ -327,9 +545,16 @@ void MainApp() {
     Imu_Update(&imu);
     Ultrasonic_Update(&ultrasonic_front);
     Ultrasonic_Update(&ultrasonic_rear);
-    UpdateDriveTest();
+    Lidar_Update(&lidar);
+    UpdateMdCommWatch();
+    UpdateVehicleControl();
     Drive_Update(&drive);
     Motors_Update(&motors);
+
+    // テレメトリは毎周期最新値に差し替え、実際の送信は RasLink 側で 50Hz に間引かれる
+    PublishTelemetry();
+    PublishLidarSector();
+    RasLink_Update(&ras_link);
 
     // LED2 の点灯幅がループ1周の処理時間になる (オシロで余裕を見るため)
     DigitalOut_Write(&led2, 1);

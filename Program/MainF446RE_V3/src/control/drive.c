@@ -17,8 +17,14 @@ static float EstimateVehicleSpeed(Drive* obj) {
   float omega_right = LPF_Update(&obj->lpf_front_right,
                                  Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR);
 
-  float steer_rad = Steering_GetAngleRad(obj->steering);
-  return (omega_left + omega_right) * 0.5f * DRIVE_FRONT_WHEEL_RADIUS_M * Cos(steer_rad);
+  // フィルタ後の各輪周速も残す。生の角速度は微分ノイズで静止中も ±12m/s 振れるため、
+  // 上位へ報告する車輪速はここで作った値を使うこと
+  obj->front_speed_left_m_s = omega_left * DRIVE_FRONT_WHEEL_RADIUS_M;
+  obj->front_speed_right_m_s = omega_right * DRIVE_FRONT_WHEEL_RADIUS_M;
+
+  // 射影に使うのはモータ機械角ではなく路面舵角。リンク比が1でない機体では別物になる
+  float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
+  return (obj->front_speed_left_m_s + obj->front_speed_right_m_s) * 0.5f * Cos(steer_rad);
 }
 
 // ヨーレートは IMU の実測値を優先する。舵角からの幾何計算 (自転車モデル) は前輪が滑ると
@@ -28,7 +34,7 @@ static float EstimateYawRate(Drive* obj) {
     return Radians(Imu_GetData(obj->imu)->gyro_z);
   }
 
-  float steer_rad = Steering_GetAngleRad(obj->steering);
+  float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
   float cos_steer = Cos(steer_rad);
   if (Abs(cos_steer) < 0.1f) return 0.0f;
   return obj->vehicle_speed_m_s * (Sin(steer_rad) / cos_steer) / DRIVE_WHEELBASE_M;
@@ -153,6 +159,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
 
   obj->vehicle_speed_m_s = 0.0f;
   obj->yaw_rate_rad_s = 0.0f;
+  obj->front_speed_left_m_s = 0.0f;
+  obj->front_speed_right_m_s = 0.0f;
   obj->rear_speed_left_m_s = 0.0f;
   obj->rear_speed_right_m_s = 0.0f;
   obj->slip_left = 0.0f;
