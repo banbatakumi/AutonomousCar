@@ -48,8 +48,8 @@
 // TCがスリップ率を符号ごと誤読して、滑っていないのにトルクを削る (逆に足す) side に倒れる★
 #define DRIVE_REAR_LEFT_DIR (-1.0f)
 #define DRIVE_REAR_RIGHT_DIR (+1.0f)
-#define DRIVE_FRONT_LEFT_DIR (+1.0f)
-#define DRIVE_FRONT_RIGHT_DIR (-1.0f)
+#define DRIVE_FRONT_LEFT_DIR (-1.0f)
+#define DRIVE_FRONT_RIGHT_DIR (+1.0f)
 
 // ===========================================================================
 // 制御パラメータ
@@ -118,10 +118,10 @@ typedef struct {
   float front_speed_right_m_s;  // 右前輪の周速
   float rear_speed_left_m_s;    // 左後輪の周速
   float rear_speed_right_m_s;   // 右後輪の周速
-  float slip_left;             // 左後輪のスリップ率 (正 = 空転, 負 = ロック傾向)
-  float slip_right;            // 右後輪のスリップ率
-  float tc_limit_left_nm;      // TCが動的に決めた左輪のトルク上限
-  float tc_limit_right_nm;     // TCが動的に決めた右輪のトルク上限
+  float slip_left;              // 左後輪のスリップ率 (正 = 空転, 負 = ロック傾向)
+  float slip_right;             // 右後輪のスリップ率
+  float tc_limit_left_nm;       // TCが動的に決めた左輪のトルク上限
+  float tc_limit_right_nm;      // TCが動的に決めた右輪のトルク上限
   // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
   // Drive_SetBrake) のときは制動トルクを負値として入れるので、符号を見れば駆動しているのか
   // 押さえているのかが上位から区別できる
