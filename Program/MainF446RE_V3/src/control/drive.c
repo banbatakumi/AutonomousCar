@@ -81,13 +81,20 @@ static void Coast(Drive* obj) {
   BldcMotor_Stop(&obj->motors->rear_right);
 }
 
+// 後輪MDを制動モードに切り替えて左右へ同じ制動トルクを掛ける。制動トルクは回転を妨げる
+// 向きに掛かる (向きはMD側が回転方向から決める) ため、こちらから符号を与える必要はない。
+// 上位への報告だけは駆動と区別できるよう負値にする
+static void SendBrake(Drive* obj, float nm) {
+  PID_Reset(&obj->speed_pid);
+  obj->torque_left_nm = -nm;
+  obj->torque_right_nm = -nm;
+  BldcMotor_SetBrakeNm(&obj->motors->rear_left, nm);
+  BldcMotor_SetBrakeNm(&obj->motors->rear_right, nm);
+}
+
 // 停車保持。トルク制御は静止時の保持剛性がゼロなので、坂道では制動モードで押さえる
 static void HoldStandstill(Drive* obj) {
-  PID_Reset(&obj->speed_pid);
-  obj->torque_left_nm = 0.0f;
-  obj->torque_right_nm = 0.0f;
-  BldcMotor_SetBrakeNm(&obj->motors->rear_left, DRIVE_STANDSTILL_BRAKE_NM);
-  BldcMotor_SetBrakeNm(&obj->motors->rear_right, DRIVE_STANDSTILL_BRAKE_NM);
+  SendBrake(obj, DRIVE_STANDSTILL_BRAKE_NM);
 }
 
 static void SendTorque(Drive* obj, float left_nm, float right_nm) {
@@ -156,6 +163,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->enabled = false;
   obj->target_speed_m_s = 0.0f;
   obj->yaw_moment_torque_nm = 0.0f;
+  obj->brake_active = false;
+  obj->brake_torque_nm = DRIVE_STANDSTILL_BRAKE_NM;
 
   obj->vehicle_speed_m_s = 0.0f;
   obj->yaw_rate_rad_s = 0.0f;
@@ -183,6 +192,12 @@ void Drive_Update(Drive* obj) {
     Coast(obj);
     return;
   }
+  // ブレーキは車速制御より優先する。PIに「目標0」を与えるだけでは制動力がゲイン任せになり、
+  // 上位が指定した制動トルクどおりに効かないため、指令中はPIごと迂回する
+  if (obj->brake_active) {
+    SendBrake(obj, obj->brake_torque_nm);
+    return;
+  }
   if (IsStandstill(obj)) {
     HoldStandstill(obj);
     return;
@@ -208,6 +223,11 @@ void Drive_Update(Drive* obj) {
 
 void Drive_SetTargetSpeed(Drive* obj, float m_s) {
   obj->target_speed_m_s = Constrain(m_s, -DRIVE_MAX_SPEED_M_S, DRIVE_MAX_SPEED_M_S);
+}
+
+void Drive_SetBrake(Drive* obj, bool on, float torque_nm) {
+  obj->brake_active = on;
+  obj->brake_torque_nm = Constrain(torque_nm, 0.0f, DRIVE_MAX_BRAKE_TORQUE_NM);
 }
 
 void Drive_SetYawMomentTorque(Drive* obj, float nm) {

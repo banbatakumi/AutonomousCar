@@ -146,7 +146,27 @@ static float applied_speed_m_s;
 static float applied_steer_rad;
 static Timer command_rate_timer;
 static uint8_t vehicle_mode = RAS_MODE_DISARM;
+
+// クラクションの音程 [Hz]。押している間だけ鳴らすため、単発ビープではなく連続トーンで出す
+#define HORN_FREQ_HZ 2500
 static bool horn_was_on;
+
+static void SetHorn(bool on) {
+  if (on == horn_was_on) return;
+  Buzzer_SetTone(&buzzer, on ? HORN_FREQ_HZ : 0);
+  horn_was_on = on;
+}
+
+static LightingHeadlightMode HeadlightModeFromCommand(uint8_t light_mode) {
+  switch (light_mode) {
+    case RAS_LIGHT_NORMAL:
+      return LIGHTING_HEADLIGHT_NORMAL;
+    case RAS_LIGHT_DAYTIME:
+      return LIGHTING_HEADLIGHT_DAYTIME;
+    default:
+      return LIGHTING_HEADLIGHT_OFF;
+  }
+}
 
 static BldcMotor* MotorByIndex(int index) {
   switch (index) {
@@ -305,6 +325,11 @@ static void ApplyRasCommand() {
   if (armed && !braking) {
     target_speed_m_s = Constrain(command->target_speed_m_s, -config->max_speed_m_s, config->max_speed_m_s);
   }
+  // 制動トルクの指定が無い (0) ときは最大で掛ける。0 をそのまま「制動トルク0」と解釈すると、
+  // 上位がフィールドを埋め忘れただけでブレーキが効かなくなる
+  float brake_torque_nm =
+      command->brake_torque_nm > 0.0f ? command->brake_torque_nm : DRIVE_MAX_BRAKE_TORQUE_NM;
+
   float target_steer_rad =
       Constrain(command->target_steer_rad, -config->max_steer_rad, config->max_steer_rad);
 
@@ -314,6 +339,10 @@ static void ApplyRasCommand() {
   float steer_rate_limit = command->steer_rate_limit_rad_s > 0.0f
                                ? command->steer_rate_limit_rad_s
                                : Steering_GetMaxRoadWheelAngleRad();
+
+  // ブレーキ中は Drive 側が車速制御ごと迂回するので目標車速をレート制限で下げる意味が無い。
+  // ここで0に落としておかないと、ブレーキを離した瞬間に減速前の目標車速へ復帰してしまう
+  if (braking) applied_speed_m_s = 0.0f;
 
   float speed_step = accel_limit * dt_s;
   applied_speed_m_s += Constrain(target_speed_m_s - applied_speed_m_s, -speed_step, speed_step);
@@ -325,15 +354,14 @@ static void ApplyRasCommand() {
   if (!armed && Drive_IsEnabled(&drive)) Drive_Disable(&drive);
 
   Drive_SetTargetSpeed(&drive, applied_speed_m_s);
+  Drive_SetBrake(&drive, braking, brake_torque_nm);
   Steering_SetRoadWheelAngleRad(&steering, applied_steer_rad);
 
   Lighting_SetBrake(&lighting, braking);
-  Lighting_SetHeadlight(&lighting, (command->flags & RAS_CMD_FLAG_LIGHT) ? LIGHTING_HEADLIGHT_NORMAL
-                                                                         : LIGHTING_HEADLIGHT_DAYTIME);
+  Lighting_SetHeadlight(&lighting, HeadlightModeFromCommand(command->light_mode));
+  Lighting_SetPassing(&lighting, (command->flags & RAS_CMD_FLAG_PASSING) != 0);
 
-  bool horn = (command->flags & RAS_CMD_FLAG_HORN) != 0;
-  if (horn && !horn_was_on) Buzzer_Beep(&buzzer, 2500, 300);
-  horn_was_on = horn;
+  SetHorn((command->flags & RAS_CMD_FLAG_HORN) != 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -364,20 +392,17 @@ static void UpdateEstop() {
   }
 }
 
-static void ApplyEstop() {
+// 上位の指令が使えない状況 (緊急停止・COMMAND 途絶) で共通に取る処置。最大の制動トルクで
+// 止め、上位の操作で入りっぱなしになりうる出力 (クラクション・パッシング) は解除する。
+// 舵角は最後の指令値のまま保持する (直進へ戻すと車体が予期しない方向へ動くため)
+static void ApplyFailsafe() {
   applied_speed_m_s = 0.0f;
   Drive_SetTargetSpeed(&drive, 0.0f);
+  Drive_SetBrake(&drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Steering_SetRoadWheelAngleRad(&steering, applied_steer_rad);
   Lighting_SetBrake(&lighting, true);
-}
-
-// COMMAND が途絶したときの安全側の処置。上位が一度でも繋がった後は、通信が復帰するまで
-// 停車保持を続ける (ボタンによる走行テストへは戻さない)
-static void ApplyCommandTimeout() {
-  applied_speed_m_s = 0.0f;
-  Drive_SetTargetSpeed(&drive, 0.0f);
-  Steering_SetRoadWheelAngleRad(&steering, applied_steer_rad);
-  Lighting_SetBrake(&lighting, true);
+  Lighting_SetPassing(&lighting, false);
+  SetHorn(false);
 }
 
 static void UpdateVehicleControl() {
@@ -385,15 +410,16 @@ static void UpdateVehicleControl() {
 
   // 緊急停止は上位の指令より優先する
   if (estop_latched) {
-    ApplyEstop();
+    ApplyFailsafe();
     return;
   }
 
   if (RasLink_IsCommandAlive(&ras_link)) {
     ApplyRasCommand();
   } else {
-    // COMMAND が一度も届いていない間も含め、上位と繋がっていなければ停車保持
-    ApplyCommandTimeout();
+    // COMMAND が一度も届いていない間も含め、上位と繋がっていなければ停車保持。
+    // 上位が一度でも繋がった後も、通信が復帰するまでこの状態を続ける
+    ApplyFailsafe();
   }
 }
 
@@ -458,24 +484,18 @@ void Setup() {
   }
   Lighting_SetWinker(&lighting, LIGHTING_WINKER_OFF);
 
-  // 起動シーケンスがすべて終わってからモータードライバに給電する。給電中に初期化や
-  // 起動演出をしていると、指令を出せる状態になる前にMDが動き出す危険がある。
-  // ここでの ON はステアリング原点較正で MD との通信が要るための一時的なもので、
-  // 較正が終わったら OFF に戻す (下で Power_SetDrivePower(&power, 0) している)。
-  // 上位が arm するまで駆動電源を入れっぱなしにしないことで、Pi が未接続/DISARM の
-  // 間は駆動系が無力化された状態を既定にする
-  Power_SetDrivePower(&power, 1);
-
   // ボタン1を押しながら起動 → 現在のステアリング角度を直進中心点として記録・保存する。
-  // MDからの状態フレーム受信が要るため駆動電源投入後に行う
+  // 較正は MD からの状態フレーム受信が要るため、このときだけ駆動電源を入れて較正後に落とす。
+  // 較正しない起動では Flash から読むだけで MD と話す必要がないので、駆動電源には一切
+  // 触れない (毎回一瞬でも投入すると、その間だけMDが指令待ちで通電された状態になる)。
+  // 上位が arm するまで駆動電源を入れないことで、Pi が未接続/DISARM の間は駆動系が
+  // 無力化された状態を既定にする
+  if (calibrate_steering) Power_SetDrivePower(&power, 1);
   Steering_Init(&steering, &motors.steering, calibrate_steering);
+  if (calibrate_steering) Power_SetDrivePower(&power, 0);
   DigitalOut_Write(&led1, 0);
 
   Drive_Init(&drive, &motors, &encoder, &steering, &imu);
-
-  // ステアリング較正用の給電はここまで。以降は ApplyRasCommand() が上位の arm 要求で
-  // 制御する
-  Power_SetDrivePower(&power, 0);
 
   // LD06 LiDAR (USART6, 230400bps)。給電してから初期化する。
   // 回転が安定するまで数秒かかるが、その間は Lidar_IsOk() が偽になるだけで待つ必要はない
@@ -526,8 +546,8 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
 }
 
 void MainApp() {
-  // 上位 (Raspberry Pi) と繋がっていない/armされていない間は ApplyCommandTimeout() が
-  // 目標車速0を与え続けるので、Drive は停車保持 (制動モード) で後輪を押さえる
+  // 上位 (Raspberry Pi) と繋がっていない/armされていない間は ApplyFailsafe() が
+  // ブレーキを掛け続けるので、Drive は制動モードで後輪を押さえる
   Drive_Enable(&drive);
 
   while (1) {

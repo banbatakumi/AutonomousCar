@@ -70,6 +70,10 @@
 #define DRIVE_STANDSTILL_SPEED_M_S 0.05f
 #define DRIVE_STANDSTILL_BRAKE_NM 0.075f
 
+// 上位から指令できる制動トルクの上限 [Nm]。MD側のトルク上限 (DRIVE_MAX_TORQUE_NM) を
+// 超える値を送っても MD 側で頭打ちになるだけなので、指令の時点で同じ値に揃えておく
+#define DRIVE_MAX_BRAKE_TORQUE_NM DRIVE_MAX_TORQUE_NM
+
 // ===========================================================================
 // トラクションコントロール (TC) パラメータ
 // ===========================================================================
@@ -101,6 +105,8 @@ typedef struct {
   bool enabled;
   float target_speed_m_s;
   float yaw_moment_torque_nm;  // トルクベクタリング項 (正 = 左旋回方向のヨーモーメント)
+  bool brake_active;           // 真の間は車速制御を止めて制動トルクだけを出す
+  float brake_torque_nm;       // 制動時に後輪各輪へ掛ける制動トルク [Nm] (常に正)
 
   // --- 以下は Drive_Update が更新する観測量 (デバッグ・上位への報告用) ---
   // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
@@ -116,8 +122,11 @@ typedef struct {
   float slip_right;            // 右後輪のスリップ率
   float tc_limit_left_nm;      // TCが動的に決めた左輪のトルク上限
   float tc_limit_right_nm;     // TCが動的に決めた右輪のトルク上限
-  float torque_left_nm;        // 実際にMDへ送った左輪トルク指令
-  float torque_right_nm;       // 実際にMDへ送った右輪トルク指令
+  // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
+  // Drive_SetBrake) のときは制動トルクを負値として入れるので、符号を見れば駆動しているのか
+  // 押さえているのかが上位から区別できる
+  float torque_left_nm;
+  float torque_right_nm;
 } Drive;
 
 /**
@@ -137,6 +146,14 @@ void Drive_Update(Drive* obj);
  * @brief 目標車速 [m/s] を設定する (負値で後退)。
  */
 void Drive_SetTargetSpeed(Drive* obj, float m_s);
+
+/**
+ * @brief ブレーキを掛ける/離す。on の間は車速制御 (PI) を止め、後輪MDを制動モードに切り替えて
+ * torque_nm の制動トルクを各輪へ掛ける。torque_nm は 0〜DRIVE_MAX_BRAKE_TORQUE_NM に
+ * クランプされる。0 を渡すと制動トルクが 0 = 惰行になるため、上位の指令をそのまま渡す場合は
+ * 「未指定 (0) なら既定値」の解釈を呼び出し側で行うこと。
+ */
+void Drive_SetBrake(Drive* obj, bool on, float torque_nm);
 
 /**
  * @brief トルクベクタリングのヨーモーメント指令 [Nm] を設定する。

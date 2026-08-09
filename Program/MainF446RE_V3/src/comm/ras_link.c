@@ -31,7 +31,7 @@
 #define RAS_LOG_MAX_LEN 128
 
 // Pi → STM32 の各 TYPE が取るべきペイロード長 (これ以外は破棄して len_error に数える)
-#define RAS_LEN_COMMAND 10
+#define RAS_LEN_COMMAND 12
 #define RAS_LEN_CONFIG_SET 6
 #define RAS_LEN_PING 4
 #define RAS_LEN_CONFIG_GET 2
@@ -377,6 +377,12 @@ static void HandleCommand(RasLink* obj, const uint8_t* p, uint32_t now_us) {
   obj->command.target_steer_rad = (float)GetI16(&p[4]) * 0.0001f;
   obj->command.accel_limit_m_s2 = (float)GetU16(&p[6]) * 0.001f;
   obj->command.steer_rate_limit_rad_s = (float)GetU16(&p[8]) * 0.001f;
+  obj->command.brake_torque_nm = (float)GetU16(&p[10]) * 0.0001f;
+
+  uint8_t light_mode = (uint8_t)((p[1] & RAS_CMD_LIGHT_MODE_MASK) >> RAS_CMD_LIGHT_MODE_SHIFT);
+  // 予約値 (3) は最も明るい NORMAL に倒す。灯火は消えるより点く方が安全側
+  obj->command.light_mode = (light_mode > RAS_LIGHT_NORMAL) ? RAS_LIGHT_NORMAL : light_mode;
+
   obj->command.seq = obj->rx_seq;
   obj->command.rx_time_us = now_us;
   obj->has_command = true;

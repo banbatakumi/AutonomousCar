@@ -32,6 +32,18 @@ static float Lighting_WinkerDutyAt(uint32_t elapsed_ms) {
   return 0.0f;
 }
 
+// パッシング中は前照灯だけを全光量にする。尾灯を連動させないのは、消灯状態でパッシングした
+// ときに尾灯まで一緒に瞬くと後続車から見て制動と紛らわしいため
+static void Lighting_ApplyFrontLight(Lighting* obj) {
+  float duty = 0.0f;
+  if (obj->passing_on || obj->headlight_mode == LIGHTING_HEADLIGHT_NORMAL) {
+    duty = 1.0f;
+  } else if (obj->headlight_mode == LIGHTING_HEADLIGHT_DAYTIME) {
+    duty = LIGHTING_DAYTIME_DUTY;
+  }
+  PwmOut_Write(&obj->front_light, duty);
+}
+
 static void Lighting_ApplyRearLight(Lighting* obj) {
   float duty = 0.0f;
   if (obj->brake_on) {
@@ -52,6 +64,7 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
   PwmOut_Init(&obj->right_winker, right_htim, right_channel);
 
   obj->headlight_mode = LIGHTING_HEADLIGHT_OFF;
+  obj->passing_on = false;
   obj->brake_on = false;
   obj->winker_state = LIGHTING_WINKER_OFF;
 
@@ -65,15 +78,13 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
 
 void Lighting_SetHeadlight(Lighting* obj, LightingHeadlightMode mode) {
   obj->headlight_mode = mode;
-
-  float duty = 0.0f;
-  if (mode == LIGHTING_HEADLIGHT_NORMAL) {
-    duty = 1.0f;
-  } else if (mode == LIGHTING_HEADLIGHT_DAYTIME) {
-    duty = LIGHTING_DAYTIME_DUTY;
-  }
-  PwmOut_Write(&obj->front_light, duty);
+  Lighting_ApplyFrontLight(obj);
   Lighting_ApplyRearLight(obj);
+}
+
+void Lighting_SetPassing(Lighting* obj, bool on) {
+  obj->passing_on = on;
+  Lighting_ApplyFrontLight(obj);
 }
 
 void Lighting_SetBrake(Lighting* obj, bool on) {

@@ -9,7 +9,8 @@
 
 // ===========================================================================
 // Raspberry Pi (上位) との UART 通信。プロトコル仕様は
-// docs/pi_uart_protocol_v0.4_request.md (v0.4) に対応する。
+// docs/pi_uart_protocol_v0.4_request.md (v0.4) と、そこからの差分を書いた
+// docs/pi_uart_protocol_v0.5_delta.md (v0.5) に対応する。
 //
 // 物理層: USART1, 250000bps 8N1 (分周誤差0%)。
 //
@@ -23,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0004u
+#define RAS_PROTOCOL_VERSION 0x0005u
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -74,7 +75,19 @@ typedef enum {
 #define RAS_CMD_FLAG_ARM (1u << 0)
 #define RAS_CMD_FLAG_BRAKE (1u << 1)
 #define RAS_CMD_FLAG_HORN (1u << 2)
-#define RAS_CMD_FLAG_LIGHT (1u << 3)
+// bit3-4 は前照灯モード (RasLightMode)。v0.4 の1ビット (RAS_CMD_FLAG_LIGHT) では
+// 「前後とも消灯」を表現できなかったため 2ビットへ拡張した
+#define RAS_CMD_LIGHT_MODE_SHIFT 3
+#define RAS_CMD_LIGHT_MODE_MASK (0x03u << RAS_CMD_LIGHT_MODE_SHIFT)
+#define RAS_CMD_FLAG_PASSING (1u << 5)
+
+// COMMAND.flags bit3-4 (前照灯モード)
+typedef enum {
+  RAS_LIGHT_OFF = 0,      // 前照灯・尾灯とも消灯
+  RAS_LIGHT_DAYTIME = 1,  // デイライト (前照灯減光 + 尾灯薄点灯)
+  RAS_LIGHT_NORMAL = 2,   // 通常点灯 (前照灯全光量 + 尾灯薄点灯)
+  // 3 は予約。受信したら被視認性の高い NORMAL として扱う
+} RasLightMode;
 
 // TELEMETRY.flags
 #define RAS_FLAG_MODE_MASK 0x0003u
@@ -148,6 +161,10 @@ typedef struct {
   float target_steer_rad;  // 路面舵角 (反時計回り = 左旋回が正)
   float accel_limit_m_s2;
   float steer_rate_limit_rad_s;
+  // 制動トルク [Nm] (常に正)。0 は「無制動」ではなく「未指定」を意味するので、
+  // 呼び出し側が既定値へ読み替えること (accel_limit と同じ約束)
+  float brake_torque_nm;
+  uint8_t light_mode;  // RasLightMode (flags bit3-4 をデコードしたもの)
   uint8_t seq;
   uint32_t rx_time_us;
 } RasCommand;

@@ -28,6 +28,7 @@ typedef struct {
   PwmOut right_winker;
 
   LightingHeadlightMode headlight_mode;
+  bool passing_on;
   bool brake_on;
 
   LightingWinkerState winker_state;
@@ -46,6 +47,13 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
  * @brief 前照灯を指定パターンで点灯する。OFF 以外では尾灯も薄暗く連動点灯する。
  */
 void Lighting_SetHeadlight(Lighting* obj, LightingHeadlightMode mode);
+
+/**
+ * @brief パッシング (前照灯の一時的な全光量点灯) を on/off する。
+ * on の間は headlight_mode に関わらず前照灯が全光量になるが、尾灯は連動しない
+ * (実車のパッシングと同じ。前照灯モードは保持されるので off にすれば元のモードに戻る)。
+ */
+void Lighting_SetPassing(Lighting* obj, bool on);
 
 /**
  * @brief ブレーキランプ (尾灯の増灯) を点灯/消灯する。
