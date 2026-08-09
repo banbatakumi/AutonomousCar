@@ -77,6 +77,7 @@ void Error_Handler(void);
 #define LIDAR_POWER_GPIO_Port GPIOC
 #define INT_Pin GPIO_PIN_5
 #define INT_GPIO_Port GPIOC
+#define INT_EXTI_IRQn EXTI9_5_IRQn
 #define REAR_LED_Pin GPIO_PIN_0
 #define REAR_LED_GPIO_Port GPIOB
 #define RW_LED_Pin GPIO_PIN_1
@@ -95,12 +96,14 @@ void Error_Handler(void);
 #define TRIG_REAR_GPIO_Port GPIOC
 #define ECHO_REAR_Pin GPIO_PIN_9
 #define ECHO_REAR_GPIO_Port GPIOC
+#define ECHO_REAR_EXTI_IRQn EXTI9_5_IRQn
 #define LIDAR_OUT_Pin GPIO_PIN_8
 #define LIDAR_OUT_GPIO_Port GPIOA
 #define TRIG_FRONT_Pin GPIO_PIN_11
 #define TRIG_FRONT_GPIO_Port GPIOA
 #define ECHO_FRONT_Pin GPIO_PIN_12
 #define ECHO_FRONT_GPIO_Port GPIOA
+#define ECHO_FRONT_EXTI_IRQn EXTI15_10_IRQn
 #define LED1_Pin GPIO_PIN_4
 #define LED1_GPIO_Port GPIOB
 #define LED2_Pin GPIO_PIN_5

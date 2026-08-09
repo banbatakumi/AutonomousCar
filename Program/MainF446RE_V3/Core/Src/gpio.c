@@ -73,12 +73,6 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(INT_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : ECHO_REAR_Pin */
-  GPIO_InitStruct.Pin = ECHO_REAR_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(ECHO_REAR_GPIO_Port, &GPIO_InitStruct);
-
   /*Configure GPIO pins : RAS_SIG_Pin BUTTON2_Pin BUTTON1_Pin */
   GPIO_InitStruct.Pin = RAS_SIG_Pin|BUTTON2_Pin|BUTTON1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
@@ -91,6 +85,12 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ECHO_REAR_Pin */
+  GPIO_InitStruct.Pin = ECHO_REAR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(ECHO_REAR_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : TRIG_FRONT_Pin */
   GPIO_InitStruct.Pin = TRIG_FRONT_Pin;
