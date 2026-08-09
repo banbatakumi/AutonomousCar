@@ -218,3 +218,41 @@ Pi 側 GUI からクラクション・パッシング・灯火切替 (OFF/DAYTIM
 `TELEMETRY.flags` bit2 (`armed`) が起動直後に一瞬立つこともなくなる。
 
 ビルド確認済み (`make -j12`、エラー・警告なし。text 72204 B)。**実機での動作確認は未実施。**
+
+---
+
+## 2026-08-10: app.c の分割リファクタリング
+
+`src/app/app.c` (585行) に、初期化・メインループ・上位指令の適用・緊急停止・テレメトリ組み立て・
+状態表示が全部同居していたので、責務ごとに分割した。**機能の変更は無く、処理内容と実行順序は
+そのまま移設しただけ**。
+
+### 新設したモジュール
+
+| 追加先 | 役割 | app.c から移したもの |
+|--------|------|---------------------|
+| `src/vehicle/vehicle.{h,c}` | 車両統括。上位指令・緊急停止・フェイルセーフのどれを適用するかの調停と、指令のレート制限 | `ApplyRasCommand` / `ApplyFailsafe` / `UpdateEstop` / `UpdateVehicleControl` / `SetHorn` / `HeadlightModeFromCommand` / `applied_speed_m_s` / `applied_steer_rad` / `vehicle_mode` / `estop_latched` |
+| `src/comm/telemetry.{h,c}` | 各モジュールの観測量を TELEMETRY / STATS / LIDAR_SECTOR のフィールドへ詰め替える | `PublishTelemetry` / `BuildTelemetryFlags` / `BuildMdStatus` / `AccumAngleToOdom` / `PublishLidarSector` / `MdCommWatch` 一式 / `MotorByIndex` |
+| `src/hmi/indicator.{h,c}` | 機体状態の表示 (電圧の呼吸 LED、フォールト・緊急停止のハザード) | `BreathLed` 一式 / `UpdatePowerIndication` / `UpdateFaultIndication` |
+
+### 残した app.c の役割
+
+コンポジションルート (全インスタンスの所有・初期化順序・メインループの呼び出し順・HAL 割り込み
+コールバックの振り分け) だけ。585行 → 244行。
+
+- グローバルだったインスタンスを全て `static` にした (他モジュールへは `*_Init()` でポインタを渡す)。
+- `app.h` が 20 個のヘッダを include して `Core/Src/main.c` まで引きずっていたのをやめ、
+  `Setup()` / `MainApp()` の宣言だけにした。
+- 起動演出 (ハザード2回点滅) を `PlayStartupIndication()`、センサ更新群を `UpdateSensors()` に括り出し。
+
+### 依存の向き
+
+`app → vehicle / hmi / comm → control / sensing / power / lighting → lib` の一方向。
+テレメトリは車両状態 (mode / estop / 指令舵角) を `Vehicle_Get*()` 経由で読み、Indicator へは
+app.c が `Vehicle_IsEstopLatched()` の結果を引数で渡すことで循環依存を避けている。
+
+### その他
+
+- 空ディレクトリ `src/sound/` を削除 (`-Isrc/sound` が付くだけの残骸だった)。
+
+ビルド確認済み (`make clean && make -j12`、エラー・警告なし。text 72500 B)。**実機での動作確認は未実施。**

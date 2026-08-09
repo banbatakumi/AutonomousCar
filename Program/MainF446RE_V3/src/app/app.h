@@ -1,33 +1,17 @@
 #ifndef APP_H_
 #define APP_H_
 
-#include <stdbool.h>
-#include <stdio.h>
+// 全モジュールのインスタンスを所有し、初期化順序とメインループを組み立てる層。
+// 個々の機能は src/ 以下の各モジュールが持ち、ここには制御の中身を書かない。
 
-#include "adc.h"
-#include "adc_dma.h"
-#include "buzzer.h"
-#include "digitalinout.h"
-#include "drive.h"
-#include "encoder.h"
-#include "heartbeat.h"
-#include "i2c.h"
-#include "imu.h"
-#include "lidar.h"
-#include "lighting.h"
-#include "main.h"
-#include "motors.h"
-#include "mymath.h"
-#include "power.h"
-#include "pwm_out.h"
-#include "ras_link.h"
-#include "serial.h"
-#include "steering.h"
-#include "timer.h"
-#include "ultrasonic.h"
-#include "watchdog.h"
-
+/**
+ * @brief ペリフェラルと全モジュールを初期化する。main() から一度だけ呼ぶこと。
+ */
 void Setup();
+
+/**
+ * @brief メインループ。戻らない。Setup() の後に呼ぶこと。
+ */
 void MainApp();
 
 #endif  // APP_H_

@@ -5,15 +5,15 @@
 
 #include "bldc_motor.h"
 
-#define STEERING_MAX_ANGLE_RAD 1.04719755119659774615f  // ±60度 (PI/3)
+#define STEERING_MAX_ANGLE_RAD 0.78539816339744830962f  // ±45度 (PI/4)
 
 // MD側の位置制御ループに効かせるトルク上限。据え切りやラックエンド当てで位置偏差が残り続けると
 // MD内の速度ループがワインドアップして電流を流しっぱなしにするため、これは必須。
 // モータ最大 (0.1557 N・m) より小さくすること。これを上回る値を指定すると
 // MD側の定数上限が効くだけになり、ここで絞る意味が無くなる。
 // 速度上限は持たせていない。位置制御の速度指令は Kp × 位置偏差 で決まり、舵角は
-// ±60度に有界なので、位置ゲイン自体が速度リミッタとして働くため。
-#define STEERING_MAX_TORQUE_NM 0.075f
+// ±45度に有界なので、位置ゲイン自体が速度リミッタとして働くため。
+#define STEERING_MAX_TORQUE_NM 0.05f
 
 // モータ機械角の増加方向と舵角の正方向 (反時計回り = 左旋回) の対応。モータの取付向きや
 // リンクの組み方で反転するため、実機に合わせて +1 / -1 を切り替える。指令と実測の両方に
@@ -40,7 +40,7 @@ typedef struct {
 void Steering_Init(Steering* obj, BldcMotor* motor, bool do_calibrate);
 
 /**
- * @brief 中心点からの相対角度 [rad] (-60度~+60度の範囲にクランプ) を指令する。
+ * @brief 中心点からの相対角度 [rad] (-45度~+45度の範囲にクランプ) を指令する。
  */
 void Steering_SetAngleRad(Steering* obj, float angle_rad);
 
