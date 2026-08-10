@@ -30,6 +30,11 @@
 // クラクションの音程 [Hz]。押している間だけ鳴らすため、単発ビープではなく連続トーンで出す
 #define VEHICLE_HORN_FREQ_HZ 2500
 
+// ARM解除からLiDAR電源を落とすまでの遅延 [s]。信号待ちなど短い停止のたびに電源を入り切り
+// すると、LD06は起動から安定したスキャンが出るまで数秒かかるため、再ARM直後にセンサが
+// 使えない空白ができてしまう。この遅延の間はARM解除中もLiDARを点けたままにする
+#define VEHICLE_LIDAR_IDLE_OFF_DELAY_S 5.0f
+
 typedef struct {
   RasLink* ras_link;
   Drive* drive;
@@ -49,6 +54,10 @@ typedef struct {
   uint8_t mode;  // RasMode
   bool estop_latched;
   bool horn_on;
+
+  // ARMが外れている(=走らせる予定がない)時間を計り、LiDAR電源の遅延OFFに使う
+  Timer lidar_idle_timer;
+  bool lidar_on;
 } Vehicle;
 
 /**

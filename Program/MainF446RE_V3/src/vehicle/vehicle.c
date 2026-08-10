@@ -19,6 +19,24 @@ static LightingHeadlightMode HeadlightModeFromCommand(uint8_t light_mode) {
   }
 }
 
+// LiDAR電源を want_on に応じて更新する。ARM中は即座に点け、ARMが外れても
+// VEHICLE_LIDAR_IDLE_OFF_DELAY_S が経つまでは点けたままにする (短い停止での
+// 頻繁な電源入り切りと、それによる再ARM直後のセンサ空白を避けるため)
+static void UpdateLidarPower(Vehicle* obj, bool want_on) {
+  if (want_on) {
+    Timer_Reset(&obj->lidar_idle_timer);
+    if (!obj->lidar_on) {
+      Power_SetLidarPower(obj->power, 1);
+      obj->lidar_on = true;
+    }
+    return;
+  }
+  if (obj->lidar_on && Timer_Read(&obj->lidar_idle_timer) >= VEHICLE_LIDAR_IDLE_OFF_DELAY_S) {
+    Power_SetLidarPower(obj->power, 0);
+    obj->lidar_on = false;
+  }
+}
+
 // 上位の指令を車両へ適用する。目標値そのものではなく、加速度・舵角速度の上限で
 // レート制限した値を渡す (急な指令変化でタイヤを滑らせたり据え切りでラックを痛めないため)
 static void ApplyRasCommand(Vehicle* obj) {
@@ -32,6 +50,7 @@ static void ApplyRasCommand(Vehicle* obj) {
 
   bool arm_requested = (command->flags & RAS_CMD_FLAG_ARM) != 0;
   Power_SetDrivePower(obj->power, arm_requested);
+  UpdateLidarPower(obj, arm_requested);
 
   // 中心点が未較正だと舵角の絶対値が信用できないため走行させない
   bool armed = arm_requested && Steering_IsCenterValid(obj->steering) &&
@@ -144,6 +163,10 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->mode = RAS_MODE_DISARM;
   obj->estop_latched = false;
   obj->horn_on = false;
+
+  // Setup() が Vehicle_Init より前に Power_SetLidarPower() でLiDARへ給電済みの状態を反映する
+  Timer_Init(&obj->lidar_idle_timer);
+  obj->lidar_on = true;
 }
 
 void Vehicle_Update(Vehicle* obj) {
@@ -152,6 +175,7 @@ void Vehicle_Update(Vehicle* obj) {
   // 緊急停止は上位の指令より優先する
   if (obj->estop_latched) {
     ApplyFailsafe(obj);
+    UpdateLidarPower(obj, false);
     return;
   }
 
@@ -161,6 +185,7 @@ void Vehicle_Update(Vehicle* obj) {
     // COMMAND が一度も届いていない間も含め、上位と繋がっていなければ停車保持。
     // 上位が一度でも繋がった後も、通信が復帰するまでこの状態を続ける
     ApplyFailsafe(obj);
+    UpdateLidarPower(obj, false);
   }
 }
 

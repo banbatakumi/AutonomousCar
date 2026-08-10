@@ -165,9 +165,8 @@ void Setup() {
 
   Drive_Init(&drive, &motors, &encoder, &steering, &imu);
 
-  // LD06 LiDAR (USART6, 230400bps)。給電してから初期化する。
+  // LD06 LiDAR (USART6, 230400bps)。
   // 回転が安定するまで数秒かかるが、その間は Lidar_IsOk() が偽になるだけで待つ必要はない
-  Power_SetLidarPower(&power, 1);
   Serial_Init(&lidar_serial, &huart6, LIDAR_SERIAL_RX_BUF_SIZE);
   Lidar_Init(&lidar, &lidar_serial, &htim1, TIM_CHANNEL_1);
 
