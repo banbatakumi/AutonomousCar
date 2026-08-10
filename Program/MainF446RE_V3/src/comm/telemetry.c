@@ -73,7 +73,7 @@ static int32_t AccumAngleToOdom(int32_t mrad, float direction) {
 
 void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, Power* power,
                     Encoder* encoder, Imu* imu, Lidar* lidar, Motors* motors, Steering* steering,
-                    Drive* drive, Ultrasonic* ultrasonic_front, Ultrasonic* ultrasonic_rear) {
+                    Drive* drive, RangeSensor* range_sensor) {
   obj->ras_link = ras_link;
   obj->vehicle = vehicle;
   obj->power = power;
@@ -83,8 +83,7 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
   obj->motors = motors;
   obj->steering = steering;
   obj->drive = drive;
-  obj->ultrasonic_front = ultrasonic_front;
-  obj->ultrasonic_rear = ultrasonic_rear;
+  obj->range_sensor = range_sensor;
 
   for (int i = 0; i < 3; i++) {
     obj->md_comm_watch[i].last_rx_count = 0;
@@ -139,9 +138,10 @@ void Telemetry_Update(Telemetry* obj) {
   telemetry.batt_current_a[0] = Power_GetCurrentDrive(obj->power);
   telemetry.batt_current_a[1] = Power_GetCurrentSignal(obj->power);
 
-  // ULTRASONIC_NO_ECHO (負値) はそのまま渡す。RasLink 側で無効値 0 に落ちる
-  telemetry.us_distance_m[0] = Ultrasonic_GetDistanceCm(obj->ultrasonic_front) / 100.0f;
-  telemetry.us_distance_m[1] = Ultrasonic_GetDistanceCm(obj->ultrasonic_rear) / 100.0f;
+  // LPF済みの距離を送る (src/sensing/range_sensor.c)。ULTRASONIC_NO_ECHO (負値) は
+  // フィルタを介さずそのまま渡り、RasLink 側で無効値 0 に落ちる
+  telemetry.us_distance_m[0] = RangeSensor_GetFrontDistanceFilteredCm(obj->range_sensor) / 100.0f;
+  telemetry.us_distance_m[1] = RangeSensor_GetRearDistanceFilteredCm(obj->range_sensor) / 100.0f;
 
   RasLink_SetTelemetry(obj->ras_link, &telemetry);
 

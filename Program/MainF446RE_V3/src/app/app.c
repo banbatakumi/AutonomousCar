@@ -19,12 +19,12 @@
 #include "motors.h"
 #include "power.h"
 #include "pwm_out.h"
+#include "range_sensor.h"
 #include "ras_link.h"
 #include "serial.h"
 #include "steering.h"
 #include "telemetry.h"
 #include "timer.h"
-#include "ultrasonic.h"
 #include "vehicle.h"
 #include "watchdog.h"
 
@@ -56,8 +56,7 @@ static AdcDma adc2;
 static Power power;
 static Encoder encoder;
 static Imu imu;
-static Ultrasonic ultrasonic_front;
-static Ultrasonic ultrasonic_rear;
+static RangeSensor range_sensor;
 
 static DigitalOut led1;
 static DigitalOut led2;
@@ -122,8 +121,8 @@ void Setup() {
   Encoder_Init(&encoder, &adc2);
   Indicator_Init(&indicator, &power, &lighting, &led3, &led4);
 
-  Ultrasonic_Init(&ultrasonic_front, TRIG_FRONT_GPIO_Port, TRIG_FRONT_Pin, ECHO_FRONT_GPIO_Port, ECHO_FRONT_Pin);
-  Ultrasonic_Init(&ultrasonic_rear, TRIG_REAR_GPIO_Port, TRIG_REAR_Pin, ECHO_REAR_GPIO_Port, ECHO_REAR_Pin);
+  RangeSensor_Init(&range_sensor, TRIG_FRONT_GPIO_Port, TRIG_FRONT_Pin, ECHO_FRONT_GPIO_Port, ECHO_FRONT_Pin,
+                    TRIG_REAR_GPIO_Port, TRIG_REAR_Pin, ECHO_REAR_GPIO_Port, ECHO_REAR_Pin);
 
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
@@ -179,7 +178,7 @@ void Setup() {
   Vehicle_Init(&vehicle, &ras_link, &drive, &steering, &lighting, &power, &heartbeat,
                &buzzer, &button2);
   Telemetry_Init(&telemetry, &ras_link, &vehicle, &power, &encoder, &imu, &lidar, &motors,
-                 &steering, &drive, &ultrasonic_front, &ultrasonic_rear);
+                 &steering, &drive, &range_sensor);
 
   Timer_Init(&control_interval_timer);
   printf("Setup finished\n");
@@ -193,9 +192,9 @@ void Setup() {
 // ECHOピンの変化割り込み (stm32f4xx_it.c の EXTI9_5_IRQHandler/EXTI15_10_IRQHandler 経由) から呼ばれる
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if (GPIO_Pin == ECHO_FRONT_Pin) {
-    Ultrasonic_OnEchoEdge(&ultrasonic_front);
+    RangeSensor_OnFrontEchoEdge(&range_sensor);
   } else if (GPIO_Pin == ECHO_REAR_Pin) {
-    Ultrasonic_OnEchoEdge(&ultrasonic_rear);
+    RangeSensor_OnRearEchoEdge(&range_sensor);
   } else if (GPIO_Pin == INT_Pin) {
     // MPU6050 の新しいサンプルが揃った → 非同期I2C読み出しを開始する
     Imu_OnDataReady(&imu);
@@ -218,8 +217,7 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
 static void UpdateSensors() {
   Encoder_Update(&encoder);
   Imu_Update(&imu);
-  Ultrasonic_Update(&ultrasonic_front);
-  Ultrasonic_Update(&ultrasonic_rear);
+  RangeSensor_Update(&range_sensor);
   Lidar_Update(&lidar);
 }
 

@@ -9,10 +9,10 @@
 #include "lidar.h"
 #include "motors.h"
 #include "power.h"
+#include "range_sensor.h"
 #include "ras_link.h"
 #include "steering.h"
 #include "timer.h"
-#include "ultrasonic.h"
 #include "vehicle.h"
 
 // ===========================================================================
@@ -43,8 +43,7 @@ typedef struct {
   Motors* motors;
   Steering* steering;
   Drive* drive;
-  Ultrasonic* ultrasonic_front;
-  Ultrasonic* ultrasonic_rear;
+  RangeSensor* range_sensor;
 
   // [左後輪, 右後輪, ステアリング] の順 (プロトコルの配列インデックス規約に合わせる)
   MdCommWatch md_comm_watch[3];
@@ -55,7 +54,7 @@ typedef struct {
  */
 void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, Power* power,
                     Encoder* encoder, Imu* imu, Lidar* lidar, Motors* motors, Steering* steering,
-                    Drive* drive, Ultrasonic* ultrasonic_front, Ultrasonic* ultrasonic_rear);
+                    Drive* drive, RangeSensor* range_sensor);
 
 /**
  * @brief MD の通信監視を進め、次に送る TELEMETRY / STATS の内容を最新値に差し替える。
