@@ -10,6 +10,7 @@
 #include "pid.h"
 #include "steering.h"
 #include "timer.h"
+#include "torque_vectoring.h"
 
 // 後輪2モータをトルク制御し、車速をこのマイコン側で閉ループ制御する。
 //
@@ -20,9 +21,11 @@
 //                                                          ↓ UART
 //                                          [MDの電流ループ (kHz)] ← 内側ループはMD側
 //
-// 左右へは等トルクを配分するため、旋回時の内外輪速度差は各輪が自然に見つける (オープンデフ相当)。
-// 左右輪へ独立に速度ループを掛ける方式と違い、タイヤ径誤差やアッカーマンモデル誤差による
-// 内部トルクの循環 (片輪が押して片輪が引く状態) が原理的に発生しない。
+// 左右の配分は等トルクを基準とし、そこへトルクベクタリング (src/control/torque_vectoring) が
+// 決めた左右差だけを重ねる。総和は変わらないので車速制御とは干渉しない。差を付けない限りは
+// 旋回時の内外輪速度差を各輪が自然に見つける (オープンデフ相当) 挙動になり、左右輪へ独立に
+// 速度ループを掛ける方式と違ってタイヤ径誤差やアッカーマンモデル誤差による内部トルクの循環
+// (片輪が押して片輪が引く状態) が原理的に発生しない。
 //
 // 車速の真値は非駆動輪である前輪エンコーダから得るため、駆動輪速度との比較でスリップ率が
 // 直接計算でき、トラクションコントロール (TC) が成立する。
@@ -61,14 +64,14 @@
 // 1輪あたりのトルク上限 [Nm] (プロトコル上の絶対上限は ±3.2767)。
 // この値は指令のクランプに使うと同時に MD 側のトルク上限としても設定するため、
 // このマイコンのバグや通信異常で過大な指令が出ても最終段で頭打ちになる。
-// 停車保持の制動トルク (DRIVE_STANDSTILL_BRAKE_NM) もこの上限を超えないこと
+// 上位が指令できる制動トルク (DRIVE_MAX_BRAKE_TORQUE_NM) もこの上限を超えないこと
 #define DRIVE_MAX_TORQUE_NM 0.075f
 #define DRIVE_MAX_SPEED_M_S 3.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
 #define DRIVE_ANTIWINDUP_TT_S 0.10f  // TC/リミッタで飽和したときに積分を巻き戻す時定数 [s]
 
-// 停車保持: 目標車速がほぼ0かつ実車速もほぼ0のとき、トルク制御では保持剛性が無いため制動モードに切り替える
+// 停車: 目標車速がほぼ0かつ実車速もほぼ0のとき、指令を止めて自由回転させる (惰行)。
+// 上位が明示的にブレーキ (RAS_CMD_FLAG_BRAKE) を指定しない限り、停車中も車両を押さえ込まない
 #define DRIVE_STANDSTILL_SPEED_M_S 0.05f
-#define DRIVE_STANDSTILL_BRAKE_NM 0.075f
 
 // 上位から指令できる制動トルクの上限 [Nm]。MD側のトルク上限 (DRIVE_MAX_TORQUE_NM) を
 // 超える値を送っても MD 側で頭打ちになるだけなので、指令の時点で同じ値に揃えておく
@@ -96,6 +99,7 @@ typedef struct {
   Imu* imu;  // ヨーレート取得用 (NULL可。その場合は自転車モデルで代用する)
 
   PID speed_pid;
+  TorqueVectoring tv;
   LPF lpf_front_left;
   LPF lpf_front_right;
   LPF lpf_rear_left;
@@ -104,9 +108,8 @@ typedef struct {
 
   bool enabled;
   float target_speed_m_s;
-  float yaw_moment_torque_nm;  // トルクベクタリング項 (正 = 左旋回方向のヨーモーメント)
-  bool brake_active;           // 真の間は車速制御を止めて制動トルクだけを出す
-  float brake_torque_nm;       // 制動時に後輪各輪へ掛ける制動トルク [Nm] (常に正)
+  bool brake_active;      // 真の間は車速制御を止めて制動トルクだけを出す
+  float brake_torque_nm;  // 制動時に後輪各輪へ掛ける制動トルク [Nm] (常に正)
 
   // --- 以下は Drive_Update が更新する観測量 (デバッグ・上位への報告用) ---
   // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
@@ -114,6 +117,7 @@ typedef struct {
   // (= 0.09m/s) に化ける。実測ではノイズが ±100mV 程度あり、静止中でも生値は ±12m/s 振れる
   float vehicle_speed_m_s;      // 前輪から推定した車体前後方向の速度 (舵角で射影済み)
   float yaw_rate_rad_s;         // スリップ率の基準速度を作るのに使ったヨーレート
+  bool yaw_rate_measured;       // 上がIMUの実測値か (偽 = 舵角からの幾何計算で代用中)
   float front_speed_left_m_s;   // 左前輪の周速 (射影前。車体速度ではなく車輪自身の軌跡上の速度)
   float front_speed_right_m_s;  // 右前輪の周速
   float rear_speed_left_m_s;    // 左後輪の周速
@@ -156,10 +160,27 @@ void Drive_SetTargetSpeed(Drive* obj, float m_s);
 void Drive_SetBrake(Drive* obj, bool on, float torque_nm);
 
 /**
- * @brief トルクベクタリングのヨーモーメント指令 [Nm] を設定する。
- * 正で左旋回方向 (右輪のトルクを増やし左輪を減らす)。左右の総和は変えないため車速に影響しない。
+ * @brief トルクベクタリングの有効/無効を切り替える (既定は有効)。
+ * 無効にすると左右へ常に等トルクを配分する (オープンデフ相当の挙動になる)。
+ * 有効にしていても、IMU の実測ヨーレートが得られない間・低速時は介入しない。
  */
-void Drive_SetYawMomentTorque(Drive* obj, float nm);
+void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled);
+
+/**
+ * @brief トルクベクタリングが今まさに左右へトルク差を付けているかを取得する。
+ */
+bool Drive_IsTorqueVectoringActive(const Drive* obj);
+
+/**
+ * @brief トルクベクタリングの規範モデルが出した目標ヨーレート [rad/s] を取得する
+ * (実測値との比較でゲインを詰めるためのデバッグ用)。
+ */
+float Drive_GetTargetYawRate(const Drive* obj);
+
+/**
+ * @brief 適用中の左右トルク差 [Nm] (右輪 − 左輪) を取得する。正 = 左旋回方向。
+ */
+float Drive_GetYawMomentTorque(const Drive* obj);
 
 /**
  * @brief 駆動制御を有効化する。積分項とTCのトルク上限をリセットしてから開始する。

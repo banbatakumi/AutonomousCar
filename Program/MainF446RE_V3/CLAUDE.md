@@ -19,7 +19,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `DRIVE_POWER` は既定で OFF。ボタン1を押しながら起動してステアリング原点較正をする場合のみ、MD 通信が要るため `Setup()` 中に一時的に ON にして較正後 OFF に戻す (較正しない起動では一度も投入しない)。以降は `ApplyRasCommand()` (`src/vehicle/vehicle.c`) が上位の arm 要求 (`RAS_CMD_FLAG_ARM`) に従って ON/OFF する。つまり **Pi が未接続または DISARM の間は駆動電源が入らないのが既定**。
 - LD06 (LiDAR) は Setup で給電・初期化され、120Hz でセクタを上位へ送っている。
 - 安全層は 4段: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 → ④`COMMAND` 途絶 100ms で自動ブレーキ。緊急停止はラッチし、**ハートビートが戻っている状態でボタン2を押すまで解除しない**。緊急停止で駆動電源を切らないのは、切るとMDが制動をかけられず惰行して停止距離が伸びるため。
-- **未実装**: トルクベクタリング、TC/速度PIゲインの実行時変更 (該当 `param_id` は `RAS_CONFIG_UNKNOWN_PARAM` を返す)、LiDAR を使った下位側の緊急停止 (実装するなら `src/sensing/lidar.c` に360点の最小距離配列を足すこと)。
+- トルクベクタリング (`src/control/torque_vectoring.c`) は実装済みで既定は有効。ただしゲイン・安定係数・横加速度上限はいずれも机上値のままで、**実機での符号確認とチューニングが未了**。
+- **未実装**: TC/TV/速度PIゲインの実行時変更 (該当 `param_id` は `RAS_CONFIG_UNKNOWN_PARAM` を返す)、LiDAR を使った下位側の緊急停止 (実装するなら `src/sensing/lidar.c` に360点の最小距離配列を足すこと)。
 
 ---
 
@@ -93,12 +94,20 @@ src/power/      電源の計測 (電圧・電流・温度) と電源スイッチ
 src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ステアリング/左後輪/右後輪)のBLDC MD通信まとめ、
                 Steering_* : ステアリング中心点キャリブレーションと相対角度指令、
                 Drive_* : 車速のトルクベース閉ループ制御。後輪MDはトルク(Nm)モードで駆動し、
-                車速PI → 左右等配分 → 各輪スリップ率によるTCリミッタ、という構造。車速の真値は
-                非駆動輪である前輪エンコーダから取る。トルクベクタリング項の入口も用意済み。
+                車速PI → 左右配分 (等配分 + TVのトルク差) → 各輪スリップ率によるTCリミッタ、
+                という構造。車速の真値は非駆動輪である前輪エンコーダから取る。
                 ブレーキ (Drive_SetBrake) は車速PIを迂回して MD の制動モードへ指定トルクを
                 直接渡す。目標車速0でPIに任せると制動力がゲイン任せになり、上位が N・m で
                 指定した強さどおりに効かないため。上位への報告 (torque_left/right_nm) は
-                正=駆動・負=制動で揃えてあり、制動中は制動トルクを負値で入れる)
+                正=駆動・負=制動で揃えてあり、制動中は制動トルクを負値で入れる、
+                TorqueVectoring_* : 直接ヨーモーメント制御 (DYC)。規範モデル (自転車モデル +
+                安定係数 + 横加速度の頭打ち) が出す目標ヨーレートと IMU の実測値の偏差を
+                PI で埋め、左右後輪のトルク差として Drive へ返す。左右の総和は変えないので
+                車速制御とは干渉しない。IMU が使えないとき Drive 側のヨーレートは舵角からの
+                幾何計算に化けて規範モデルとほぼ同じ式になるため、その間 Drive は TV を
+                呼ばない (偏差が常に0付近になり制御が成立しないため)。TC が削っている最中は
+                トルク差を付ける余力が無いので、Drive の LimitDiffTorque() で丸めてから
+                TorqueVectoring_ReportApplied() に返し、出せなかった分の積分を巻き戻す)
 src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、250000bps。
                 仕様は docs/pi_uart_protocol_v0.4_request.md と、COMMAND の変更点だけを書いた
                 docs/pi_uart_protocol_v0.5_delta.md。フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と

@@ -31,9 +31,11 @@ static float EstimateVehicleSpeed(Drive* obj) {
 // 実際のヨーレートから乖離するため、まさにTCが必要な場面で基準速度が狂うことになる。
 static float EstimateYawRate(Drive* obj) {
   if (obj->imu != NULL && Imu_IsReady(obj->imu)) {
+    obj->yaw_rate_measured = true;
     return Radians(Imu_GetData(obj->imu)->gyro_z);
   }
 
+  obj->yaw_rate_measured = false;
   float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
   float cos_steer = Cos(steer_rad);
   if (Abs(cos_steer) < 0.1f) return 0.0f;
@@ -86,15 +88,22 @@ static void Coast(Drive* obj) {
 // 上位への報告だけは駆動と区別できるよう負値にする
 static void SendBrake(Drive* obj, float nm) {
   PID_Reset(&obj->speed_pid);
+  // MD の制動モードは左右へ同じトルクしか出せないので、TV はこの間ヨーモーメントを作れない。
+  // 積分を持ち越すとブレーキを離した瞬間に溜まった分が一気に出る
+  TorqueVectoring_Reset(&obj->tv);
   obj->torque_left_nm = -nm;
   obj->torque_right_nm = -nm;
   BldcMotor_SetBrakeNm(&obj->motors->rear_left, nm);
   BldcMotor_SetBrakeNm(&obj->motors->rear_right, nm);
 }
 
-// 停車保持。トルク制御は静止時の保持剛性がゼロなので、坂道では制動モードで押さえる
-static void HoldStandstill(Drive* obj) {
-  SendBrake(obj, DRIVE_STANDSTILL_BRAKE_NM);
+// 目標車速も実車速もほぼ0の間は指令を止めて自由回転させる (惰行)。上位が明示的に
+// ブレーキ (RAS_CMD_FLAG_BRAKE) を指定しない限り、停車中も車両を押さえ込まない。
+// 積分・TV を持ち越すと再発進時に停止中に溜まった分が一気に出るのでリセットする
+static void CoastStandstill(Drive* obj) {
+  PID_Reset(&obj->speed_pid);
+  TorqueVectoring_Reset(&obj->tv);
+  Coast(obj);
 }
 
 static void SendTorque(Drive* obj, float left_nm, float right_nm) {
@@ -123,6 +132,26 @@ static float UpdateTractionLimit(float limit_nm, float slip, float dt_s) {
     limit_nm += DRIVE_TC_RECOVER_RATE * dt_s;
   }
   return Constrain(limit_nm, DRIVE_TC_MIN_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
+}
+
+// 左右トルク差を、両輪ともTCの上限に収まる範囲へ丸める。
+//
+// 先に丸めるのが肝で、丸めずに配分してから左右を個別にクランプすると削られ方が左右非対称に
+// なり、要求したのと違うヨーモーメントが残る (総駆動トルクが大きいほど片側だけが削られる)。
+// left = (total - d)/2, right = (total + d)/2 を各輪の上限に収める条件から d の範囲が決まる。
+static float LimitDiffTorque(const Drive* obj, float total_nm, float diff_nm) {
+  float min_by_left = total_nm - 2.0f * obj->tc_limit_left_nm;
+  float min_by_right = -2.0f * obj->tc_limit_right_nm - total_nm;
+  float min_diff = min_by_left > min_by_right ? min_by_left : min_by_right;
+
+  float max_by_left = total_nm + 2.0f * obj->tc_limit_left_nm;
+  float max_by_right = 2.0f * obj->tc_limit_right_nm - total_nm;
+  float max_diff = max_by_left < max_by_right ? max_by_left : max_by_right;
+
+  // 総駆動トルクだけで既に両輪の上限を超えている場合は差を付ける余力が無い。
+  // ここで無理に範囲へ寄せると左右非対称な飽和になるので、等配分 (差0) に倒す
+  if (min_diff > max_diff) return 0.0f;
+  return Constrain(diff_nm, min_diff, max_diff);
 }
 
 // 車速フィードバックが壊れて積分が振り切れても、実速度が上限を超えたら加速させない
@@ -154,6 +183,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
 
   PID_Init(&obj->speed_pid, DRIVE_SPEED_KP, DRIVE_SPEED_KI, DRIVE_SPEED_KD,
            -DRIVE_MAX_TOTAL_TORQUE_NM, DRIVE_MAX_TOTAL_TORQUE_NM);
+  TorqueVectoring_Init(&obj->tv, DRIVE_WHEELBASE_M, DRIVE_REAR_TRACK_M, DRIVE_REAR_WHEEL_RADIUS_M);
   LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0);
   LPF_Init(&obj->lpf_front_right, DRIVE_LPF_K_FRONT, 0.0);
   LPF_Init(&obj->lpf_rear_left, DRIVE_LPF_K_REAR, 0.0);
@@ -162,12 +192,12 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
 
   obj->enabled = false;
   obj->target_speed_m_s = 0.0f;
-  obj->yaw_moment_torque_nm = 0.0f;
   obj->brake_active = false;
-  obj->brake_torque_nm = DRIVE_STANDSTILL_BRAKE_NM;
+  obj->brake_torque_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
 
   obj->vehicle_speed_m_s = 0.0f;
   obj->yaw_rate_rad_s = 0.0f;
+  obj->yaw_rate_measured = false;
   obj->front_speed_left_m_s = 0.0f;
   obj->front_speed_right_m_s = 0.0f;
   obj->rear_speed_left_m_s = 0.0f;
@@ -199,18 +229,32 @@ void Drive_Update(Drive* obj) {
     return;
   }
   if (IsStandstill(obj)) {
-    HoldStandstill(obj);
+    CoastStandstill(obj);
     return;
   }
 
   float requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
 
-  // 左右等配分 + ヨーモーメント項。左右差だけを付けるので総駆動力は変わらず、車速制御と干渉しない
-  float left_nm = (requested_total_nm - obj->yaw_moment_torque_nm) * 0.5f;
-  float right_nm = (requested_total_nm + obj->yaw_moment_torque_nm) * 0.5f;
-
   obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s);
   obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s);
+
+  // トルクベクタリングには実測ヨーレートが要る。IMU が使えないときの代用値 (舵角からの
+  // 幾何計算) は規範モデルとほぼ同じ式なので、偏差が常に0付近になり制御として成立しない
+  float diff_nm = 0.0f;
+  if (obj->yaw_rate_measured) {
+    diff_nm = TorqueVectoring_Update(&obj->tv, obj->vehicle_speed_m_s,
+                                     Steering_GetRoadWheelAngleRad(obj->steering),
+                                     obj->yaw_rate_rad_s, dt_s);
+    diff_nm = LimitDiffTorque(obj, requested_total_nm, diff_nm);
+    TorqueVectoring_ReportApplied(&obj->tv, diff_nm, dt_s);
+  } else {
+    TorqueVectoring_Reset(&obj->tv);
+  }
+
+  // 左右等配分 + トルク差。差だけを付けるので総駆動力は変わらず、車速制御と干渉しない
+  float left_nm = (requested_total_nm - diff_nm) * 0.5f;
+  float right_nm = (requested_total_nm + diff_nm) * 0.5f;
+
   left_nm = Constrain(left_nm, -obj->tc_limit_left_nm, obj->tc_limit_left_nm);
   right_nm = Constrain(right_nm, -obj->tc_limit_right_nm, obj->tc_limit_right_nm);
 
@@ -230,15 +274,15 @@ void Drive_SetBrake(Drive* obj, bool on, float torque_nm) {
   obj->brake_torque_nm = Constrain(torque_nm, 0.0f, DRIVE_MAX_BRAKE_TORQUE_NM);
 }
 
-void Drive_SetYawMomentTorque(Drive* obj, float nm) {
-  obj->yaw_moment_torque_nm = Constrain(nm, -DRIVE_MAX_TOTAL_TORQUE_NM, DRIVE_MAX_TOTAL_TORQUE_NM);
+void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled) {
+  TorqueVectoring_SetEnabled(&obj->tv, enabled);
 }
 
 void Drive_Enable(Drive* obj) {
   PID_Reset(&obj->speed_pid);
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
-  obj->yaw_moment_torque_nm = 0.0f;
+  TorqueVectoring_Reset(&obj->tv);
   Timer_Reset(&obj->timer);
   obj->enabled = true;
 }
@@ -246,6 +290,7 @@ void Drive_Enable(Drive* obj) {
 void Drive_Disable(Drive* obj) {
   obj->enabled = false;
   obj->target_speed_m_s = 0.0f;
+  TorqueVectoring_Reset(&obj->tv);
   Coast(obj);
 }
 
@@ -267,6 +312,18 @@ float Drive_GetSlipRight(const Drive* obj) {
 
 bool Drive_IsTractionControlActive(const Drive* obj) {
   return obj->tc_limit_left_nm < DRIVE_MAX_TORQUE_NM || obj->tc_limit_right_nm < DRIVE_MAX_TORQUE_NM;
+}
+
+bool Drive_IsTorqueVectoringActive(const Drive* obj) {
+  return obj->enabled && TorqueVectoring_IsActive(&obj->tv);
+}
+
+float Drive_GetTargetYawRate(const Drive* obj) {
+  return TorqueVectoring_GetTargetYawRate(&obj->tv);
+}
+
+float Drive_GetYawMomentTorque(const Drive* obj) {
+  return TorqueVectoring_GetDiffTorque(&obj->tv);
 }
 
 float Drive_GetTorqueLeft(const Drive* obj) {

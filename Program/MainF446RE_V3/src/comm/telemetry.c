@@ -48,6 +48,7 @@ static uint32_t BuildFlags(Telemetry* obj) {
     flags |= RAS_FLAG_UART_TIMEOUT;
   }
   if (Drive_IsTractionControlActive(obj->drive)) flags |= RAS_FLAG_TC_ACTIVE;
+  if (Drive_IsTorqueVectoringActive(obj->drive)) flags |= RAS_FLAG_TV_ACTIVE;
   if (Imu_IsReady(obj->imu)) flags |= RAS_FLAG_IMU_OK;
   if (Lidar_IsOk(obj->lidar)) flags |= RAS_FLAG_LIDAR_OK;
   if (Steering_IsCenterValid(obj->steering)) flags |= RAS_FLAG_STEER_CENTER_VALID;
