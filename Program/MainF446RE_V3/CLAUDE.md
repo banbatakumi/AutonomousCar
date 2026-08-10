@@ -99,7 +99,12 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
                 ブレーキ (Drive_SetBrake) は車速PIを迂回して MD の制動モードへ指定トルクを
                 直接渡す。目標車速0でPIに任せると制動力がゲイン任せになり、上位が N・m で
                 指定した強さどおりに効かないため。上位への報告 (torque_left/right_nm) は
-                正=駆動・負=制動で揃えてあり、制動中は制動トルクを負値で入れる、
+                正=駆動・負=制動で揃えてあり、制動中は制動トルクを負値で入れる。
+                torque_mode (Drive_SetTorque, v0.6) も同じ理由で車速PIを迂回し、上位が
+                指定した駆動トルクを左右等配分の総駆動トルクとして直接使うが、こちらは
+                TC/TVは掛けたままにする (空転抑制のため、通常駆動時と同じ配分経路を通す)。
+                brake と torque_mode が同時に指定されたら Drive_Update 内の優先順位で
+                brake が勝つ、
                 TorqueVectoring_* : 直接ヨーモーメント制御 (DYC)。規範モデル (自転車モデル +
                 安定係数 + 横加速度の頭打ち) が出す目標ヨーレートと IMU の実測値の偏差を
                 PI で埋め、左右後輪のトルク差として Drive へ返す。左右の総和は変えないので
@@ -110,7 +115,8 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
                 TorqueVectoring_ReportApplied() に返し、出せなかった分の積分を巻き戻す)
 src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、250000bps。
                 仕様は docs/pi_uart_protocol_v0.4_request.md と、COMMAND の変更点だけを書いた
-                docs/pi_uart_protocol_v0.5_delta.md。フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と
+                docs/pi_uart_protocol_v0.5_delta.md / docs/pi_uart_protocol_v0.6_delta.md。
+                フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と
                 パケットの解釈・組み立てだけを担い、走行制御には関与しない。受信した COMMAND は
                 RasLink_GetCommand()、送るテレメトリは RasLink_SetTelemetry() に物理量のまま渡す
                 (量子化はモジュール側)。送信は優先度つきキュー (PONG > TELEMETRY > LIDAR > CONFIG_ACK等 > LOG)。

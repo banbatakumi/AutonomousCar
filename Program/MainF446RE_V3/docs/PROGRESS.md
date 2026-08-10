@@ -256,3 +256,32 @@ app.c が `Vehicle_IsEstopLatched()` の結果を引数で渡すことで循環�
 - 空ディレクトリ `src/sound/` を削除 (`-Isrc/sound` が付くだけの残骸だった)。
 
 ビルド確認済み (`make clean && make -j12`、エラー・警告なし。text 72500 B)。**実機での動作確認は未実施。**
+
+---
+
+## 2026-08-11: プロトコル v0.6 — 駆動トルクの直接指令 (`torque_mode`) を追加
+
+Pi 側 (`stm32_interface.md` v0.5 / `uart_protocol.md` v0.6) の要求に合わせ、後輪へ駆動トルクを
+直接指令できるモードを追加した。詳細と Pi 側の対応チェックリストは
+[pi_uart_protocol_v0.6_delta.md](pi_uart_protocol_v0.6_delta.md)。
+
+### 変更点
+
+- **`COMMAND` (0x10) の LEN 12 → 14**、`protocol_version` 0x0005 → 0x0006。
+  末尾に `target_torque : i16` (0.0001 N·m/LSB、負=後退方向) を追加。`flags` bit6 に
+  `torque_mode` を新設。**Pi 側を更新するまで走行指令は LEN 不一致で全て破棄される** (意図的)。
+- **`torque_mode` 中は `Drive` が車速 PI を迂回し、`target_torque` を左右等配分の総駆動トルクとして
+  直接使う** ([drive.c](../src/control/drive.c) `Drive_SetTorque` / `Drive_Update`)。
+  `brake` と同じ構造で `PID_Reset` を毎周期呼び、離脱時に積分の持ち越しが起きないようにした。
+- **TC/TV は `torque_mode` 中も掛けたままにした** (`uart_protocol.md` §14 #8 で「未確定」とされていた
+  論点への回答)。通常駆動時と同じ TC リミッタ・TV のヨーモーメント項の計算経路をそのまま通し、
+  車速 PI の出力の代わりに `target_torque * 2` を「要求総トルク」として渡すだけにしている。
+  空転を招くおそれのある「TC を素通りさせる」実装は避けた。
+- **`brake` と `torque_mode` が同時に立っていたら `brake` を優先**する。`Drive_Update` 側で
+  `brake_active` を先に判定する既存の優先順位にそのまま乗せているだけで、`Vehicle` 側では
+  両フラグを毎周期そのまま `Drive_SetBrake` / `Drive_SetTorque` へ渡している (どちらが勝つかは
+  常に `Drive_Update` の1箇所だけで決まる)。
+- **`target_torque` は ±`DRIVE_MAX_TORQUE_NM` (0.1 N·m) でこちら側でもクランプする**
+  (`Drive_SetTorque` 内)。Pi 側のクランプに頼らない。
+
+ビルド確認済み (`make -j12`、エラー・警告なし。text 74832 B)。**実機での動作確認は未実施。**

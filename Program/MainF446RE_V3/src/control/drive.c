@@ -194,6 +194,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->target_speed_m_s = 0.0f;
   obj->brake_active = false;
   obj->brake_torque_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
+  obj->torque_mode_active = false;
+  obj->manual_torque_nm = 0.0f;
 
   obj->vehicle_speed_m_s = 0.0f;
   obj->yaw_rate_rad_s = 0.0f;
@@ -228,12 +230,19 @@ void Drive_Update(Drive* obj) {
     SendBrake(obj, obj->brake_torque_nm);
     return;
   }
-  if (IsStandstill(obj)) {
+
+  float requested_total_nm;
+  if (obj->torque_mode_active) {
+    // 車速PIを迂回して指令トルクをそのまま使う。離脱時に積分が溜まったまま復帰しないよう
+    // SendBrake と同様に毎周期リセットしておく
+    PID_Reset(&obj->speed_pid);
+    requested_total_nm = obj->manual_torque_nm * 2.0f;
+  } else if (IsStandstill(obj)) {
     CoastStandstill(obj);
     return;
+  } else {
+    requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
   }
-
-  float requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
 
   obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s);
   obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s);
@@ -261,7 +270,8 @@ void Drive_Update(Drive* obj) {
   left_nm = ApplyOverspeedLimit(obj, left_nm);
   right_nm = ApplyOverspeedLimit(obj, right_nm);
 
-  UnwindIntegral(obj, requested_total_nm, left_nm + right_nm, dt_s);
+  // torque_mode 中は PID を使っていない (毎周期リセット済み) ので巻き戻しは無意味
+  if (!obj->torque_mode_active) UnwindIntegral(obj, requested_total_nm, left_nm + right_nm, dt_s);
   SendTorque(obj, left_nm, right_nm);
 }
 
@@ -272,6 +282,11 @@ void Drive_SetTargetSpeed(Drive* obj, float m_s) {
 void Drive_SetBrake(Drive* obj, bool on, float torque_nm) {
   obj->brake_active = on;
   obj->brake_torque_nm = Constrain(torque_nm, 0.0f, DRIVE_MAX_BRAKE_TORQUE_NM);
+}
+
+void Drive_SetTorque(Drive* obj, bool on, float torque_nm) {
+  obj->torque_mode_active = on;
+  obj->manual_torque_nm = Constrain(torque_nm, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
 }
 
 void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled) {

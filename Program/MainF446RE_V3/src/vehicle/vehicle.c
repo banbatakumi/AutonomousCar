@@ -56,9 +56,10 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool armed = arm_requested && Steering_IsCenterValid(obj->steering) &&
                (obj->mode == RAS_MODE_MANUAL || obj->mode == RAS_MODE_AUTO);
   bool braking = (command->flags & RAS_CMD_FLAG_BRAKE) != 0;
+  bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
 
   float target_speed_m_s = 0.0f;
-  if (armed && !braking) {
+  if (armed && !braking && !torque_mode) {
     target_speed_m_s = Constrain(command->target_speed_m_s, -config->max_speed_m_s, config->max_speed_m_s);
   }
   // 制動トルクの指定が無い (0) ときは最大で掛ける。0 をそのまま「制動トルク0」と解釈すると、
@@ -76,9 +77,9 @@ static void ApplyRasCommand(Vehicle* obj) {
                                ? command->steer_rate_limit_rad_s
                                : Steering_GetMaxRoadWheelAngleRad();
 
-  // ブレーキ中は Drive 側が車速制御ごと迂回するので目標車速をレート制限で下げる意味が無い。
-  // ここで0に落としておかないと、ブレーキを離した瞬間に減速前の目標車速へ復帰してしまう
-  if (braking) obj->applied_speed_m_s = 0.0f;
+  // ブレーキ中・torque_mode 中は Drive 側が車速制御ごと迂回するので目標車速をレート制限で
+  // 下げる意味が無い。ここで0に落としておかないと、離した瞬間に迂回前の目標車速へ復帰してしまう
+  if (braking || torque_mode) obj->applied_speed_m_s = 0.0f;
 
   float speed_step = accel_limit * dt_s;
   obj->applied_speed_m_s +=
@@ -93,6 +94,7 @@ static void ApplyRasCommand(Vehicle* obj) {
 
   Drive_SetTargetSpeed(obj->drive, obj->applied_speed_m_s);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
+  Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
 
   Lighting_SetBrake(obj->lighting, braking);

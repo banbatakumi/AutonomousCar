@@ -9,8 +9,8 @@
 
 // ===========================================================================
 // Raspberry Pi (上位) との UART 通信。プロトコル仕様は
-// docs/pi_uart_protocol_v0.4_request.md (v0.4) と、そこからの差分を書いた
-// docs/pi_uart_protocol_v0.5_delta.md (v0.5) に対応する。
+// docs/pi_uart_protocol_v0.4_request.md (v0.4)、docs/pi_uart_protocol_v0.5_delta.md (v0.5)、
+// docs/pi_uart_protocol_v0.6_delta.md (v0.6) に対応する。
 //
 // 物理層: USART1, 250000bps 8N1 (分周誤差0%)。
 //
@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0005u
+#define RAS_PROTOCOL_VERSION 0x0006u
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -80,6 +80,9 @@ typedef enum {
 #define RAS_CMD_LIGHT_MODE_SHIFT 3
 #define RAS_CMD_LIGHT_MODE_MASK (0x03u << RAS_CMD_LIGHT_MODE_SHIFT)
 #define RAS_CMD_FLAG_PASSING (1u << 5)
+// 立っている間は車速PIを迂回し、target_torque を後輪へ直接指令する。brake と同時に
+// 立っていたら brake を優先する (Drive_Update 側の優先順位で解決する)。v0.6 で新設
+#define RAS_CMD_FLAG_TORQUE_MODE (1u << 6)
 
 // COMMAND.flags bit3-4 (前照灯モード)
 typedef enum {
@@ -164,6 +167,9 @@ typedef struct {
   // 制動トルク [Nm] (常に正)。0 は「無制動」ではなく「未指定」を意味するので、
   // 呼び出し側が既定値へ読み替えること (accel_limit と同じ約束)
   float brake_torque_nm;
+  // 駆動トルク直接指令 [Nm] (負=後退方向)。brake_torque と違い 0 は素直に「トルク0」を
+  // 意味する (未指定への読み替えはしない)。flags の torque_mode が立っているときのみ使う。v0.6 で新設
+  float target_torque_nm;
   uint8_t light_mode;  // RasLightMode (flags bit3-4 をデコードしたもの)
   uint8_t seq;
   uint32_t rx_time_us;

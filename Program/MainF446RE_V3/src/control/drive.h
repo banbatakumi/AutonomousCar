@@ -110,6 +110,10 @@ typedef struct {
   float target_speed_m_s;
   bool brake_active;      // 真の間は車速制御を止めて制動トルクだけを出す
   float brake_torque_nm;  // 制動時に後輪各輪へ掛ける制動トルク [Nm] (常に正)
+  // 真の間は車速PIを迂回し、manual_torque_nm を左右等配分の総駆動トルクとして直接使う
+  // (TC/TV は掛けたまま。brake_active の方が優先される)
+  bool torque_mode_active;
+  float manual_torque_nm;  // torque_mode 中に指令された1輪あたりの駆動トルク [Nm] (負=後退方向)
 
   // --- 以下は Drive_Update が更新する観測量 (デバッグ・上位への報告用) ---
   // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
@@ -158,6 +162,15 @@ void Drive_SetTargetSpeed(Drive* obj, float m_s);
  * 「未指定 (0) なら既定値」の解釈を呼び出し側で行うこと。
  */
 void Drive_SetBrake(Drive* obj, bool on, float torque_nm);
+
+/**
+ * @brief 駆動トルクを直接指令する/止める (torque_mode)。on の間は車速制御 (PI) を止め、
+ * torque_nm (1輪あたり、負=後退方向) を左右等配分の総駆動トルクとしてそのまま使う。
+ * TC/TV は掛けたままにする (空転抑制のため)。brake_active の方が優先されるので、
+ * ブレーキと同時に立っていてもこちらは無視される。torque_nm は ±DRIVE_MAX_TORQUE_NM に
+ * クランプされる (上位のクランプに頼らない)。
+ */
+void Drive_SetTorque(Drive* obj, bool on, float torque_nm);
 
 /**
  * @brief トルクベクタリングの有効/無効を切り替える (既定は有効)。
