@@ -57,15 +57,15 @@
 // ===========================================================================
 // 制御パラメータ
 // ===========================================================================
-#define DRIVE_SPEED_KP 0.25f  // 車速PIの比例ゲイン [Nm / (m/s)]
-#define DRIVE_SPEED_KI 0.5f   // 車速PIの積分ゲイン [Nm / (m/s) / s]
-#define DRIVE_SPEED_KD 0.0f   // 車速は微分ノイズが乗りやすいため既定では使わない
+#define DRIVE_SPEED_KP 0.2f  // 車速PIの比例ゲイン [Nm / (m/s)]
+#define DRIVE_SPEED_KI 0.2f  // 車速PIの積分ゲイン [Nm / (m/s) / s]
+#define DRIVE_SPEED_KD 0.0f  // 車速は微分ノイズが乗りやすいため既定では使わない
 
 // 1輪あたりのトルク上限 [Nm] (プロトコル上の絶対上限は ±3.2767)。
 // この値は指令のクランプに使うと同時に MD 側のトルク上限としても設定するため、
 // このマイコンのバグや通信異常で過大な指令が出ても最終段で頭打ちになる。
 // 上位が指令できる制動トルク (DRIVE_MAX_BRAKE_TORQUE_NM) もこの上限を超えないこと
-#define DRIVE_MAX_TORQUE_NM 0.1f
+#define DRIVE_MAX_TORQUE_NM 0.125f
 #define DRIVE_MAX_SPEED_M_S 3.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
 #define DRIVE_ANTIWINDUP_TT_S 0.10f  // TC/リミッタで飽和したときに積分を巻き戻す時定数 [s]
 
@@ -81,10 +81,10 @@
 // トラクションコントロール (TC) パラメータ
 // ===========================================================================
 #define DRIVE_TC_SLIP_THRESHOLD 0.12f  // これを超えるスリップ率からトルクを削り始める
-#define DRIVE_TC_CUT_GAIN 0.5f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
+#define DRIVE_TC_CUT_GAIN 0.3f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
 #define DRIVE_TC_RECOVER_RATE 0.1f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
-#define DRIVE_TC_MIN_TORQUE_NM 0.01f   // 削り切っても完全には0にしない (再加速できなくなるため)
-#define DRIVE_TC_MIN_SPEED_M_S 0.20f   // これ以下の車速ではスリップ率が発散するのでTCを効かせない
+#define DRIVE_TC_MIN_TORQUE_NM 0.005f  // 削り切っても完全には0にしない (再加速できなくなるため)
+#define DRIVE_TC_MIN_SPEED_M_S 0.25f   // これ以下の車速ではスリップ率が発散するのでTCを効かせない
 
 // ===========================================================================
 // フィルタ係数 (Drive_Update の呼び出し周期に依存する。1kHz 前提)
