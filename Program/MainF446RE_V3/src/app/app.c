@@ -176,7 +176,7 @@ void Setup() {
   Heartbeat_Init(&heartbeat, RAS_SIG_GPIO_Port, RAS_SIG_Pin);
 
   Vehicle_Init(&vehicle, &ras_link, &drive, &steering, &lighting, &power, &heartbeat,
-               &buzzer, &button2);
+               &buzzer, &button2, &range_sensor);
   Telemetry_Init(&telemetry, &ras_link, &vehicle, &power, &encoder, &imu, &lidar, &motors,
                  &steering, &drive, &range_sensor);
 

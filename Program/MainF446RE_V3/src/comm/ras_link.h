@@ -10,7 +10,7 @@
 // ===========================================================================
 // Raspberry Pi (上位) との UART 通信。プロトコル仕様は
 // docs/pi_uart_protocol_v0.4_request.md (v0.4)、docs/pi_uart_protocol_v0.5_delta.md (v0.5)、
-// docs/pi_uart_protocol_v0.6_delta.md (v0.6) に対応する。
+// docs/pi_uart_protocol_v0.6_delta.md (v0.6)、docs/pi_uart_protocol_v0.7_delta.md (v0.7) に対応する。
 //
 // 物理層: USART1, 250000bps 8N1 (分周誤差0%)。
 //
@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0006u
+#define RAS_PROTOCOL_VERSION 0x0007u
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -83,6 +83,10 @@ typedef enum {
 // 立っている間は車速PIを迂回し、target_torque を後輪へ直接指令する。brake と同時に
 // 立っていたら brake を優先する (Drive_Update 側の優先順位で解決する)。v0.6 で新設
 #define RAS_CMD_FLAG_TORQUE_MODE (1u << 6)
+// 立っている間、前後超音波 (RangeSensor) が進行方向に VEHICLE_AUTO_STOP_DISTANCE_CM 未満を
+// 検知したら最大制動トルクで自動停止する (src/vehicle/vehicle.c)。下りている間は従来通り
+// 上位の指令のみに従う。v0.7 で新設
+#define RAS_CMD_FLAG_AUTO_STOP (1u << 7)
 
 // COMMAND.flags bit3-4 (前照灯モード)
 typedef enum {
@@ -108,6 +112,8 @@ typedef enum {
 #define RAS_FLAG_FAULT_DRIVE_UNDERVOLTAGE (1u << 13)
 #define RAS_FLAG_FAULT_SIGNAL_UNDERVOLTAGE (1u << 14)
 #define RAS_FLAG_DRIVE_POWER_LOCKED (1u << 15)
+// 障害物により自動停止が実際に作動中 (flags.auto_stop が有効かつ検知中)。v0.7 で新設
+#define RAS_FLAG_AUTO_STOP_ACTIVE (1u << 16)
 
 // TELEMETRY.md_status[i]
 #define RAS_MD_STATUS_RUNNING (1u << 0)

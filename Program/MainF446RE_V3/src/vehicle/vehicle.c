@@ -19,6 +19,11 @@ static LightingHeadlightMode HeadlightModeFromCommand(uint8_t light_mode) {
   }
 }
 
+static void ApplyBrakeLight(Vehicle* obj, bool braking, float brake_torque_nm) {
+  Lighting_SetBrakeMode(obj->lighting, braking,
+                         brake_torque_nm >= VEHICLE_EMERGENCY_BRAKE_FLASH_THRESHOLD_NM);
+}
+
 // LiDAR電源を want_on に応じて更新する。ARM中は即座に点け、ARMが外れても
 // VEHICLE_LIDAR_IDLE_OFF_DELAY_S が経つまでは点けたままにする (短い停止での
 // 頻繁な電源入り切りと、それによる再ARM直後のセンサ空白を避けるため)
@@ -35,6 +40,16 @@ static void UpdateLidarPower(Vehicle* obj, bool want_on) {
     Power_SetLidarPower(obj->power, 0);
     obj->lidar_on = false;
   }
+}
+
+// 進行方向 (target_speed / torque_mode 中は target_torque の符号) の超音波距離が
+// VEHICLE_AUTO_STOP_DISTANCE_CM 未満かを見る。逆方向のセンサは見ないため、
+// 例えば前方に障害物があっても後退はできる
+static bool IsAutoStopObstacleAhead(Vehicle* obj, float intended_direction) {
+  float dist_cm = intended_direction >= 0.0f
+                      ? RangeSensor_GetFrontDistanceFilteredCm(obj->range_sensor)
+                      : RangeSensor_GetRearDistanceFilteredCm(obj->range_sensor);
+  return dist_cm >= 0.0f && dist_cm < VEHICLE_AUTO_STOP_DISTANCE_CM;
 }
 
 // 上位の指令を車両へ適用する。目標値そのものではなく、加速度・舵角速度の上限で
@@ -55,17 +70,25 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 中心点が未較正だと舵角の絶対値が信用できないため走行させない
   bool armed = arm_requested && Steering_IsCenterValid(obj->steering) &&
                (obj->mode == RAS_MODE_MANUAL || obj->mode == RAS_MODE_AUTO);
-  bool braking = (command->flags & RAS_CMD_FLAG_BRAKE) != 0;
+  bool cmd_braking = (command->flags & RAS_CMD_FLAG_BRAKE) != 0;
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
+  bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
+
+  float intended_direction = torque_mode ? command->target_torque_nm : command->target_speed_m_s;
+  obj->auto_stop_active =
+      armed && auto_stop_enabled && IsAutoStopObstacleAhead(obj, intended_direction);
+  bool braking = cmd_braking || obj->auto_stop_active;
 
   float target_speed_m_s = 0.0f;
   if (armed && !braking && !torque_mode) {
     target_speed_m_s = Constrain(command->target_speed_m_s, -config->max_speed_m_s, config->max_speed_m_s);
   }
   // 制動トルクの指定が無い (0) ときは最大で掛ける。0 をそのまま「制動トルク0」と解釈すると、
-  // 上位がフィールドを埋め忘れただけでブレーキが効かなくなる
-  float brake_torque_nm =
-      command->brake_torque_nm > 0.0f ? command->brake_torque_nm : DRIVE_MAX_BRAKE_TORQUE_NM;
+  // 上位がフィールドを埋め忘れただけでブレーキが効かなくなる。自動停止はできるだけ強く
+  // 止めることが目的なので、上位が明示的にブレーキを踏んでいるとき以外は常に最大で掛ける
+  float brake_torque_nm = (cmd_braking && command->brake_torque_nm > 0.0f)
+                               ? command->brake_torque_nm
+                               : DRIVE_MAX_BRAKE_TORQUE_NM;
 
   float target_steer_rad =
       Constrain(command->target_steer_rad, -config->max_steer_rad, config->max_steer_rad);
@@ -97,7 +120,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
 
-  Lighting_SetBrake(obj->lighting, braking);
+  ApplyBrakeLight(obj, braking, brake_torque_nm);
   Lighting_SetHeadlight(obj->lighting, HeadlightModeFromCommand(command->light_mode));
   Lighting_SetPassing(obj->lighting, (command->flags & RAS_CMD_FLAG_PASSING) != 0);
 
@@ -141,14 +164,15 @@ static void ApplyFailsafe(Vehicle* obj) {
   Drive_SetTargetSpeed(obj->drive, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
-  Lighting_SetBrake(obj->lighting, true);
+  ApplyBrakeLight(obj, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Lighting_SetPassing(obj->lighting, false);
   SetHorn(obj, false);
+  obj->auto_stop_active = false;
 }
 
 void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steering,
                   Lighting* lighting, Power* power, Heartbeat* heartbeat, Buzzer* buzzer,
-                  DigitalIn* estop_reset_button) {
+                  DigitalIn* estop_reset_button, RangeSensor* range_sensor) {
   obj->ras_link = ras_link;
   obj->drive = drive;
   obj->steering = steering;
@@ -157,6 +181,7 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->heartbeat = heartbeat;
   obj->buzzer = buzzer;
   obj->estop_reset_button = estop_reset_button;
+  obj->range_sensor = range_sensor;
 
   obj->applied_speed_m_s = 0.0f;
   obj->applied_steer_rad = 0.0f;
@@ -165,6 +190,7 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->mode = RAS_MODE_DISARM;
   obj->estop_latched = false;
   obj->horn_on = false;
+  obj->auto_stop_active = false;
 
   // Setup() が Vehicle_Init より前に Power_SetLidarPower() でLiDARへ給電済みの状態を反映する
   Timer_Init(&obj->lidar_idle_timer);
@@ -196,3 +222,5 @@ bool Vehicle_IsEstopLatched(const Vehicle* obj) { return obj->estop_latched; }
 uint8_t Vehicle_GetMode(const Vehicle* obj) { return obj->mode; }
 
 float Vehicle_GetAppliedSteerRad(const Vehicle* obj) { return obj->applied_steer_rad; }
+
+bool Vehicle_IsAutoStopActive(const Vehicle* obj) { return obj->auto_stop_active; }

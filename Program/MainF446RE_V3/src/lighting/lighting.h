@@ -30,6 +30,8 @@ typedef struct {
   LightingHeadlightMode headlight_mode;
   bool passing_on;
   bool brake_on;
+  bool brake_flashing;
+  Timer brake_flash_timer;
 
   LightingWinkerState winker_state;
   Timer winker_timer;
@@ -59,6 +61,16 @@ void Lighting_SetPassing(Lighting* obj, bool on);
  * @brief ブレーキランプ (尾灯の増灯) を点灯/消灯する。
  */
 void Lighting_SetBrake(Lighting* obj, bool on);
+
+/**
+ * @brief ブレーキランプを点灯/消灯し、必要なら高速点滅させる。
+ */
+void Lighting_SetBrakeMode(Lighting* obj, bool on, bool flashing);
+
+/**
+ * @brief ブレーキランプの高速点滅を on/off する。点滅中はブレーキランプも点灯状態になる。
+ */
+void Lighting_SetBrakeFlashing(Lighting* obj, bool on);
 
 /**
  * @brief ウィンカー/ハザードの状態を設定する。

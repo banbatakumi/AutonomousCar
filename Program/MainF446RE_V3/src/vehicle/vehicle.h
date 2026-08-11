@@ -10,6 +10,7 @@
 #include "heartbeat.h"
 #include "lighting.h"
 #include "power.h"
+#include "range_sensor.h"
 #include "ras_link.h"
 #include "steering.h"
 #include "timer.h"
@@ -33,6 +34,11 @@
 // すると、LD06は起動から安定したスキャンが出るまで数秒かかるため、再ARM直後にセンサが
 // 使えない空白ができてしまう。この遅延の間はARM解除中もLiDARを点けたままにする
 #define VEHICLE_LIDAR_IDLE_OFF_DELAY_S 5.0f
+// 自動停止 (RAS_CMD_FLAG_AUTO_STOP) が進行方向の超音波距離をこの値未満と検知したら
+// 最大制動トルクで止める [cm]
+#define VEHICLE_AUTO_STOP_DISTANCE_CM 20.0f
+// この制動トルク以上なら、実車の急制動警告のようにブレーキランプを高速点滅させる [Nm/輪]
+#define VEHICLE_EMERGENCY_BRAKE_FLASH_THRESHOLD_NM 0.1f
 
 typedef struct {
   RasLink* ras_link;
@@ -43,6 +49,7 @@ typedef struct {
   Heartbeat* heartbeat;
   Buzzer* buzzer;
   DigitalIn* estop_reset_button;
+  RangeSensor* range_sensor;
 
   // 上位から指令された目標値を accel_limit / steer_rate_limit でレート制限したあとの値で、
   // 実際に Drive / Steering へ渡している量。テレメトリの steer_cmd もこれを返す
@@ -57,15 +64,20 @@ typedef struct {
   // ARMが外れている(=走らせる予定がない)時間を計り、LiDAR電源の遅延OFFに使う
   Timer lidar_idle_timer;
   bool lidar_on;
+
+  // 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したか。
+  // テレメトリの RAS_FLAG_AUTO_STOP_ACTIVE に使う
+  bool auto_stop_active;
 } Vehicle;
 
 /**
  * @brief 車両統括を初期化する。estop_reset_button には緊急停止の解除に使うボタン
- * (ボタン2) を渡すこと。
+ * (ボタン2) を渡すこと。range_sensor には自動停止 (RAS_CMD_FLAG_AUTO_STOP) が参照する
+ * 前後超音波センサを渡すこと。
  */
 void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steering,
                   Lighting* lighting, Power* power, Heartbeat* heartbeat, Buzzer* buzzer,
-                  DigitalIn* estop_reset_button);
+                  DigitalIn* estop_reset_button, RangeSensor* range_sensor);
 
 /**
  * @brief ハートビート監視・緊急停止の判定と、指令の車両への適用を1周期分行う。
@@ -87,5 +99,10 @@ uint8_t Vehicle_GetMode(const Vehicle* obj);
  * @brief 直近に Steering へ渡した路面舵角 [rad] を取得する (レート制限後の値)。
  */
 float Vehicle_GetAppliedSteerRad(const Vehicle* obj);
+
+/**
+ * @brief 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したかを取得する。
+ */
+bool Vehicle_IsAutoStopActive(const Vehicle* obj);
 
 #endif  // VEHICLE_H_

@@ -52,6 +52,7 @@ static uint32_t BuildFlags(Telemetry* obj) {
   if (Imu_IsReady(obj->imu)) flags |= RAS_FLAG_IMU_OK;
   if (Lidar_IsOk(obj->lidar)) flags |= RAS_FLAG_LIDAR_OK;
   if (Steering_IsCenterValid(obj->steering)) flags |= RAS_FLAG_STEER_CENTER_VALID;
+  if (Vehicle_IsAutoStopActive(obj->vehicle)) flags |= RAS_FLAG_AUTO_STOP_ACTIVE;
 
   if (faults & POWER_FAULT_DRIVE_OVERCURRENT) flags |= RAS_FLAG_FAULT_DRIVE_OVERCURRENT;
   if (faults & POWER_FAULT_SIGNAL_OVERCURRENT) flags |= RAS_FLAG_FAULT_SIGNAL_OVERCURRENT;
@@ -135,8 +136,8 @@ void Telemetry_Update(Telemetry* obj) {
 
   telemetry.batt_voltage_v[0] = Power_GetVoltageDriveFiltered(obj->power);
   telemetry.batt_voltage_v[1] = Power_GetVoltageSignalFiltered(obj->power);
-  telemetry.batt_current_a[0] = Power_GetCurrentDrive(obj->power);
-  telemetry.batt_current_a[1] = Power_GetCurrentSignal(obj->power);
+  telemetry.batt_current_a[0] = Power_GetCurrentDriveFiltered(obj->power);
+  telemetry.batt_current_a[1] = Power_GetCurrentSignalFiltered(obj->power);
 
   // LPF済みの距離を送る (src/sensing/range_sensor.c)。ULTRASONIC_NO_ECHO (負値) は
   // フィルタを介さずそのまま渡り、RasLink 側で無効値 0 に落ちる

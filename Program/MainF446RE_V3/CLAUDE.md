@@ -20,7 +20,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - LD06 (LiDAR) は Setup で給電・初期化され、120Hz でセクタを上位へ送っている。
 - 安全層は 4段: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 → ④`COMMAND` 途絶 100ms で自動ブレーキ。緊急停止はラッチし、**ハートビートが戻っている状態でボタン2を押すまで解除しない**。緊急停止で駆動電源を切らないのは、切るとMDが制動をかけられず惰行して停止距離が伸びるため。
 - トルクベクタリング (`src/control/torque_vectoring.c`) は実装済みで既定は有効。ただしゲイン・安定係数・横加速度上限はいずれも机上値のままで、**実機での符号確認とチューニングが未了**。
-- **未実装**: TC/TV/速度PIゲインの実行時変更 (該当 `param_id` は `RAS_CONFIG_UNKNOWN_PARAM` を返す)、LiDAR を使った下位側の緊急停止 (実装するなら `src/sensing/lidar.c` に360点の最小距離配列を足すこと)。
+- 前後超音波 (`RangeSensor`) を使った自動停止が v0.7 で追加された。上位が `COMMAND.flags` bit7 (`RAS_CMD_FLAG_AUTO_STOP`) を立てている間だけ有効になり、進行方向 (`target_speed`/`torque_mode` 中は `target_torque` の符号) の超音波距離が `VEHICLE_AUTO_STOP_DISTANCE_CM` (20cm) 未満で最大制動トルクをかける (`IsAutoStopObstacleAhead()` / `ApplyRasCommand()`, `src/vehicle/vehicle.c`)。`brake` (bit1) が同時に立っていればそちらが優先。ラッチせず、しきい値を上回れば自動解除 (ヒステリシス無し)。実機での検知距離・チャタリングの検証は未了。
+- **未実装**: TC/TV/速度PIゲインの実行時変更 (該当 `param_id` は `RAS_CONFIG_UNKNOWN_PARAM` を返す)、LiDAR を使った下位側の緊急停止・自動停止 (実装するなら `src/sensing/lidar.c` に360点の最小距離配列を足すこと。現状の自動停止は前後超音波のみが対象)。
 
 ---
 
@@ -114,8 +115,9 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
                 トルク差を付ける余力が無いので、Drive の LimitDiffTorque() で丸めてから
                 TorqueVectoring_ReportApplied() に返し、出せなかった分の積分を巻き戻す)
 src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、250000bps。
-                仕様は docs/pi_uart_protocol_v0.4_request.md と、COMMAND の変更点だけを書いた
-                docs/pi_uart_protocol_v0.5_delta.md / docs/pi_uart_protocol_v0.6_delta.md。
+                仕様は docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
+                docs/pi_uart_protocol_v0.5_delta.md / docs/pi_uart_protocol_v0.6_delta.md /
+                docs/pi_uart_protocol_v0.7_delta.md。
                 フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と
                 パケットの解釈・組み立てだけを担い、走行制御には関与しない。受信した COMMAND は
                 RasLink_GetCommand()、送るテレメトリは RasLink_SetTelemetry() に物理量のまま渡す

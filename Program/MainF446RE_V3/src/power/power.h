@@ -61,8 +61,13 @@ typedef enum {
 // 電圧のローパスフィルタ係数。Power_Update() を制御周期 500us で呼ぶ前提で時定数およそ0.5s。
 // 生値のままだとモーター電流のリプルで閾値を跨いで上下し、継続時間の計測がそのたびにリセット
 // されて電圧低下を検出できなくなるため、平均値で判定する。
-// 電流側にフィルタを掛けないのは、過電流保護の遮断が遅れて保護にならないため。
+// 過電流保護の判定 (Power_GetCurrentSignal/Drive) には掛けない。遮断が遅れて保護にならないため。
 #define POWER_VOLTAGE_LPF_K 0.999
+
+// 電流のローパスフィルタ係数 (上位への報告専用、時定数およそ0.1s)。PWM リプルやADCノイズを
+// 均して読みやすくする一方、加減速に伴う実際の電流変化までは鈍らせたくないため電圧より短めに
+// している。過電流保護は上記の通りこの値を使わず生値のまま判定する。
+#define POWER_CURRENT_LPF_K 0.995
 
 // 異常の検出・復帰を継続時間で判定するためのデバウンス状態
 typedef struct {
@@ -82,6 +87,10 @@ typedef struct {
   LPF voltage_signal_lpf;
   LPF voltage_drive_lpf;
   int voltage_lpf_seeded;  // 初回の Power_Update() で実測値を初期値として与えたか
+
+  LPF current_signal_lpf;
+  LPF current_drive_lpf;
+  int current_lpf_seeded;  // 初回の Power_Update() で実測値を初期値として与えたか
 
   PowerDetector drive_overcurrent;
   PowerDetector signal_overcurrent;
@@ -154,13 +163,25 @@ float Power_GetVoltageDriveFiltered(Power* obj);
 
 /**
  * @brief シグナル系の消費電流 [A] を取得する (INA180A2 ゲイン50V/V, シャント R3=5mΩ)。
+ * ADC の瞬時値。過電流保護の判定に使うため意図的に未フィルタ。上位への報告には Filtered 版を使うこと。
  */
 float Power_GetCurrentSignal(Power* obj);
 
 /**
  * @brief 駆動系の消費電流 [A] を取得する (INA180A2 ゲイン50V/V, シャント R28=5mΩ)。
+ * ADC の瞬時値。過電流保護の判定に使うため意図的に未フィルタ。上位への報告には Filtered 版を使うこと。
  */
 float Power_GetCurrentDrive(Power* obj);
+
+/**
+ * @brief LPF を通したシグナル系の消費電流 [A] を取得する。値は Power_Update() で更新される。
+ */
+float Power_GetCurrentSignalFiltered(Power* obj);
+
+/**
+ * @brief LPF を通した駆動系の消費電流 [A] を取得する。値は Power_Update() で更新される。
+ */
+float Power_GetCurrentDriveFiltered(Power* obj);
 
 /**
  * @brief マイコン内蔵温度センサの温度 [degC] を取得する (工場較正なし、データシート標準値による概算)。

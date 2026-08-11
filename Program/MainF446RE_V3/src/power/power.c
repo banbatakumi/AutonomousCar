@@ -90,6 +90,7 @@ void Power_Init(Power *obj, AdcDma *adc1,
   // ADC の初回変換が終わっている保証がないため、LPF の初期値は初回の Power_Update() で与える。
   // 0V から立ち上げると収束途中に電圧低下と誤判定してしまう
   obj->voltage_lpf_seeded = 0;
+  obj->current_lpf_seeded = 0;
   InitDetector(&obj->drive_overcurrent);
   InitDetector(&obj->signal_overcurrent);
   InitDetector(&obj->drive_undervoltage);
@@ -107,6 +108,14 @@ void Power_Update(Power *obj) {
   }
   LPF_Update(&obj->voltage_signal_lpf, Power_GetVoltageSignal(obj));
   LPF_Update(&obj->voltage_drive_lpf, Power_GetVoltageDrive(obj));
+
+  if (!obj->current_lpf_seeded) {
+    LPF_Init(&obj->current_signal_lpf, POWER_CURRENT_LPF_K, Power_GetCurrentSignal(obj));
+    LPF_Init(&obj->current_drive_lpf, POWER_CURRENT_LPF_K, Power_GetCurrentDrive(obj));
+    obj->current_lpf_seeded = 1;
+  }
+  LPF_Update(&obj->current_signal_lpf, Power_GetCurrentSignal(obj));
+  LPF_Update(&obj->current_drive_lpf, Power_GetCurrentDrive(obj));
 
   if (UpdateDetector(&obj->signal_overcurrent,
                      Power_GetCurrentSignal(obj) > POWER_SIGNAL_OVERCURRENT_THRESHOLD_A,
@@ -180,6 +189,14 @@ float Power_GetCurrentSignal(Power *obj) {
 float Power_GetCurrentDrive(Power *obj) {
   float v_sense = AdcDma_GetVoltage(obj->adc1, POWER_ADC1_CH_CURRENT_P, ADC_VREF);
   return v_sense / (CURRENT_DRIVE_SHUNT_OHM * CURRENT_SENSE_GAIN);
+}
+
+float Power_GetCurrentSignalFiltered(Power *obj) {
+  return (float)obj->current_signal_lpf.current_val;
+}
+
+float Power_GetCurrentDriveFiltered(Power *obj) {
+  return (float)obj->current_drive_lpf.current_val;
 }
 
 float Power_GetTemperatureC(Power *obj) {

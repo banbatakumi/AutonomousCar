@@ -13,6 +13,10 @@
 #define LIGHTING_WINKER_PERIOD_MS \
   (LIGHTING_WINKER_FADE_IN_MS + LIGHTING_WINKER_HOLD_MS + LIGHTING_WINKER_FADE_OUT_MS + LIGHTING_WINKER_GAP_MS)
 
+#define LIGHTING_BRAKE_FLASH_ON_MS 125u
+#define LIGHTING_BRAKE_FLASH_OFF_MS 125u
+#define LIGHTING_BRAKE_FLASH_PERIOD_MS (LIGHTING_BRAKE_FLASH_ON_MS + LIGHTING_BRAKE_FLASH_OFF_MS)
+
 // elapsed_ms (1周期内, 0 <= elapsed_ms < PERIOD_MS) における duty を返す。
 static float Lighting_WinkerDutyAt(uint32_t elapsed_ms) {
   if (elapsed_ms < LIGHTING_WINKER_FADE_IN_MS) {
@@ -47,7 +51,19 @@ static void Lighting_ApplyFrontLight(Lighting* obj) {
 static void Lighting_ApplyRearLight(Lighting* obj) {
   float duty = 0.0f;
   if (obj->brake_on) {
-    duty = 1.0f;
+    if (obj->brake_flashing) {
+      uint32_t elapsed_ms = Timer_ReadMs(&obj->brake_flash_timer);
+      if (elapsed_ms >= LIGHTING_BRAKE_FLASH_PERIOD_MS) {
+        Timer_Reset(&obj->brake_flash_timer);
+        elapsed_ms = 0;
+      }
+      duty = elapsed_ms < LIGHTING_BRAKE_FLASH_ON_MS ? 1.0f : 0.0f;
+      if (duty == 0.0f && obj->headlight_mode != LIGHTING_HEADLIGHT_OFF) {
+        duty = LIGHTING_TAILLIGHT_DUTY;
+      }
+    } else {
+      duty = 1.0f;
+    }
   } else if (obj->headlight_mode != LIGHTING_HEADLIGHT_OFF) {
     duty = LIGHTING_TAILLIGHT_DUTY;
   }
@@ -66,6 +82,7 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
   obj->headlight_mode = LIGHTING_HEADLIGHT_OFF;
   obj->passing_on = false;
   obj->brake_on = false;
+  obj->brake_flashing = false;
   obj->winker_state = LIGHTING_WINKER_OFF;
 
   PwmOut_Write(&obj->front_light, 0.0f);
@@ -74,6 +91,7 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
   PwmOut_Write(&obj->right_winker, 0.0f);
 
   Timer_Init(&obj->winker_timer);
+  Timer_Init(&obj->brake_flash_timer);
 }
 
 void Lighting_SetHeadlight(Lighting* obj, LightingHeadlightMode mode) {
@@ -88,8 +106,21 @@ void Lighting_SetPassing(Lighting* obj, bool on) {
 }
 
 void Lighting_SetBrake(Lighting* obj, bool on) {
+  Lighting_SetBrakeMode(obj, on, false);
+}
+
+void Lighting_SetBrakeMode(Lighting* obj, bool on, bool flashing) {
+  flashing = on && flashing;
+  if (flashing && !obj->brake_flashing) {
+    Timer_Reset(&obj->brake_flash_timer);
+  }
   obj->brake_on = on;
+  obj->brake_flashing = flashing;
   Lighting_ApplyRearLight(obj);
+}
+
+void Lighting_SetBrakeFlashing(Lighting* obj, bool on) {
+  Lighting_SetBrakeMode(obj, obj->brake_on || on, on);
 }
 
 void Lighting_SetWinker(Lighting* obj, LightingWinkerState state) {
@@ -106,6 +137,10 @@ void Lighting_SetWinker(Lighting* obj, LightingWinkerState state) {
 }
 
 void Lighting_Update(Lighting* obj) {
+  if (obj->brake_on && obj->brake_flashing) {
+    Lighting_ApplyRearLight(obj);
+  }
+
   if (obj->winker_state == LIGHTING_WINKER_OFF) {
     return;
   }
