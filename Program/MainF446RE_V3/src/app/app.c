@@ -146,8 +146,10 @@ void Setup() {
   Imu_Init(&imu, &hi2c1, calibrate_imu);
   DigitalOut_Write(&led2, 0);
 
-  // TIM2 CH3: BUZZER, APB1 タイマクロック 90MHz, Prescaler=0 (tim.c の MX_TIM2_Init と一致させる)
-  Buzzer_Init(&buzzer, &htim2, TIM_CHANNEL_3, 90000000U, 0U);
+  // TIM2 CH3: BUZZER, APB1 タイマクロック 90MHz, Prescaler=0 (tim.c の MX_TIM2_Init と一致させる)。
+  // ブザー配線はラズパイと共有しているため、鳴らしていない間はピンをラズパイへ明け渡す
+  Buzzer_Init(&buzzer, &htim2, TIM_CHANNEL_3, 90000000U, 0U,
+              BUZZER_GPIO_Port, BUZZER_Pin, GPIO_AF1_TIM2);
   Buzzer_PlayStartupMelody(&buzzer);
   PlayStartupIndication();
 

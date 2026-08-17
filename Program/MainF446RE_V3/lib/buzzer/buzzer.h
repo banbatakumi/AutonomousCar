@@ -20,6 +20,12 @@ typedef struct {
   uint32_t timer_clock_hz;  // タイマペリフェラルのクロック周波数 [Hz]
   uint32_t prescaler;       // CubeMX で設定したプリスケーラ値（分周比 = prescaler+1）
 
+  // ブザー配線をラズパイと共有しているため、鳴らしていない間はピンを
+  // フローティング入力へ切り替えてラズパイ側から駆動できるようにする
+  GPIO_TypeDef *gpio_port;
+  uint16_t gpio_pin;
+  uint32_t gpio_af;
+
   BuzzerPattern pattern;
   uint32_t freq_hz;          // 音程 [Hz]
   uint32_t on_ms;            // ON 持続時間 [ms]
@@ -36,9 +42,13 @@ typedef struct {
  * @param channel         TIM_CHANNEL_x
  * @param timer_clock_hz  タイマペリフェラルのクロック周波数（APB タイマクロック） [Hz]
  * @param prescaler       CubeMX で設定したプリスケーラ値（tim.c の Init.Prescaler と同値）
+ * @param gpio_port       ブザーピンのポート（例: BUZZER_GPIO_Port）
+ * @param gpio_pin        ブザーピン番号（例: BUZZER_Pin）
+ * @param gpio_af         ブザーピンに割り当てるタイマのオルタネート機能（例: GPIO_AF1_TIM2）
  */
 void Buzzer_Init(Buzzer *obj, TIM_HandleTypeDef *htim, uint32_t channel,
-                 uint32_t timer_clock_hz, uint32_t prescaler);
+                 uint32_t timer_clock_hz, uint32_t prescaler,
+                 GPIO_TypeDef *gpio_port, uint16_t gpio_pin, uint32_t gpio_af);
 
 /**
  * @brief 指定周波数で duration_ms [ms] 間鳴らし、その後自動停止する。
