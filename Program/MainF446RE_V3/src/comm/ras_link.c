@@ -3,6 +3,10 @@
 #include <string.h>
 
 #include "crc16.h"
+// LIMITS で送る値の出所として車速・加速度・トルク・舵角の上限だけ参照する。
+// 制御そのものには関与しない
+#include "drive.h"
+#include "steering.h"
 
 // PONG の t_pong_tx_us は「実際に1バイト目が線に出る直前」に埋めないと、送信キューでの
 // 待ち時間がそのまま時刻同期のオフセット推定にバイアスとして乗る (LiDAR セクタ1つで
@@ -16,6 +20,7 @@
 #define RAS_LEN_TELEMETRY 66
 #define RAS_LEN_PONG 12
 #define RAS_LEN_VERSION 10
+#define RAS_LEN_LIMITS 16
 #define RAS_LEN_STATS 48
 #define RAS_LEN_CONFIG_ACK 7
 #define RAS_LEN_LIDAR_SECTOR 69
@@ -32,6 +37,7 @@
 #define RAS_LEN_PING 4
 #define RAS_LEN_CONFIG_GET 2
 #define RAS_LEN_VERSION_REQ 0
+#define RAS_LEN_LIMITS_REQ 0
 
 typedef enum {
   RX_SYNC1 = 0,
@@ -275,6 +281,29 @@ static void SendVersion(RasLink* obj) {
   SendFrame(obj, RAS_TXQ_INFO, RAS_TYPE_VERSION, p, RAS_LEN_VERSION, 0);
 }
 
+// 車両の固定上限値を通知する。CONFIG_SET で変更する仕組み (旧 RAS_PARAM_MAX_SPEED 等、
+// v0.10 で廃止) の代わりに、STM側が持つ定数を Pi へ読み取り専用で伝えるためのパケット。
+// 量子化はせず f32 のまま送る (VERSION と同様に頻度が低いため帯域を気にしなくてよい)
+static void SendLimits(RasLink* obj) {
+  uint8_t p[RAS_LEN_LIMITS];
+  uint16_t pos = 0;
+  float max_speed_m_s = DRIVE_MAX_SPEED_M_S;
+  float max_accel_m_s2 = DRIVE_MAX_ACCEL_M_S2;
+  // 駆動トルクと制動トルクは同じ上限を共有する (DRIVE_MAX_BRAKE_TORQUE_NM は
+  // DRIVE_MAX_TORQUE_NM のエイリアス) ため、1つの値で両方をカバーする
+  float max_torque_nm = DRIVE_MAX_TORQUE_NM;
+  float max_steer_rad = Steering_GetMaxRoadWheelAngleRad();
+  memcpy(&p[pos], &max_speed_m_s, sizeof(max_speed_m_s));
+  pos += sizeof(max_speed_m_s);
+  memcpy(&p[pos], &max_accel_m_s2, sizeof(max_accel_m_s2));
+  pos += sizeof(max_accel_m_s2);
+  memcpy(&p[pos], &max_torque_nm, sizeof(max_torque_nm));
+  pos += sizeof(max_torque_nm);
+  memcpy(&p[pos], &max_steer_rad, sizeof(max_steer_rad));
+  pos += sizeof(max_steer_rad);
+  SendFrame(obj, RAS_TXQ_INFO, RAS_TYPE_LIMITS, p, RAS_LEN_LIMITS, 0);
+}
+
 static void SendStats(RasLink* obj) {
   uint8_t p[RAS_LEN_STATS];
   uint16_t pos = 0;
@@ -465,6 +494,9 @@ static void DispatchPacket(RasLink* obj, uint32_t frame_end_us) {
     case RAS_TYPE_VERSION_REQ:
       SendVersion(obj);
       break;
+    case RAS_TYPE_LIMITS_REQ:
+      SendLimits(obj);
+      break;
     default:
       break;
   }
@@ -483,6 +515,8 @@ static int ExpectedPayloadLen(uint8_t type) {
       return RAS_LEN_CONFIG_GET;
     case RAS_TYPE_VERSION_REQ:
       return RAS_LEN_VERSION_REQ;
+    case RAS_TYPE_LIMITS_REQ:
+      return RAS_LEN_LIMITS_REQ;
     default:
       return -1;
   }
@@ -632,9 +666,12 @@ void RasLink_Update(RasLink* obj) {
 
   uint32_t now = Micros();
 
+  // LIMITS は起動時に変わらない値なので VERSION と同じバースト送信に相乗りさせる
+  // (専用のカウンタ・タイマを別に持つ必要が無いため)
   if (obj->version_burst_left > 0 &&
       (uint32_t)(now - obj->last_version_us) >= RAS_VERSION_BURST_INTERVAL_US) {
     SendVersion(obj);
+    SendLimits(obj);
     obj->last_version_us = now;
     obj->version_burst_left--;
   }

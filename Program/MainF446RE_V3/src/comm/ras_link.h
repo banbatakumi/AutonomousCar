@@ -9,9 +9,8 @@
 
 // ===========================================================================
 // Raspberry Pi (上位) との UART 通信。プロトコル仕様は
-// docs/pi_uart_protocol_v0.4_request.md (v0.4)、docs/pi_uart_protocol_v0.5_delta.md (v0.5)、
-// docs/pi_uart_protocol_v0.6_delta.md (v0.6)、docs/pi_uart_protocol_v0.7_delta.md (v0.7)、
-// docs/pi_uart_protocol_v0.8_delta.md (v0.8) に対応する。
+// docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
+// docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.11_delta.md に対応する。
 //
 // 物理層: USART1, 250000bps 8N1 (分周誤差0%)。
 //
@@ -25,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x000Au
+#define RAS_PROTOCOL_VERSION 0x000Bu
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -57,11 +56,13 @@ typedef enum {
   RAS_TYPE_VERSION = 0x07,
   RAS_TYPE_STATS = 0x08,
   RAS_TYPE_LIDAR_SECTOR_C = 0x09,
+  RAS_TYPE_LIMITS = 0x0A,  // 車両の固定上限値 (v0.11 で新設)
   RAS_TYPE_COMMAND = 0x10,
   RAS_TYPE_CONFIG_SET = 0x11,
   RAS_TYPE_PING = 0x12,
   RAS_TYPE_CONFIG_GET = 0x13,
   RAS_TYPE_VERSION_REQ = 0x14,
+  RAS_TYPE_LIMITS_REQ = 0x15,  // v0.11 で新設
 } RasPacketType;
 
 // COMMAND.mode / TELEMETRY.flags bit0-1
