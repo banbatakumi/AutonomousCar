@@ -38,7 +38,7 @@
 #define RAS_LEN_VERSION_REQ 0
 
 // 設定値の既定値と可動範囲
-#define RAS_DEFAULT_MAX_SPEED_M_S 1.0f
+#define RAS_DEFAULT_MAX_SPEED_M_S 3.0f
 #define RAS_DEFAULT_MAX_ACCEL_M_S2 3.0f
 #define RAS_LIMIT_MAX_SPEED_M_S DRIVE_MAX_SPEED_M_S
 #define RAS_LIMIT_MAX_ACCEL_M_S2 20.0f
@@ -416,6 +416,18 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
       clamped = Clampf(value, 0.0f, Steering_GetMaxRoadWheelAngleRad());
       obj->config.max_steer_rad = clamped;
       break;
+    case RAS_PARAM_TC_ENABLE:
+      obj->config.tc_enabled = (value != 0.0f);
+      clamped = obj->config.tc_enabled ? 1.0f : 0.0f;
+      break;
+    case RAS_PARAM_TV_ENABLE:
+      obj->config.tv_enabled = (value != 0.0f);
+      clamped = obj->config.tv_enabled ? 1.0f : 0.0f;
+      break;
+    case RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE:
+      obj->config.wheel_lift_guard_enabled = (value != 0.0f);
+      clamped = obj->config.wheel_lift_guard_enabled ? 1.0f : 0.0f;
+      break;
     case RAS_PARAM_LIDAR_FORMAT:
       clamped = Clampf(value, 0.0f, (float)RAS_LIDAR_FORMAT_COMPACT);
       obj->config.lidar_format = (uint8_t)(clamped + 0.5f);
@@ -432,11 +444,22 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
 static float ReadConfig(const RasLink* obj, uint16_t param_id, bool* known) {
   *known = true;
   switch (param_id) {
-    case RAS_PARAM_MAX_SPEED: return obj->config.max_speed_m_s;
-    case RAS_PARAM_MAX_ACCEL: return obj->config.max_accel_m_s2;
-    case RAS_PARAM_MAX_STEER: return obj->config.max_steer_rad;
-    case RAS_PARAM_LIDAR_FORMAT: return (float)obj->config.lidar_format;
-    default: break;
+    case RAS_PARAM_MAX_SPEED:
+      return obj->config.max_speed_m_s;
+    case RAS_PARAM_MAX_ACCEL:
+      return obj->config.max_accel_m_s2;
+    case RAS_PARAM_MAX_STEER:
+      return obj->config.max_steer_rad;
+    case RAS_PARAM_TC_ENABLE:
+      return obj->config.tc_enabled ? 1.0f : 0.0f;
+    case RAS_PARAM_TV_ENABLE:
+      return obj->config.tv_enabled ? 1.0f : 0.0f;
+    case RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE:
+      return obj->config.wheel_lift_guard_enabled ? 1.0f : 0.0f;
+    case RAS_PARAM_LIDAR_FORMAT:
+      return (float)obj->config.lidar_format;
+    default:
+      break;
   }
   *known = false;
   return 0.0f;
@@ -478,12 +501,18 @@ static void DispatchPacket(RasLink* obj, uint32_t frame_end_us) {
 // TYPE ごとの期待ペイロード長。未知の TYPE は -1 を返し、LEN を信用して読み飛ばす
 static int ExpectedPayloadLen(uint8_t type) {
   switch (type) {
-    case RAS_TYPE_COMMAND: return RAS_LEN_COMMAND;
-    case RAS_TYPE_CONFIG_SET: return RAS_LEN_CONFIG_SET;
-    case RAS_TYPE_PING: return RAS_LEN_PING;
-    case RAS_TYPE_CONFIG_GET: return RAS_LEN_CONFIG_GET;
-    case RAS_TYPE_VERSION_REQ: return RAS_LEN_VERSION_REQ;
-    default: return -1;
+    case RAS_TYPE_COMMAND:
+      return RAS_LEN_COMMAND;
+    case RAS_TYPE_CONFIG_SET:
+      return RAS_LEN_CONFIG_SET;
+    case RAS_TYPE_PING:
+      return RAS_LEN_PING;
+    case RAS_TYPE_CONFIG_GET:
+      return RAS_LEN_CONFIG_GET;
+    case RAS_TYPE_VERSION_REQ:
+      return RAS_LEN_VERSION_REQ;
+    default:
+      return -1;
   }
 }
 
@@ -595,6 +624,9 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
   obj->config.max_speed_m_s = RAS_DEFAULT_MAX_SPEED_M_S;
   obj->config.max_accel_m_s2 = RAS_DEFAULT_MAX_ACCEL_M_S2;
   obj->config.max_steer_rad = Steering_GetMaxRoadWheelAngleRad();
+  obj->config.tc_enabled = true;
+  obj->config.tv_enabled = true;
+  obj->config.wheel_lift_guard_enabled = true;
   obj->config.lidar_format = RAS_LIDAR_FORMAT_STANDARD;
 
   uint32_t now = Micros();

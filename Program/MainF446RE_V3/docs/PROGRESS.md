@@ -285,3 +285,38 @@ Pi 側 (`stm32_interface.md` v0.5 / `uart_protocol.md` v0.6) の要求に合わ�
   (`Drive_SetTorque` 内)。Pi 側のクランプに頼らない。
 
 ビルド確認済み (`make -j12`、エラー・警告なし。text 74832 B)。**実機での動作確認は未実施。**
+
+---
+
+## 2026-08-19: プロトコル v0.8 — TC/TV の実行時 ON/OFF を追加
+
+バンビの依頼「ラズパイ側からTCとTVのオンオフを制御したい」に対応。詳細と Pi 側の対応
+チェックリストは [pi_uart_protocol_v0.8_delta.md](pi_uart_protocol_v0.8_delta.md)。
+
+### 方式の選定
+
+`COMMAND.flags` は v0.7 の `auto_stop` (bit7) 追加で u8 の全ビットが埋まっており、新しい
+フラグを置く空きが無い。一方 `RasParamId` (`ras_link.h`) には TC/TV 用の `param_id`
+(`0x0010`/`0x0020`) が「未実装」として既に予約されていたため、`COMMAND` の LEN 拡張は
+避けて既存の `CONFIG_SET`/`CONFIG_GET`/`CONFIG_ACK` (0x20/0x21/0x22) 経由で実装した。
+
+### 変更点
+
+- **`RasParamId` に `RAS_PARAM_TC_ENABLE = 0x0010` / `RAS_PARAM_TV_ENABLE = 0x0020` を追加**
+  ([ras_link.h](../src/comm/ras_link.h))。`RasConfig` に `tc_enabled`/`tv_enabled` (既定 true)
+  を追加し、`ApplyConfig()`/`ReadConfig()` ([ras_link.c](../src/comm/ras_link.c)) で
+  0.0/非0 を真偽値として読み書きする。`protocol_version` 0x0007 → 0x0008。
+- **TV は元々 `TorqueVectoring_SetEnabled()`/`Drive_SetTorqueVectoringEnabled()` が実装済み
+  だったが呼び出し元がどこにも無く、実質常時有効固定だった** (未配線)。今回
+  `Vehicle::ApplyRasCommand()` ([vehicle.c](../src/vehicle/vehicle.c)) から配線した。
+- **TC には有効/無効の切替口が無かったため新規追加**: `Drive` に `tc_enabled` (既定 true) を
+  持たせ、`Drive_Update()` の TC 上限更新箇所を分岐し、無効時は `tc_limit_left/right_nm` を
+  常に `DRIVE_MAX_TORQUE_NM` に固定してスリップ率による削り込みをしないようにした
+  ([drive.h](../src/control/drive.h)/[drive.c](../src/control/drive.c) の
+  `Drive_SetTractionControlEnabled()`)。
+- `Vehicle::ApplyRasCommand()` が毎周期 `RasConfig.tc_enabled`/`tv_enabled` を
+  `Drive_SetTractionControlEnabled()`/`Drive_SetTorqueVectoringEnabled()` へそのまま渡す。
+  COMMAND 未受信時 (`ApplyFailsafe()`) は呼ばないため、Pi 未接続時は起動時の既定値 (両方有効)
+  のまま固定される。
+
+ビルド確認済み (`make -j12`、エラー・警告なし。text 75656 B)。**実機での動作確認は未実施。**

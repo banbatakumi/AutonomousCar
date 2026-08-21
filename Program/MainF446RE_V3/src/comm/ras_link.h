@@ -10,7 +10,8 @@
 // ===========================================================================
 // Raspberry Pi (上位) との UART 通信。プロトコル仕様は
 // docs/pi_uart_protocol_v0.4_request.md (v0.4)、docs/pi_uart_protocol_v0.5_delta.md (v0.5)、
-// docs/pi_uart_protocol_v0.6_delta.md (v0.6)、docs/pi_uart_protocol_v0.7_delta.md (v0.7) に対応する。
+// docs/pi_uart_protocol_v0.6_delta.md (v0.6)、docs/pi_uart_protocol_v0.7_delta.md (v0.7)、
+// docs/pi_uart_protocol_v0.8_delta.md (v0.8) に対応する。
 //
 // 物理層: USART1, 250000bps 8N1 (分周誤差0%)。
 //
@@ -24,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0007u
+#define RAS_PROTOCOL_VERSION 0x0009u
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -139,14 +140,19 @@ typedef enum {
 } RasConfigResult;
 
 // 実装済みのパラメータのみを定義する。
-// TC/TV/速度PIゲインの実行時変更 (0x0010,0x0011,0x0020,0x0021,0x0030,0x0031) は
+// TC/TV/速度PIの各ゲイン自体の実行時変更 (0x0011,0x0021,0x0030,0x0031) は
 // Drive 側が定数で持っているため未対応で、受信すると RAS_CONFIG_UNKNOWN_PARAM を返す。
 // 「OK を返すが何も変わらない」より、対応していないことを Pi 側に伝える方が安全。
+// TC/TV の ON/OFF (0x0010/0x0020) はゲインではなく機能そのものの有効/無効なので v0.8 で対応した。
+// 片輪浮き対策 (0x0050) の ON/OFF は v0.9 で新設。TC本体 (0x0010) とは独立に切替できる。
 typedef enum {
   RAS_PARAM_MAX_SPEED = 0x0001,     // [m/s]
   RAS_PARAM_MAX_ACCEL = 0x0002,     // [m/s^2]
   RAS_PARAM_MAX_STEER = 0x0003,     // [rad] 路面舵角
+  RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
+  RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
   RAS_PARAM_LIDAR_FORMAT = 0x0040,  // RasLidarFormat
+  RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)。v0.9 で新設
 } RasParamId;
 
 typedef enum {
@@ -159,6 +165,9 @@ typedef struct {
   float max_speed_m_s;
   float max_accel_m_s2;
   float max_steer_rad;
+  bool tc_enabled;
+  bool tv_enabled;
+  bool wheel_lift_guard_enabled;  // v0.9 で新設。既定は有効
   uint8_t lidar_format;
 } RasConfig;
 
@@ -313,7 +322,8 @@ const RasCommand* RasLink_GetCommand(const RasLink* obj);
 
 /**
  * @brief 起動後に一度でも COMMAND を受信したかを取得する。
- * 偽の間は上位が繋がっていないため、下位単独の動作 (走行テスト等) をしてよい。
+ * 「一度も繋がっていない」のか「繋がった後に途絶した」のかを区別するために使う
+ * (RasLink_IsCommandAlive() と組み合わせて、後者のみ RAS_FLAG_UART_TIMEOUT を立てるなど)。
  */
 bool RasLink_HasCommand(const RasLink* obj);
 

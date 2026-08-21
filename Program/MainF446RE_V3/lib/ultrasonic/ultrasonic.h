@@ -11,6 +11,11 @@
 // 計測不能時（無反射・センサ未接続・タイムアウトなど）に返る距離値
 #define ULTRASONIC_NO_ECHO -1.0f
 
+// HC-SR04系は測定範囲外だとECHOが約38ms出続け、これをそのまま距離換算すると
+// 651cmという「有効値」になって上位へ渡ってしまう。実用上あり得ない距離は
+// 無反射として扱うための上限 [cm] (一般的なHC-SR04系の仕様上限は400cm程度)
+#define ULTRASONIC_MAX_DISTANCE_CM 400.0f
+
 typedef struct {
   DigitalOut trig;
   DigitalIn echo;
@@ -18,6 +23,10 @@ typedef struct {
   volatile uint32_t rise_cycle_count;   // ECHO立ち上がり時のDWTサイクルカウント (ISRが更新)
   volatile uint8_t waiting_fall;        // 立ち上がり検知済み・立ち下がり待ち中かどうか (ISRが更新)
   volatile float distance_cm;           // Ultrasonic_OnEchoEdge() がISRから更新する最新の計測結果
+  // 新しい計測が確定するたびに ISR が++する。呼び出し側 (RangeSensor) はこれの変化を見て
+  // 「本当に新しい値か」を判別する (トリガ間隔60msの間、Ultrasonic_GetDistanceCm()は
+  // ずっと同じ値を返すため、値そのものの比較では区別できない)
+  volatile uint32_t seq;
 } Ultrasonic;
 
 static inline void Ultrasonic_Init(Ultrasonic *obj, GPIO_TypeDef *trig_port, uint16_t trig_pin,
@@ -27,6 +36,7 @@ static inline void Ultrasonic_Init(Ultrasonic *obj, GPIO_TypeDef *trig_port, uin
   Timer_Init(&obj->trigger_timer);
   obj->waiting_fall = 0;
   obj->distance_cm = ULTRASONIC_NO_ECHO;
+  obj->seq = 0;
 }
 
 // 一定間隔でトリガパルスを送出する。ブロッキングしないので制御ループの毎ティック呼ぶこと。
@@ -56,7 +66,11 @@ static inline void Ultrasonic_OnEchoEdge(Ultrasonic *obj) {
     uint32_t elapsed_cycles = DWT->CYCCNT - obj->rise_cycle_count;
     float elapsed_us = (float)elapsed_cycles * 1000000.0f / (float)SystemCoreClock;
     // 距離[cm] = 往復時間[us] * 音速(0.0343 cm/us) / 2
-    obj->distance_cm = elapsed_us * 0.0343f / 2.0f;
+    float distance_cm = elapsed_us * 0.0343f / 2.0f;
+    // 測定範囲外 (無反射) をそのまま「651cmの実測値」として報告しないよう、
+    // 実用上あり得ない距離は無反射として扱う
+    obj->distance_cm = distance_cm <= ULTRASONIC_MAX_DISTANCE_CM ? distance_cm : ULTRASONIC_NO_ECHO;
+    obj->seq++;
     obj->waiting_fall = 0;
   }
 }
@@ -64,6 +78,12 @@ static inline void Ultrasonic_OnEchoEdge(Ultrasonic *obj) {
 // 直近の計測結果 [cm] を取得する（非ブロッキング）。未計測・計測不能時は ULTRASONIC_NO_ECHO。
 static inline float Ultrasonic_GetDistanceCm(Ultrasonic *obj) {
   return obj->distance_cm;
+}
+
+// 直近の計測が確定した回数を取得する。値そのものが変化しなくても新しい計測が来たことを
+// 判別するために使う (RangeSensor のLPFがトリガ間隔60msの間ずっと同じ値を通してしまう問題対策)。
+static inline uint32_t Ultrasonic_GetSeq(Ultrasonic *obj) {
+  return obj->seq;
 }
 
 #endif  // ULTRASONIC_H_

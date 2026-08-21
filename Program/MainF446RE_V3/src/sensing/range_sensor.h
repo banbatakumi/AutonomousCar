@@ -21,6 +21,10 @@ typedef struct {
   LPF rear_lpf;
   bool front_lpf_seeded;
   bool rear_lpf_seeded;
+  // 直近にLPFへ反映した Ultrasonic_GetSeq() の値。トリガ間隔60msの間 Ultrasonic の生値は
+  // 変化しないため、値ではなくこのseqの変化で「新しい計測が来たか」を判別する
+  uint32_t front_lpf_seq;
+  uint32_t rear_lpf_seq;
 } RangeSensor;
 
 /**

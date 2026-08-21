@@ -17,7 +17,7 @@
 #define IMU_AHRS_KI 0.01f
 
 // 加速度出力のローパス係数 (0<k<1)。200Hz サンプルで実効カットオフ ≒ 7Hz。
-#define IMU_ACCEL_LPF_K 0.8
+#define IMU_ACCEL_LPF_K 0.8f
 
 // 静止キャリブレーションのサンプル数 (200Hz なので約 5 秒)
 #define IMU_CALIB_SAMPLE_COUNT 1000
@@ -254,7 +254,11 @@ static void ProcessSample(Imu *obj, const Mpu6050Sample *sample, float dt) {
   obj->data.temp = sample->temp;
 }
 
-// 通信が止まったときに I2C と MPU6050 を初期化し直す
+// 通信が止まったときに I2C と MPU6050 を初期化し直す。RecoverI2cBus + Mpu6050_Init だけで
+// 約190msメインループをブロッキングする (docs/code_review_2026-08-21.md A-3)。この間に
+// ハートビートの矩形波エッジを取りこぼすと誤って緊急停止がラッチされうるため、
+// recovery_ran を立てて呼び出し側 (app.c) がハートビートの基準時刻をリセットできるようにする。
+// これは応急処置であり、根本対策 (Recover のステートマシン化) は別途必要
 static bool Recover(Imu *obj) {
   EnableDataReadyInterrupt(false);
 
@@ -263,6 +267,7 @@ static bool Recover(Imu *obj) {
   Mpu6050Offset offset = obj->mpu.offset;
 
   obj->data_valid = false;
+  obj->recovery_ran = true;
   HAL_I2C_Master_Abort_IT(i2c, (uint16_t)(addr << 1));
   RecoverI2cBus(i2c);
 
@@ -353,10 +358,17 @@ bool Imu_Update(Imu *obj) {
     return true;
   }
 
-  if ((uint32_t)(now - obj->last_sample_tick) >= IMU_SAMPLE_TIMEOUT_MS &&
-      (uint32_t)(now - obj->last_recovery_tick) >= IMU_RECOVERY_INTERVAL_MS) {
-    printf("[IMU] Sample timeout; recovering\n");
-    Recover(obj);
+  // Recover() の成否を待たず、サンプルが途絶した時点で即座に無効化する。以前はここを
+  // Recover() 呼び出しの中でしか false にしておらず、IMU_RECOVERY_INTERVAL_MS の間隔で
+  // しか Recover() を試みないため、その間 Imu_IsReady() が固まった値のまま true を
+  // 返し続けていた (TV がヨーレートの固まった実測値で動き続ける、TCの基準速度も
+  // 固まったヨーレートで計算されるなど、無効なデータを有効として使ってしまう)
+  if ((uint32_t)(now - obj->last_sample_tick) >= IMU_SAMPLE_TIMEOUT_MS) {
+    obj->data_valid = false;
+    if ((uint32_t)(now - obj->last_recovery_tick) >= IMU_RECOVERY_INTERVAL_MS) {
+      printf("[IMU] Sample timeout; recovering\n");
+      Recover(obj);
+    }
   }
   return false;
 }
@@ -364,6 +376,12 @@ bool Imu_Update(Imu *obj) {
 const ImuData *Imu_GetData(const Imu *obj) { return &obj->data; }
 
 bool Imu_IsReady(const Imu *obj) { return obj->initialized && obj->data_valid; }
+
+bool Imu_ConsumeRecoveryRan(Imu *obj) {
+  bool ran = obj->recovery_ran;
+  obj->recovery_ran = false;
+  return ran;
+}
 
 void Imu_ResetYaw(Imu *obj) {
   if (obj == NULL) return;

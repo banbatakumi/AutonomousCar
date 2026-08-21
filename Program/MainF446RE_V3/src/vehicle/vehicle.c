@@ -42,11 +42,15 @@ static void UpdateLidarPower(Vehicle* obj, bool want_on) {
   }
 }
 
-// 進行方向 (target_speed / torque_mode 中は target_torque の符号) の超音波距離が
+// 実際の進行方向 (前輪エンコーダから推定した実車速) の超音波距離が
 // VEHICLE_AUTO_STOP_DISTANCE_CM 未満かを見る。逆方向のセンサは見ないため、
-// 例えば前方に障害物があっても後退はできる
-static bool IsAutoStopObstacleAhead(Vehicle* obj, float intended_direction) {
-  float dist_cm = intended_direction >= 0.0f
+// 例えば前方に障害物があっても後退はできる。
+// 上位が指令した target_speed/target_torque の符号ではなく実車速を使うのは、
+// 「前進中に後退を指令」した瞬間でも実車はまだ前進しており、その一瞬に後方センサへ
+// 切り替わって前方の障害物を見失う窓ができるのを避けるため
+static bool IsAutoStopObstacleAhead(Vehicle* obj) {
+  float direction = Drive_GetVehicleSpeed(obj->drive);
+  float dist_cm = direction >= 0.0f
                       ? RangeSensor_GetFrontDistanceFilteredCm(obj->range_sensor)
                       : RangeSensor_GetRearDistanceFilteredCm(obj->range_sensor);
   return dist_cm >= 0.0f && dist_cm < VEHICLE_AUTO_STOP_DISTANCE_CM;
@@ -59,6 +63,11 @@ static void ApplyRasCommand(Vehicle* obj) {
   const RasConfig* config = RasLink_GetConfig(obj->ras_link);
   float dt_s = Timer_Read(&obj->command_rate_timer);
   Timer_Reset(&obj->command_rate_timer);
+  // command_rate_timer は緊急停止・COMMAND途絶で ApplyFailsafe() に分岐している間も
+  // 回り続けている (ApplyFailsafe 側でもリセットするが、念のため二重に防御する)。
+  // 初回や異常に長い dt (途絶からの復帰直後など) では加速度・舵角速度の制限が
+  // 実質無効化されてしまうため、drive.c / pid.h と同じガードでレート制限を無効にする
+  if (dt_s <= 0.0f || dt_s > 0.1f) dt_s = 0.0f;
 
   // mode = 3 は v0.4 で予約になったため、受信しても現在のモードを維持する
   if (command->mode != RAS_MODE_RESERVED) obj->mode = command->mode;
@@ -74,9 +83,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
   bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
 
-  float intended_direction = torque_mode ? command->target_torque_nm : command->target_speed_m_s;
-  obj->auto_stop_active =
-      armed && auto_stop_enabled && IsAutoStopObstacleAhead(obj, intended_direction);
+  obj->auto_stop_active = armed && auto_stop_enabled && IsAutoStopObstacleAhead(obj);
   bool braking = cmd_braking || obj->auto_stop_active;
 
   float target_speed_m_s = 0.0f;
@@ -118,6 +125,9 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTargetSpeed(obj->drive, obj->applied_speed_m_s);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
+  Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
+  Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
+  Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
 
   ApplyBrakeLight(obj, braking, brake_torque_nm);
@@ -160,9 +170,17 @@ static void UpdateEstop(Vehicle* obj) {
 // 止め、上位の操作で入りっぱなしになりうる出力 (クラクション・パッシング) は解除する。
 // 舵角は最後の指令値のまま保持する (直進へ戻すと車体が予期しない方向へ動くため)
 static void ApplyFailsafe(Vehicle* obj) {
+  // ApplyRasCommand() 側の command_rate_timer をここでもリセットしておく。フェイルセーフ中は
+  // 呼ばれないため、これをしないと復帰した瞬間の dt が途絶していた時間分だけ膨らみ、
+  // 加速度・舵角速度のレート制限が1周期だけ無効化されたのと同じ状態になる
+  Timer_Reset(&obj->command_rate_timer);
+
   obj->applied_speed_m_s = 0.0f;
   Drive_SetTargetSpeed(obj->drive, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
+  // brake が torque_mode より優先されるため現状は表面化しないが、安全層は他モジュールの
+  // 内部優先順位に依存せず自己完結させるべきなので明示的に torque_mode も解除しておく
+  Drive_SetTorque(obj->drive, false, 0.0f);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
   ApplyBrakeLight(obj, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Lighting_SetPassing(obj->lighting, false);

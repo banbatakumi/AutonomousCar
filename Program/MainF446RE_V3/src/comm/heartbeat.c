@@ -31,3 +31,7 @@ bool Heartbeat_HasEverBeenSeen(const Heartbeat* obj) {
 uint32_t Heartbeat_GetEdgeCount(const Heartbeat* obj) {
   return obj->edge_count;
 }
+
+void Heartbeat_ResetBaseline(Heartbeat* obj) {
+  obj->last_edge_us = Micros();
+}

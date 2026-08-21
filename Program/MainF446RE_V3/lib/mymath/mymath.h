@@ -1,18 +1,29 @@
 #ifndef MYMATH_H_
 #define MYMATH_H_
 
-#define PI 3.1415926535897932384626433832795
-#define HALF_PI 1.5707963267948966192313216916398
-#define TWO_PI 6.283185307179586476925286766559
-#define FOUR_PI 12.566370614359172953850573533118
-#define TWO_THIRDS_PI 2.0943951023931954923084289221863
-#define DEG_TO_RAD 0.017453292519943295769236907684886
-#define RAD_TO_DEG 57.295779513082320876798154814105
+// Cortex-M4F の FPU は単精度のみのため、f サフィックスを付けて float 定数にする
+// (無いと double 定数との演算がすべてソフトウェアエミュレーションへ格上げされる)
+#define PI 3.1415926535897932384626433832795f
+#define HALF_PI 1.5707963267948966192313216916398f
+#define TWO_PI 6.283185307179586476925286766559f
+#define FOUR_PI 12.566370614359172953850573533118f
+#define TWO_THIRDS_PI 2.0943951023931954923084289221863f
+#define DEG_TO_RAD 0.017453292519943295769236907684886f
+#define RAD_TO_DEG 57.295779513082320876798154814105f
 
-#define Abs(x) ((x) > 0 ? (x) : -(x))
-#define Constrain(amt, low, high) ((amt) < (low) ? (low) : ((amt) > (high) ? (high) : (amt)))
 #define Radians(deg) ((deg) * DEG_TO_RAD)
 #define Degrees(rad) ((rad) * RAD_TO_DEG)
+
+// マクロだと引数を複数回評価してしまう (副作用のある式や ADC 読み出しのような
+// 呼ぶたびに値が変わりうる式を渡すと、比較に使った値と返り値が食い違いうる) ため
+// static inline 関数にする。プロジェクト内の実引数はすべて float なので float 固定でよい
+static inline float Abs(float x) {
+      return x > 0.0f ? x : -x;
+}
+
+static inline float Constrain(float amt, float low, float high) {
+      return amt < low ? low : (amt > high ? high : amt);
+}
 
 #define SIN0 0.0f
 #define SIN1 0.0174524064372835

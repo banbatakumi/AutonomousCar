@@ -17,16 +17,31 @@ static inline void Timer_Reset(Timer* timer) {
   timer->start_time = DWT->CYCCNT;
 }
 
+/**
+ * @brief Micros_Init() が実クロックから求めた 1us あたりのサイクル数を取得する。
+ * HAL_RCC_GetSysClockFreq() は PLL 分周比からの再計算 (switch + 複数除算) を毎回行うため、
+ * 500us ループで何十回も呼ぶと無視できないコストになる。こちらは定数を返すだけ。
+ */
+uint32_t Timer_GetCyclesPerUs(void);
+
 static inline float Timer_Read(Timer* timer) {
-  return (float)(DWT->CYCCNT - timer->start_time) / HAL_RCC_GetSysClockFreq();
+  return (float)(DWT->CYCCNT - timer->start_time) / (float)(Timer_GetCyclesPerUs() * 1000000U);
 }
 
 static inline uint32_t Timer_ReadMs(Timer* timer) {
-  return (uint32_t)(((float)(DWT->CYCCNT - timer->start_time) / HAL_RCC_GetSysClockFreq()) * 1000.0f);
+  return (DWT->CYCCNT - timer->start_time) / (Timer_GetCyclesPerUs() * 1000U);
 }
 
 static inline uint32_t Timer_ReadUs(Timer* timer) {
-  return (uint32_t)(((float)(DWT->CYCCNT - timer->start_time) / HAL_RCC_GetSysClockFreq()) * 1000000.0f);
+  return (DWT->CYCCNT - timer->start_time) / Timer_GetCyclesPerUs();
+}
+
+/**
+ * @brief 開始時刻を us だけ過去へずらす (経過時間を即座に us だけ進める)。
+ * 周期処理の初期位相をずらす用途 (例: 複数センサのトリガタイミングを分散させる) に使う。
+ */
+static inline void Timer_RewindUs(Timer* timer, uint32_t us) {
+  timer->start_time -= us * Timer_GetCyclesPerUs();
 }
 
 static inline void WaitUs(uint32_t micros) {

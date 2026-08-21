@@ -45,6 +45,10 @@
 // 溜まる分 (約9バイト) に対して十分な余裕を取る
 #define LIDAR_SERIAL_RX_BUF_SIZE 256
 
+// ステアリング/左後輪/右後輪 各MDとのシリアル受信バッファサイズ [B] (11バイトの状態フレーム
+// 1つに対して十分な余裕)
+#define MD_SERIAL_RX_BUF_SIZE 64
+
 // ---------------------------------------------------------------------------
 // モジュールのインスタンス
 // ---------------------------------------------------------------------------
@@ -69,6 +73,9 @@ static Indicator indicator;
 static DigitalIn button1;
 static DigitalIn button2;
 
+static uint8_t steering_serial_rx_buf[MD_SERIAL_RX_BUF_SIZE];
+static uint8_t rear_left_serial_rx_buf[MD_SERIAL_RX_BUF_SIZE];
+static uint8_t rear_right_serial_rx_buf[MD_SERIAL_RX_BUF_SIZE];
 static Serial steering_serial;
 static Serial rear_left_serial;
 static Serial rear_right_serial;
@@ -76,9 +83,11 @@ static Motors motors;
 static Steering steering;
 static Drive drive;
 
+static uint8_t lidar_serial_rx_buf[LIDAR_SERIAL_RX_BUF_SIZE];
 static Serial lidar_serial;
 static Lidar lidar;
 
+static uint8_t ras_serial_rx_buf[RAS_SERIAL_RX_BUF_SIZE];
 static Serial ras_serial;
 static RasLink ras_link;
 static Heartbeat heartbeat;  // Raspberry Pi の生存監視 (RAS_SIG = PB12 の 100Hz 矩形波)
@@ -91,7 +100,7 @@ static Timer control_interval_timer;
 // 起動を知らせるハザード2回点滅。Lighting_Update を回し続ける必要があるためブロッキングする
 // (ウォッチドッグを起動する前に済ませること)
 static void PlayStartupIndication() {
-  Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_DAYTIME);
+  Lighting_SetHeadlight(&lighting, LIGHTING_HEADLIGHT_OFF);
   Lighting_SetWinker(&lighting, LIGHTING_WINKER_HAZARD);
   Timer startup_hazard_timer;
   Timer_Init(&startup_hazard_timer);
@@ -122,7 +131,7 @@ void Setup() {
   Indicator_Init(&indicator, &power, &lighting, &led3, &led4);
 
   RangeSensor_Init(&range_sensor, TRIG_FRONT_GPIO_Port, TRIG_FRONT_Pin, ECHO_FRONT_GPIO_Port, ECHO_FRONT_Pin,
-                    TRIG_REAR_GPIO_Port, TRIG_REAR_Pin, ECHO_REAR_GPIO_Port, ECHO_REAR_Pin);
+                   TRIG_REAR_GPIO_Port, TRIG_REAR_Pin, ECHO_REAR_GPIO_Port, ECHO_REAR_Pin);
 
   DigitalIn_Init(&button1, BUTTON1_GPIO_Port, BUTTON1_Pin);
   DigitalIn_Init(&button2, BUTTON2_GPIO_Port, BUTTON2_Pin);
@@ -132,13 +141,13 @@ void Setup() {
   bool calibrate_imu = DigitalIn_Read(&button2);
   // 較正モードで起動したことを即座に返す。特にIMUの静止較正は数秒かかるため、表示がないと
   // ボタンを認識したのか判断できない。各較正が終わった時点で消灯する
-  DigitalOut_Write(&led1, calibrate_steering);
+  DigitalOut_Write(&led2, calibrate_steering);
   DigitalOut_Write(&led2, calibrate_imu);
 
   // ステアリングモータ(USART2)・左後輪モータ(USART3)・右後輪モータ(UART4) のBLDC MDと通信する
-  Serial_Init(&steering_serial, &huart2, 64);
-  Serial_Init(&rear_left_serial, &huart3, 64);
-  Serial_Init(&rear_right_serial, &huart4, 64);
+  Serial_Init(&steering_serial, &huart2, steering_serial_rx_buf, MD_SERIAL_RX_BUF_SIZE);
+  Serial_Init(&rear_left_serial, &huart3, rear_left_serial_rx_buf, MD_SERIAL_RX_BUF_SIZE);
+  Serial_Init(&rear_right_serial, &huart4, rear_right_serial_rx_buf, MD_SERIAL_RX_BUF_SIZE);
   Motors_Init(&motors, &steering_serial, &rear_left_serial, &rear_right_serial);
 
   // ボタン2を押しながら起動 → 静止キャリブレーションをやり直して Flash に保存する (数秒かかる)
@@ -162,18 +171,18 @@ void Setup() {
   if (calibrate_steering) Power_SetDrivePower(&power, 1);
   Steering_Init(&steering, &motors.steering, calibrate_steering);
   if (calibrate_steering) Power_SetDrivePower(&power, 0);
-  DigitalOut_Write(&led1, 0);
+  DigitalOut_Write(&led2, 0);
 
   Drive_Init(&drive, &motors, &encoder, &steering, &imu);
 
   // LD06 LiDAR (USART6, 230400bps)。
   // 回転が安定するまで数秒かかるが、その間は Lidar_IsOk() が偽になるだけで待つ必要はない
-  Serial_Init(&lidar_serial, &huart6, LIDAR_SERIAL_RX_BUF_SIZE);
+  Serial_Init(&lidar_serial, &huart6, lidar_serial_rx_buf, LIDAR_SERIAL_RX_BUF_SIZE);
   Lidar_Init(&lidar, &lidar_serial, &htim1, TIM_CHANNEL_1);
 
   // Raspberry Pi (USART1)。MD3系統の初期化が終わってから立ち上げることで、
   // 最初のテレメトリを送る時点でモータの状態が揃っている
-  Serial_Init(&ras_serial, &huart1, RAS_SERIAL_RX_BUF_SIZE);
+  Serial_Init(&ras_serial, &huart1, ras_serial_rx_buf, RAS_SERIAL_RX_BUF_SIZE);
   RasLink_Init(&ras_link, &ras_serial);
   Heartbeat_Init(&heartbeat, RAS_SIG_GPIO_Port, RAS_SIG_Pin);
 
@@ -221,6 +230,17 @@ static void UpdateSensors() {
   Imu_Update(&imu);
   RangeSensor_Update(&range_sensor);
   Lidar_Update(&lidar);
+
+  // IMU の I2C 復旧処理 (imu.c の Recover()) は ~190ms メインループをブロッキングする
+  // (docs/code_review_2026-08-21.md A-3)。この間ハートビートのポーリングも止まるため、
+  // 復旧直後にエッジを偶然取りこぼすと誤って緊急停止がラッチされうる。根本対策
+  // (Recover のステートマシン化) は工数が大きいため、応急処置として基準時刻だけ
+  // リセットしておく (実際の断線・Pi側の異常を見逃す窓ができるわけではない。
+  // ブロッキングしていた間はそもそも判定できていなかった時間なので、その分を
+  // 「途絶していない」として扱うだけ)
+  if (Imu_ConsumeRecoveryRan(&imu)) {
+    Heartbeat_ResetBaseline(&heartbeat);
+  }
 }
 
 void MainApp() {
@@ -244,15 +264,18 @@ void MainApp() {
     Drive_Update(&drive);
     Motors_Update(&motors);
 
-    // テレメトリは毎周期最新値に差し替え、実際の送信は RasLink 側で 50Hz に間引かれる
+    // Telemetry_Update 自体が内部で 50Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるため、
+    // 毎周期呼んでも問題ない。実際の送信は RasLink 側でさらにキューイングされる
     Telemetry_Update(&telemetry);
     Telemetry_PublishLidarSector(&telemetry);
     RasLink_Update(&ras_link);
 
-    // LED2 の点灯幅がループ1周の処理時間になる (オシロで余裕を見るため)
-    DigitalOut_Write(&led2, 1);
+    // LED1 (赤): Raspberry Pi との COMMAND 通信が途絶している間だけ点灯 (Vehicle が
+    // フェイルセーフへ落ちる基準 RasLink_IsCommandAlive() と同じ判定を流用)
+    DigitalOut_Write(&led1, !RasLink_IsCommandAlive(&ras_link));
+
+    // LED2 の点灯幅が「処理を終えてから次の周期まで空いているアイドル待ち時間」になる
     while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US);
-    DigitalOut_Write(&led2, 0);
     Timer_Reset(&control_interval_timer);
   }
 }

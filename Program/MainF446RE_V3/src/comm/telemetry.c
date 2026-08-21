@@ -38,6 +38,25 @@ static uint8_t BuildMdStatus(Telemetry* obj, int index) {
   return status;
 }
 
+// フォールトの新規発生を RasLink_Log で1回だけ上位へ通知する。TELEMETRY.flags のビットだけでは
+// 「いつ発生したか」が上位のポーリング頻度に依存してしまうため、エッジで明示的に知らせる
+static void LogNewFaults(Telemetry* obj, uint32_t faults) {
+  uint32_t new_faults = faults & ~obj->logged_faults;
+  if (new_faults & POWER_FAULT_DRIVE_OVERCURRENT) {
+    RasLink_Log(obj->ras_link, RAS_LOG_ERROR, "drive overcurrent fault (DRIVE_POWER latched off)");
+  }
+  if (new_faults & POWER_FAULT_SIGNAL_OVERCURRENT) {
+    RasLink_Log(obj->ras_link, RAS_LOG_ERROR, "signal overcurrent fault (power latched off)");
+  }
+  if (new_faults & POWER_FAULT_DRIVE_UNDERVOLTAGE) {
+    RasLink_Log(obj->ras_link, RAS_LOG_WARN, "drive battery undervoltage");
+  }
+  if (new_faults & POWER_FAULT_SIGNAL_UNDERVOLTAGE) {
+    RasLink_Log(obj->ras_link, RAS_LOG_WARN, "signal battery undervoltage");
+  }
+  obj->logged_faults = faults;
+}
+
 static uint32_t BuildFlags(Telemetry* obj) {
   uint32_t faults = Power_GetFaults(obj->power);
   uint32_t flags = (uint32_t)Vehicle_GetMode(obj->vehicle) & RAS_FLAG_MODE_MASK;
@@ -91,10 +110,18 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
     obj->md_comm_watch[i].ok = false;
     Timer_Init(&obj->md_comm_watch[i].timer);
   }
+  obj->logged_faults = POWER_FAULT_NONE;
+  Timer_Init(&obj->update_timer);
 }
 
 void Telemetry_Update(Telemetry* obj) {
+  // RasLink 側の実送信自体が50Hzに間引かれるので、ここでの組み立ても同じ周期に間引く
+  // (ADC読み・MD状態集計・BuildFlags()の全モジュール問い合わせを2kHzで回す必要はない)
+  if (Timer_ReadUs(&obj->update_timer) < RAS_TELEMETRY_INTERVAL_US) return;
+  Timer_Reset(&obj->update_timer);
+
   UpdateMdCommWatch(obj);
+  LogNewFaults(obj, Power_GetFaults(obj->power));
 
   const ImuData* imu_data = Imu_GetData(obj->imu);
   RasTelemetry telemetry;

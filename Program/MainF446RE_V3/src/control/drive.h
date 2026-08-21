@@ -57,16 +57,16 @@
 // ===========================================================================
 // 制御パラメータ
 // ===========================================================================
-#define DRIVE_SPEED_KP 0.2f  // 車速PIの比例ゲイン [Nm / (m/s)]
-#define DRIVE_SPEED_KI 0.2f  // 車速PIの積分ゲイン [Nm / (m/s) / s]
-#define DRIVE_SPEED_KD 0.0f  // 車速は微分ノイズが乗りやすいため既定では使わない
+#define DRIVE_SPEED_KP 0.25f  // 車速PIの比例ゲイン [Nm / (m/s)]
+#define DRIVE_SPEED_KI 0.5f   // 車速PIの積分ゲイン [Nm / (m/s) / s]
+#define DRIVE_SPEED_KD 0.0f   // 車速は微分ノイズが乗りやすいため既定では使わない
 
 // 1輪あたりのトルク上限 [Nm] (プロトコル上の絶対上限は ±3.2767)。
 // この値は指令のクランプに使うと同時に MD 側のトルク上限としても設定するため、
 // このマイコンのバグや通信異常で過大な指令が出ても最終段で頭打ちになる。
 // 上位が指令できる制動トルク (DRIVE_MAX_BRAKE_TORQUE_NM) もこの上限を超えないこと
-#define DRIVE_MAX_TORQUE_NM 0.125f
-#define DRIVE_MAX_SPEED_M_S 3.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
+#define DRIVE_MAX_TORQUE_NM 0.15f
+#define DRIVE_MAX_SPEED_M_S 5.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
 #define DRIVE_ANTIWINDUP_TT_S 0.10f  // TC/リミッタで飽和したときに積分を巻き戻す時定数 [s]
 
 // 停車: 目標車速がほぼ0かつ実車速もほぼ0のとき、指令を止めて自由回転させる (惰行)。
@@ -80,14 +80,41 @@
 // ===========================================================================
 // トラクションコントロール (TC) パラメータ
 // ===========================================================================
-#define DRIVE_TC_SLIP_THRESHOLD 0.12f  // これを超えるスリップ率からトルクを削り始める
-#define DRIVE_TC_CUT_GAIN 0.3f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
-#define DRIVE_TC_RECOVER_RATE 0.1f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
+#define DRIVE_TC_SLIP_THRESHOLD 0.2f   // これを超えるスリップ率からトルクを削り始める
+#define DRIVE_TC_CUT_GAIN 0.2f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
+#define DRIVE_TC_RECOVER_RATE 0.2f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
 #define DRIVE_TC_MIN_TORQUE_NM 0.005f  // 削り切っても完全には0にしない (再加速できなくなるため)
 #define DRIVE_TC_MIN_SPEED_M_S 0.25f   // これ以下の車速ではスリップ率が発散するのでTCを効かせない
 
 // ===========================================================================
-// フィルタ係数 (Drive_Update の呼び出し周期に依存する。1kHz 前提)
+// 片輪浮き対策 (Wheel Lift Guard) パラメータ
+// 上のTC (DRIVE_TC_*) は前輪基準速度に対する後輪個々のスリップ率で判定するため、
+// 基準速度が DRIVE_TC_MIN_SPEED_M_S 未満の低速域では機能しない。停止/低速からの
+// 片輪浮き急発進を捉えるため、前輪基準速度に依存しない「後輪左右速度差」で判定する
+// 経路を独立に追加する。実車のeLSD (電子制御LSD) と同じ役割分担:
+// 基準車速比較 (=上のTC) は両輪同時空転を、左右輪速度差 (=本機構) は片輪だけの
+// 異常を、それぞれ担当する。TC本体とは独立に上位からON/OFFできる (RasConfig 参照)。
+// ===========================================================================
+
+// 後輪左右の速度差 (ヨーレートで期待される差を差し引いた異常成分) がこれを超えたら、
+// 速い方 (浮いていると推定される輪) のトルク上限を削り始める [m/s]。
+// ★未実測: 正常なコーナリング・段差通過時に生じる残差 (ヨーレート補正の誤差・センサ
+// ノイズ) の最大値を実測し、それを上回る値に設定すること。当面は「確実に止める」側の
+// 低めの値から始める★
+#define DRIVE_WHEEL_LIFT_DIFF_THRESHOLD_M_S 0.35f
+
+#define DRIVE_WHEEL_LIFT_CUT_GAIN 1.2f                       // 超過差分あたりのトルク削減速度 [Nm/s / (m/s)]
+#define DRIVE_WHEEL_LIFT_RECOVER_RATE DRIVE_TC_RECOVER_RATE  // 上のTCと同じ回復速度
+
+// 後輪周速がこれを超えたら、基準速度・左右差に関係なく即座にトルク上限を0にする
+// (最終防波堤)。SlipRatio() は DRIVE_TC_MIN_SPEED_M_S 未満で無効化されるため、これは
+// 左右速度差検知と違うレイヤーの保護として持たせてある。
+// ★未実測: 最大舵角・最高速旋回時の外輪速度を実機で確認し、誤介入しない下限まで詰めること★
+#define DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S (DRIVE_MAX_SPEED_M_S * 1.5f)  // 4.5 m/s
+
+// ===========================================================================
+// フィルタ係数 (Drive_Update の呼び出し周期に依存する。実際は 500us = 2kHz で呼ばれるが、
+// 係数から逆算した帯域は約1.6Hzで結果的に妥当なため、値自体はそのままにしてある)
 // ===========================================================================
 #define DRIVE_LPF_K_FRONT 0.995f  // 前輪エンコーダ速度 (ADC量子化ノイズが大きいので強めに)
 #define DRIVE_LPF_K_REAR 0.90f    // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め)
@@ -107,6 +134,8 @@ typedef struct {
   Timer timer;
 
   bool enabled;
+  bool tc_enabled;                // 既定は有効。無効時は tc_limit_left/right_nm を上限固定にする
+  bool wheel_lift_guard_enabled;  // 既定は有効。TC本体とは独立にON/OFF可能
   float target_speed_m_s;
   bool brake_active;      // 真の間は車速制御を止めて制動トルクだけを出す
   float brake_torque_nm;  // 制動時に後輪各輪へ掛ける制動トルク [Nm] (常に正)
@@ -130,6 +159,9 @@ typedef struct {
   float slip_right;             // 右後輪のスリップ率
   float tc_limit_left_nm;       // TCが動的に決めた左輪のトルク上限
   float tc_limit_right_nm;      // TCが動的に決めた右輪のトルク上限
+  // 片輪浮き対策が動的に決めた各輪のトルク上限 (tc_limit_*とは独立、最終的にminを取る)
+  float wheel_lift_limit_left_nm;
+  float wheel_lift_limit_right_nm;
   // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
   // Drive_SetBrake) のときは制動トルクを負値として入れるので、符号を見れば駆動しているのか
   // 押さえているのかが上位から区別できる
@@ -146,7 +178,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
 /**
  * @brief 車速制御・TC を1周期分実行し、後輪MDへのトルク指令を更新する。
  * 実際の送信は Motors_Update が行うため、本関数の後に Motors_Update を呼ぶこと。
- * フィルタ係数が周期に依存するため、一定周期 (1kHz 想定) で呼ぶこと。
+ * フィルタ係数が周期に依存するため、一定周期 (500us = 2kHz 想定) で呼ぶこと。
  */
 void Drive_Update(Drive* obj);
 
@@ -178,6 +210,20 @@ void Drive_SetTorque(Drive* obj, bool on, float torque_nm);
  * 有効にしていても、IMU の実測ヨーレートが得られない間・低速時は介入しない。
  */
 void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled);
+
+/**
+ * @brief トラクションコントロール (TC本体、前輪基準スリップ率ベース) の有効/無効を
+ * 切り替える (既定は有効)。無効にすると各輪のトルク上限を常に DRIVE_MAX_TORQUE_NM に
+ * 固定し、スリップ率による削り込みを一切行わない。片輪浮き対策 (Drive_SetWheelLiftGuardEnabled)
+ * とは独立に切り替わる。
+ */
+void Drive_SetTractionControlEnabled(Drive* obj, bool enabled);
+
+/**
+ * @brief 片輪浮き対策 (後輪左右速度差の異常検知・絶対車輪速上限) の有効/無効を
+ * 切り替える (既定は有効)。トラクションコントロール (TC) 本体とは独立に切替可能。
+ */
+void Drive_SetWheelLiftGuardEnabled(Drive* obj, bool enabled);
 
 /**
  * @brief トルクベクタリングが今まさに左右へトルク差を付けているかを取得する。
@@ -226,9 +272,14 @@ float Drive_GetSlipLeft(const Drive* obj);
 float Drive_GetSlipRight(const Drive* obj);
 
 /**
- * @brief いずれかの後輪でTCが介入中かを取得する。
+ * @brief いずれかの後輪でTC(本体)が介入中かを取得する。
  */
 bool Drive_IsTractionControlActive(const Drive* obj);
+
+/**
+ * @brief いずれかの後輪で片輪浮き対策が介入中かを取得する (デバッグ・上位への報告用)。
+ */
+bool Drive_IsWheelLiftGuardActive(const Drive* obj);
 
 /**
  * @brief 実際にMDへ送った左輪トルク指令 [Nm] を取得する。

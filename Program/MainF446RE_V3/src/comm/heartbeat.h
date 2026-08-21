@@ -60,4 +60,12 @@ bool Heartbeat_HasEverBeenSeen(const Heartbeat* obj);
  */
 uint32_t Heartbeat_GetEdgeCount(const Heartbeat* obj);
 
+/**
+ * @brief 直近のエッジ時刻を現在時刻へ強制的に更新する (エッジ検出済みとしては数えない)。
+ * 他モジュールの長時間ブロッキング (例: IMU の I2C 復旧、docs/code_review_2026-08-21.md A-3)
+ * でエッジのポーリング自体ができなかった期間を、通信断とみなさないようにする応急処置用。
+ * 本来のエッジ検出を置き換えるものではないため、多用しないこと。
+ */
+void Heartbeat_ResetBaseline(Heartbeat* obj);
+
 #endif  // HEARTBEAT_H_

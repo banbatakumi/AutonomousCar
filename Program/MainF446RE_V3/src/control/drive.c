@@ -71,6 +71,15 @@ static void UpdateObservations(Drive* obj) {
   obj->slip_right = SlipRatio(obj->rear_speed_right_m_s, reference_right);
 }
 
+// 後輪左右の速度差から、ヨーレートで期待される差 (旋回による正常な差) を差し引いた異常成分。
+// 正なら左輪が右輪に対して異常に速い (左が浮いている可能性)、負なら右輪側。
+// 前輪基準速度を使わないため、DRIVE_TC_MIN_SPEED_M_S 未満の低速域でも機能する。
+static float WheelSpeedDiffAnomaly(const Drive* obj) {
+  float diff_raw = obj->rear_speed_left_m_s - obj->rear_speed_right_m_s;
+  float diff_expected = -obj->yaw_rate_rad_s * DRIVE_REAR_TRACK_M;  // reference_left - reference_right相当
+  return diff_raw - diff_expected;
+}
+
 // ---------------------------------------------------------------------------
 // 出力
 // ---------------------------------------------------------------------------
@@ -134,18 +143,37 @@ static float UpdateTractionLimit(float limit_nm, float slip, float dt_s) {
   return Constrain(limit_nm, DRIVE_TC_MIN_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
 }
 
+// 片輪浮き対策: 左右速度差の異常成分が超過している間はトルク上限を削り、収まったら
+// ゆっくり戻す。上のUpdateTractionLimitと同じ「即座に削って緩やかに復帰」型だが、
+// 状態(limit_nm)・しきい値ともTC本体とは独立に持つ (RasConfig経由で個別にON/OFFする要件のため)。
+static float UpdateWheelLiftLimit(float limit_nm, float excess, float dt_s) {
+  if (excess > 0.0f) {
+    limit_nm -= DRIVE_WHEEL_LIFT_CUT_GAIN * excess * dt_s;
+  } else {
+    limit_nm += DRIVE_WHEEL_LIFT_RECOVER_RATE * dt_s;
+  }
+  return Constrain(limit_nm, 0.0f, DRIVE_MAX_TORQUE_NM);
+}
+
+// 後輪周速が物理的にあり得ない絶対値まで来たら、基準速度や左右差の判定結果に関係なく
+// 即座に上限を0にする (最終防波堤)
+static float ApplyWheelLiftHardSpeedLimit(float limit_nm, float wheel_speed_m_s) {
+  if (Abs(wheel_speed_m_s) > DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S) return 0.0f;
+  return limit_nm;
+}
+
 // 左右トルク差を、両輪ともTCの上限に収まる範囲へ丸める。
 //
 // 先に丸めるのが肝で、丸めずに配分してから左右を個別にクランプすると削られ方が左右非対称に
 // なり、要求したのと違うヨーモーメントが残る (総駆動トルクが大きいほど片側だけが削られる)。
 // left = (total - d)/2, right = (total + d)/2 を各輪の上限に収める条件から d の範囲が決まる。
-static float LimitDiffTorque(const Drive* obj, float total_nm, float diff_nm) {
-  float min_by_left = total_nm - 2.0f * obj->tc_limit_left_nm;
-  float min_by_right = -2.0f * obj->tc_limit_right_nm - total_nm;
+static float LimitDiffTorque(float limit_left_nm, float limit_right_nm, float total_nm, float diff_nm) {
+  float min_by_left = total_nm - 2.0f * limit_left_nm;
+  float min_by_right = -2.0f * limit_right_nm - total_nm;
   float min_diff = min_by_left > min_by_right ? min_by_left : min_by_right;
 
-  float max_by_left = total_nm + 2.0f * obj->tc_limit_left_nm;
-  float max_by_right = 2.0f * obj->tc_limit_right_nm - total_nm;
+  float max_by_left = total_nm + 2.0f * limit_left_nm;
+  float max_by_right = 2.0f * limit_right_nm - total_nm;
   float max_diff = max_by_left < max_by_right ? max_by_left : max_by_right;
 
   // 総駆動トルクだけで既に両輪の上限を超えている場合は差を付ける余力が無い。
@@ -184,13 +212,15 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   PID_Init(&obj->speed_pid, DRIVE_SPEED_KP, DRIVE_SPEED_KI, DRIVE_SPEED_KD,
            -DRIVE_MAX_TOTAL_TORQUE_NM, DRIVE_MAX_TOTAL_TORQUE_NM);
   TorqueVectoring_Init(&obj->tv, DRIVE_WHEELBASE_M, DRIVE_REAR_TRACK_M, DRIVE_REAR_WHEEL_RADIUS_M);
-  LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0);
-  LPF_Init(&obj->lpf_front_right, DRIVE_LPF_K_FRONT, 0.0);
-  LPF_Init(&obj->lpf_rear_left, DRIVE_LPF_K_REAR, 0.0);
-  LPF_Init(&obj->lpf_rear_right, DRIVE_LPF_K_REAR, 0.0);
+  LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0f);
+  LPF_Init(&obj->lpf_front_right, DRIVE_LPF_K_FRONT, 0.0f);
+  LPF_Init(&obj->lpf_rear_left, DRIVE_LPF_K_REAR, 0.0f);
+  LPF_Init(&obj->lpf_rear_right, DRIVE_LPF_K_REAR, 0.0f);
   Timer_Init(&obj->timer);
 
   obj->enabled = false;
+  obj->tc_enabled = true;
+  obj->wheel_lift_guard_enabled = true;
   obj->target_speed_m_s = 0.0f;
   obj->brake_active = false;
   obj->brake_torque_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
@@ -208,6 +238,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->slip_right = 0.0f;
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+  obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
+  obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->torque_left_nm = 0.0f;
   obj->torque_right_nm = 0.0f;
 }
@@ -244,8 +276,41 @@ void Drive_Update(Drive* obj) {
     requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
   }
 
-  obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s);
-  obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s);
+  if (obj->tc_enabled) {
+    obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s);
+    obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s);
+  } else {
+    obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
+    obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+  }
+
+  if (obj->wheel_lift_guard_enabled) {
+    // WheelSpeedDiffAnomaly() の符号は「左が右より速いか」を表すだけで、前進中の解釈
+    // (anomaly>0 なら左が浮いている) は後退中は逆転する (後退中は浮いて空転している輪ほど
+    // より負に大きい値になるため)。進行方向で正規化してから前進基準の符号判定を再利用する
+    float dir = (obj->rear_speed_left_m_s + obj->rear_speed_right_m_s) >= 0.0f ? 1.0f : -1.0f;
+    float anomaly = WheelSpeedDiffAnomaly(obj) * dir;
+    float excess = Abs(anomaly) - DRIVE_WHEEL_LIFT_DIFF_THRESHOLD_M_S;
+    // 異常に速い方だけを絞る。excessが負のとき (=閾値未満) は両輪とも回復させる
+    float excess_left = anomaly > 0.0f ? excess : -1.0f;
+    float excess_right = anomaly < 0.0f ? excess : -1.0f;
+    obj->wheel_lift_limit_left_nm = UpdateWheelLiftLimit(obj->wheel_lift_limit_left_nm, excess_left, dt_s);
+    obj->wheel_lift_limit_right_nm = UpdateWheelLiftLimit(obj->wheel_lift_limit_right_nm, excess_right, dt_s);
+    obj->wheel_lift_limit_left_nm =
+        ApplyWheelLiftHardSpeedLimit(obj->wheel_lift_limit_left_nm, obj->rear_speed_left_m_s);
+    obj->wheel_lift_limit_right_nm =
+        ApplyWheelLiftHardSpeedLimit(obj->wheel_lift_limit_right_nm, obj->rear_speed_right_m_s);
+  } else {
+    obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
+    obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+  }
+
+  // TC本体と片輪浮き対策はそれぞれ独立に上限を決めるため、実際に使う上限は両者の小さい方
+  float effective_limit_left_nm =
+      obj->tc_limit_left_nm < obj->wheel_lift_limit_left_nm ? obj->tc_limit_left_nm : obj->wheel_lift_limit_left_nm;
+  float effective_limit_right_nm = obj->tc_limit_right_nm < obj->wheel_lift_limit_right_nm
+                                        ? obj->tc_limit_right_nm
+                                        : obj->wheel_lift_limit_right_nm;
 
   // トルクベクタリングには実測ヨーレートが要る。IMU が使えないときの代用値 (舵角からの
   // 幾何計算) は規範モデルとほぼ同じ式なので、偏差が常に0付近になり制御として成立しない
@@ -254,7 +319,7 @@ void Drive_Update(Drive* obj) {
     diff_nm = TorqueVectoring_Update(&obj->tv, obj->vehicle_speed_m_s,
                                      Steering_GetRoadWheelAngleRad(obj->steering),
                                      obj->yaw_rate_rad_s, dt_s);
-    diff_nm = LimitDiffTorque(obj, requested_total_nm, diff_nm);
+    diff_nm = LimitDiffTorque(effective_limit_left_nm, effective_limit_right_nm, requested_total_nm, diff_nm);
     TorqueVectoring_ReportApplied(&obj->tv, diff_nm, dt_s);
   } else {
     TorqueVectoring_Reset(&obj->tv);
@@ -264,8 +329,8 @@ void Drive_Update(Drive* obj) {
   float left_nm = (requested_total_nm - diff_nm) * 0.5f;
   float right_nm = (requested_total_nm + diff_nm) * 0.5f;
 
-  left_nm = Constrain(left_nm, -obj->tc_limit_left_nm, obj->tc_limit_left_nm);
-  right_nm = Constrain(right_nm, -obj->tc_limit_right_nm, obj->tc_limit_right_nm);
+  left_nm = Constrain(left_nm, -effective_limit_left_nm, effective_limit_left_nm);
+  right_nm = Constrain(right_nm, -effective_limit_right_nm, effective_limit_right_nm);
 
   left_nm = ApplyOverspeedLimit(obj, left_nm);
   right_nm = ApplyOverspeedLimit(obj, right_nm);
@@ -293,10 +358,20 @@ void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled) {
   TorqueVectoring_SetEnabled(&obj->tv, enabled);
 }
 
+void Drive_SetTractionControlEnabled(Drive* obj, bool enabled) {
+  obj->tc_enabled = enabled;
+}
+
+void Drive_SetWheelLiftGuardEnabled(Drive* obj, bool enabled) {
+  obj->wheel_lift_guard_enabled = enabled;
+}
+
 void Drive_Enable(Drive* obj) {
   PID_Reset(&obj->speed_pid);
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+  obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
+  obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   TorqueVectoring_Reset(&obj->tv);
   Timer_Reset(&obj->timer);
   obj->enabled = true;
@@ -327,6 +402,11 @@ float Drive_GetSlipRight(const Drive* obj) {
 
 bool Drive_IsTractionControlActive(const Drive* obj) {
   return obj->tc_limit_left_nm < DRIVE_MAX_TORQUE_NM || obj->tc_limit_right_nm < DRIVE_MAX_TORQUE_NM;
+}
+
+bool Drive_IsWheelLiftGuardActive(const Drive* obj) {
+  return obj->wheel_lift_limit_left_nm < DRIVE_MAX_TORQUE_NM ||
+         obj->wheel_lift_limit_right_nm < DRIVE_MAX_TORQUE_NM;
 }
 
 bool Drive_IsTorqueVectoringActive(const Drive* obj) {

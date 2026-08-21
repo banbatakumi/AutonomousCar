@@ -47,6 +47,14 @@ typedef struct {
 
   // [左後輪, 右後輪, ステアリング] の順 (プロトコルの配列インデックス規約に合わせる)
   MdCommWatch md_comm_watch[3];
+
+  // 直近に RasLink_Log で通知済みの PowerFault ビット。新規に立ったビットだけを通知するのに使う
+  uint32_t logged_faults;
+
+  // Telemetry_Update() 自体の実行間引き用。RasLink 側の実送信は50Hzへ間引かれるのに対し
+  // Telemetry_Update() は2kHzで呼ばれ、ADC読み・MD状態集計など送信に使われない分まで
+  // 毎周期実行していたため、送信周期 (RAS_TELEMETRY_INTERVAL_US) に合わせて内部でも間引く
+  Timer update_timer;
 } Telemetry;
 
 /**
@@ -58,7 +66,8 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
 
 /**
  * @brief MD の通信監視を進め、次に送る TELEMETRY / STATS の内容を最新値に差し替える。
- * 制御周期ごとに呼ぶこと (実際の送信は RasLink 側で間引かれる)。
+ * 制御周期ごとに呼んでよい (実際の組み立て・送信は内部で RAS_TELEMETRY_INTERVAL_US = 50Hz に
+ * 間引かれるため、毎周期呼んでも2kHzで重い処理が走るわけではない)。
  */
 void Telemetry_Update(Telemetry* obj);
 

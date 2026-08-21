@@ -16,6 +16,8 @@ static volatile uint32_t g_micros;      // 積算した経過時間 [us]
 static volatile uint32_t g_last_cycle;  // 最後に換算した時点の CYCCNT
 static uint32_t g_cycles_per_us = 180;  // Micros_Init() で実クロックから求める
 
+uint32_t Timer_GetCyclesPerUs(void) { return g_cycles_per_us; }
+
 void Micros_Init(void) {
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;

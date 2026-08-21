@@ -21,7 +21,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 安全層は 4段: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 → ④`COMMAND` 途絶 100ms で自動ブレーキ。緊急停止はラッチし、**ハートビートが戻っている状態でボタン2を押すまで解除しない**。緊急停止で駆動電源を切らないのは、切るとMDが制動をかけられず惰行して停止距離が伸びるため。
 - トルクベクタリング (`src/control/torque_vectoring.c`) は実装済みで既定は有効。ただしゲイン・安定係数・横加速度上限はいずれも机上値のままで、**実機での符号確認とチューニングが未了**。
 - 前後超音波 (`RangeSensor`) を使った自動停止が v0.7 で追加された。上位が `COMMAND.flags` bit7 (`RAS_CMD_FLAG_AUTO_STOP`) を立てている間だけ有効になり、進行方向 (`target_speed`/`torque_mode` 中は `target_torque` の符号) の超音波距離が `VEHICLE_AUTO_STOP_DISTANCE_CM` (20cm) 未満で最大制動トルクをかける (`IsAutoStopObstacleAhead()` / `ApplyRasCommand()`, `src/vehicle/vehicle.c`)。`brake` (bit1) が同時に立っていればそちらが優先。ラッチせず、しきい値を上回れば自動解除 (ヒステリシス無し)。実機での検知距離・チャタリングの検証は未了。
-- **未実装**: TC/TV/速度PIゲインの実行時変更 (該当 `param_id` は `RAS_CONFIG_UNKNOWN_PARAM` を返す)、LiDAR を使った下位側の緊急停止・自動停止 (実装するなら `src/sensing/lidar.c` に360点の最小距離配列を足すこと。現状の自動停止は前後超音波のみが対象)。
+- TC/TV の実行時 ON/OFF が v0.8 で追加された。`COMMAND.flags` は8bit全部埋まっているため `CONFIG_SET`/`CONFIG_GET` (`param_id = 0x0010` = TC, `0x0020` = TV) 経由。`RasConfig.tc_enabled`/`tv_enabled` (既定 true) を `ApplyRasCommand()` が毎周期 `Drive_SetTractionControlEnabled()`/`Drive_SetTorqueVectoringEnabled()` へ橋渡しする。**実機での動作検証は未了**。
+- 片輪浮き対策 (Wheel Lift Guard) が v0.9 で追加された (`src/control/drive.c`)。既存TC (前輪基準のスリップ率) は基準速度が `DRIVE_TC_MIN_SPEED_M_S` (0.25 m/s) 未満だと無効化されるため、停止/低速からの片輪浮き急発進を捉えられない。この機構は前輪基準速度を使わず「後輪左右の速度差 (ヨーレートで期待される差を差し引いた異常成分)」で判定するため低速域でも機能する。速い方 (浮いていると推定される輪) だけトルク上限を絞り、加えて後輪周速の絶対上限による最終防波堤を持つ。TC本体とは独立したリミッタ状態を持ち、両者の小さい方を実効上限として使う。上位からの ON/OFF は TC本体と独立に `CONFIG_SET`/`CONFIG_GET` (`param_id = 0x0050`) 経由、`RasConfig.wheel_lift_guard_enabled` (既定 true) を `ApplyRasCommand()` が毎周期 `Drive_SetWheelLiftGuardEnabled()` へ橋渡しする。しきい値 (`DRIVE_WHEEL_LIFT_DIFF_THRESHOLD_M_S`, `DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S`) は実測前の机上値で、**実機での動作検証・しきい値のチューニングは未了**。
+- **未実装**: TC/TV/速度PI/片輪浮き対策の各ゲイン自体の実行時変更 (`param_id` 0x0011/0x0021/0x0030/0x0031/0x0051 は `RAS_CONFIG_UNKNOWN_PARAM` を返す)、LiDAR を使った下位側の緊急停止・自動停止 (実装するなら `src/sensing/lidar.c` に360点の最小距離配列を足すこと。現状の自動停止は前後超音波のみが対象)。
 
 ---
 

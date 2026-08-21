@@ -2,9 +2,9 @@
 #define __SERIAL_H__
 
 #include <stdbool.h>
-#include <stdlib.h>
 #include <string.h>
 
+#include "timer.h"
 #include "usart.h"
 
 typedef struct {
@@ -13,46 +13,59 @@ typedef struct {
   uint16_t rxTop;
   uint16_t rxBtm;
   uint16_t rxBufSize;
+  uint32_t rxLastPollUs;  // オーバーラン検出用、最後に Serial_Available を呼んだ時刻
+  bool rxOverrun;         // Serial_Available が検出し、Serial_Read が消費して読み捨てに使うフラグ
 } Serial;
 
-// インスタンス生成
-static inline void Serial_Init(Serial* self, UART_HandleTypeDef* huart, uint16_t rxBufSize) {
+// インスタンス生成。rxBuf には rxBufSize バイト以上の static バッファを渡すこと
+// (組み込みではヒープを使わない方が確実なため、所有権は呼び出し側に置く)。
+static inline void Serial_Init(Serial* self, UART_HandleTypeDef* huart, uint8_t* rxBuf, uint16_t rxBufSize) {
   self->huart = huart;
-  self->rxBuf = (uint8_t*)malloc(rxBufSize);
+  self->rxBuf = rxBuf;
   memset(self->rxBuf, 0, rxBufSize);
   self->rxTop = 0;
   self->rxBtm = 0;
   self->rxBufSize = rxBufSize;
+  self->rxLastPollUs = Micros();
+  self->rxOverrun = false;
   HAL_UART_Receive_DMA(huart, self->rxBuf, rxBufSize);
 }
 
-// データ受信可否
+// データ受信可否。DMAが読み出し位置を追い越した(オーバーラン)かも合わせて判定する。
+// rxTop/rxBtmの差分だけを見ると mod 演算の結果は常に [0, rxBufSize-1] に収まってしまい、
+// 「一度も追い越されていない」のか「何周も追い越された」のかを区別できない
+// (周回数ぶんの情報が失われる)。そのため何バイト流れたかではなく、「バッファを満たすのに
+// 要する時間より長くポーリング間隔が空いたか」を実時間 (Micros) で判定する。
+// 呼び出し側 (RasLink_Update 等) が制御周期ごとに呼ぶ前提 (でなければこの判定自体が狂う)
 static inline bool Serial_Available(Serial* self) {
+  uint32_t baud = self->huart->Init.BaudRate;
+  uint32_t now = Micros();
+  uint32_t elapsed_us = now - self->rxLastPollUs;
+  self->rxLastPollUs = now;
+  if (baud != 0) {
+    uint32_t fill_time_us = (uint32_t)(((uint64_t)self->rxBufSize * 10000000ULL) / baud);
+    if (elapsed_us > fill_time_us) self->rxOverrun = true;
+  }
+
   uint16_t rxTop = self->rxBufSize - self->huart->hdmarx->Instance->NDTR;
-  return rxTop != self->rxBtm;
+  return rxTop != self->rxBtm || self->rxOverrun;
 }
 
 // 1バイト受信
 static inline uint8_t Serial_Read(Serial* self) {
+  if (self->rxOverrun) {
+    // 積んだままの分は既に上書きされて信頼できないので、最新位置まで読み捨てて追いつく
+    // (誤った過去データで制御するより、フレームを1つ失う方が安全)
+    self->rxBtm = self->rxBufSize - self->huart->hdmarx->Instance->NDTR;
+    self->rxOverrun = false;
+  }
   uint16_t rxTop = self->rxBufSize - self->huart->hdmarx->Instance->NDTR;
   if (rxTop == self->rxBtm) {
     return 0;
   }
-  if (((rxTop + self->rxBufSize - self->rxBtm) % self->rxBufSize) == 0) {
-    return 0;
-  }
-  uint16_t available = (rxTop + self->rxBufSize - self->rxBtm) % self->rxBufSize;
-  if (available > self->rxBufSize - 1) {
-    self->rxBtm = (rxTop + self->rxBufSize - 1) % self->rxBufSize;
-  }
   uint8_t data = self->rxBuf[self->rxBtm];
   self->rxBtm = (self->rxBtm + 1) % self->rxBufSize;
   return data;
-}
-
-// 1バイト送信
-static inline void Serial_WriteByte(Serial* self, uint8_t data) {
-  HAL_UART_Transmit_DMA(self->huart, &data, 1);
 }
 
 // 複数バイト送信
@@ -86,6 +99,8 @@ static inline void Serial_Reset(Serial* self) {
   memset(self->rxBuf, 0, self->rxBufSize);
   HAL_UART_Receive_DMA(self->huart, self->rxBuf, self->rxBufSize);
   self->rxBtm = 0;
+  self->rxLastPollUs = Micros();
+  self->rxOverrun = false;
 }
 
 #endif

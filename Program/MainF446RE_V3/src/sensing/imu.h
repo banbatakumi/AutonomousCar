@@ -66,6 +66,10 @@ typedef struct {
   bool data_valid;
   uint32_t last_sample_tick;
   uint32_t last_recovery_tick;
+  // I2C復旧 (Recover()) が走ったら立つ。復旧処理自体が~190msメインループを
+  // ブロッキングするため、Imu_ConsumeRecoveryRan() で消費してハートビートの
+  // 誤タイムアウト対策に使うことを想定している (docs/code_review_2026-08-21.md A-3)
+  bool recovery_ran;
 } Imu;
 
 /**
@@ -92,6 +96,14 @@ const ImuData *Imu_GetData(const Imu *obj);
  * @brief 有効なデータを取得できているか (センサ未接続・通信断のときは false)。
  */
 bool Imu_IsReady(const Imu *obj);
+
+/**
+ * @brief I2C復旧 (Recover()) が前回の呼び出し以降に走ったかを取得し、フラグをクリアする。
+ * Recover() は ~190ms メインループをブロッキングするため (docs/code_review_2026-08-21.md A-3)、
+ * 呼び出し側はこれを見てハートビート監視の基準時刻をリセットするなど、ブロッキングを
+ * 前提としていない他モジュールの誤動作を避ける用途に使うこと。
+ */
+bool Imu_ConsumeRecoveryRan(Imu *obj);
 
 /**
  * @brief 現在の向きを yaw = 0 とし直す。
