@@ -25,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0009u
+#define RAS_PROTOCOL_VERSION 0x000Au
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -145,10 +145,10 @@ typedef enum {
 // 「OK を返すが何も変わらない」より、対応していないことを Pi 側に伝える方が安全。
 // TC/TV の ON/OFF (0x0010/0x0020) はゲインではなく機能そのものの有効/無効なので v0.8 で対応した。
 // 片輪浮き対策 (0x0050) の ON/OFF は v0.9 で新設。TC本体 (0x0010) とは独立に切替できる。
+// 最大速度・最大加速度・最大舵角 (旧 0x0001-0x0003) は v0.10 で廃止した。上位から変更する
+// 実用上の必要が無かったため、Drive/Steering 側の固定定数 (DRIVE_MAX_SPEED_M_S /
+// DRIVE_MAX_ACCEL_M_S2 / Steering_GetMaxRoadWheelAngleRad()) に一本化してある
 typedef enum {
-  RAS_PARAM_MAX_SPEED = 0x0001,     // [m/s]
-  RAS_PARAM_MAX_ACCEL = 0x0002,     // [m/s^2]
-  RAS_PARAM_MAX_STEER = 0x0003,     // [rad] 路面舵角
   RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
   RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
   RAS_PARAM_LIDAR_FORMAT = 0x0040,  // RasLidarFormat
@@ -162,9 +162,6 @@ typedef enum {
 } RasLidarFormat;
 
 typedef struct {
-  float max_speed_m_s;
-  float max_accel_m_s2;
-  float max_steer_rad;
   bool tc_enabled;
   bool tv_enabled;
   bool wheel_lift_guard_enabled;  // v0.9 で新設。既定は有効

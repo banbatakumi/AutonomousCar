@@ -88,7 +88,7 @@ static void ApplyRasCommand(Vehicle* obj) {
 
   float target_speed_m_s = 0.0f;
   if (armed && !braking && !torque_mode) {
-    target_speed_m_s = Constrain(command->target_speed_m_s, -config->max_speed_m_s, config->max_speed_m_s);
+    target_speed_m_s = command->target_speed_m_s;  // 最終クランプは Drive_SetTargetSpeed が行う
   }
   // 制動トルクの指定が無い (0) ときは最大で掛ける。0 をそのまま「制動トルク0」と解釈すると、
   // 上位がフィールドを埋め忘れただけでブレーキが効かなくなる。自動停止はできるだけ強く
@@ -97,23 +97,13 @@ static void ApplyRasCommand(Vehicle* obj) {
                                ? command->brake_torque_nm
                                : DRIVE_MAX_BRAKE_TORQUE_NM;
 
-  float target_steer_rad =
-      Constrain(command->target_steer_rad, -config->max_steer_rad, config->max_steer_rad);
+  float target_steer_rad = Constrain(command->target_steer_rad, -Steering_GetMaxRoadWheelAngleRad(),
+                                     Steering_GetMaxRoadWheelAngleRad());
 
-  // 上限0は「制限なし」ではなく「動かない」になってしまうため、0 のときは設定値で代替する
-  float accel_limit = command->accel_limit_m_s2 > 0.0f ? command->accel_limit_m_s2 : config->max_accel_m_s2;
-  accel_limit = Constrain(accel_limit, 0.01f, config->max_accel_m_s2);
   float steer_rate_limit = command->steer_rate_limit_rad_s > 0.0f
                                ? command->steer_rate_limit_rad_s
                                : Steering_GetMaxRoadWheelAngleRad();
 
-  // ブレーキ中・torque_mode 中は Drive 側が車速制御ごと迂回するので目標車速をレート制限で
-  // 下げる意味が無い。ここで0に落としておかないと、離した瞬間に迂回前の目標車速へ復帰してしまう
-  if (braking || torque_mode) obj->applied_speed_m_s = 0.0f;
-
-  float speed_step = accel_limit * dt_s;
-  obj->applied_speed_m_s +=
-      Constrain(target_speed_m_s - obj->applied_speed_m_s, -speed_step, speed_step);
   float steer_step = steer_rate_limit * dt_s;
   obj->applied_steer_rad +=
       Constrain(target_steer_rad - obj->applied_steer_rad, -steer_step, steer_step);
@@ -122,7 +112,10 @@ static void ApplyRasCommand(Vehicle* obj) {
   if (armed && !Drive_IsEnabled(obj->drive)) Drive_Enable(obj->drive);
   if (!armed && Drive_IsEnabled(obj->drive)) Drive_Disable(obj->drive);
 
-  Drive_SetTargetSpeed(obj->drive, obj->applied_speed_m_s);
+  // 加速度レート制限 (DRIVE_MAX_ACCEL_M_S2 が上限) は Drive 側が持つため、生の目標車速を
+  // そのまま渡す。上限0は「制限なし」ではなく「動かない」になってしまうため、
+  // 0 のときは Drive_SetTargetSpeed 側で DRIVE_MAX_ACCEL_M_S2 に読み替える
+  Drive_SetTargetSpeed(obj->drive, target_speed_m_s, command->accel_limit_m_s2);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
   Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
@@ -175,8 +168,7 @@ static void ApplyFailsafe(Vehicle* obj) {
   // 加速度・舵角速度のレート制限が1周期だけ無効化されたのと同じ状態になる
   Timer_Reset(&obj->command_rate_timer);
 
-  obj->applied_speed_m_s = 0.0f;
-  Drive_SetTargetSpeed(obj->drive, 0.0f);
+  Drive_SetTargetSpeed(obj->drive, 0.0f, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   // brake が torque_mode より優先されるため現状は表面化しないが、安全層は他モジュールの
   // 内部優先順位に依存せず自己完結させるべきなので明示的に torque_mode も解除しておく
@@ -201,7 +193,6 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->estop_reset_button = estop_reset_button;
   obj->range_sensor = range_sensor;
 
-  obj->applied_speed_m_s = 0.0f;
   obj->applied_steer_rad = 0.0f;
   Timer_Init(&obj->command_rate_timer);
 

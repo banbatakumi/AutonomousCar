@@ -3,10 +3,6 @@
 #include <string.h>
 
 #include "crc16.h"
-// 設定値のクランプ範囲を車両の物理的な限界に合わせるため、車速・舵角の上限だけ参照する。
-// 制御そのものには関与しない
-#include "drive.h"
-#include "steering.h"
 
 // PONG の t_pong_tx_us は「実際に1バイト目が線に出る直前」に埋めないと、送信キューでの
 // 待ち時間がそのまま時刻同期のオフセット推定にバイアスとして乗る (LiDAR セクタ1つで
@@ -36,12 +32,6 @@
 #define RAS_LEN_PING 4
 #define RAS_LEN_CONFIG_GET 2
 #define RAS_LEN_VERSION_REQ 0
-
-// 設定値の既定値と可動範囲
-#define RAS_DEFAULT_MAX_SPEED_M_S 3.0f
-#define RAS_DEFAULT_MAX_ACCEL_M_S2 3.0f
-#define RAS_LIMIT_MAX_SPEED_M_S DRIVE_MAX_SPEED_M_S
-#define RAS_LIMIT_MAX_ACCEL_M_S2 20.0f
 
 typedef enum {
   RX_SYNC1 = 0,
@@ -404,18 +394,6 @@ static void HandlePing(RasLink* obj, const uint8_t* p, uint32_t rx_time_us) {
 static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* applied) {
   float clamped;
   switch (param_id) {
-    case RAS_PARAM_MAX_SPEED:
-      clamped = Clampf(value, 0.0f, RAS_LIMIT_MAX_SPEED_M_S);
-      obj->config.max_speed_m_s = clamped;
-      break;
-    case RAS_PARAM_MAX_ACCEL:
-      clamped = Clampf(value, 0.01f, RAS_LIMIT_MAX_ACCEL_M_S2);
-      obj->config.max_accel_m_s2 = clamped;
-      break;
-    case RAS_PARAM_MAX_STEER:
-      clamped = Clampf(value, 0.0f, Steering_GetMaxRoadWheelAngleRad());
-      obj->config.max_steer_rad = clamped;
-      break;
     case RAS_PARAM_TC_ENABLE:
       obj->config.tc_enabled = (value != 0.0f);
       clamped = obj->config.tc_enabled ? 1.0f : 0.0f;
@@ -444,12 +422,6 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
 static float ReadConfig(const RasLink* obj, uint16_t param_id, bool* known) {
   *known = true;
   switch (param_id) {
-    case RAS_PARAM_MAX_SPEED:
-      return obj->config.max_speed_m_s;
-    case RAS_PARAM_MAX_ACCEL:
-      return obj->config.max_accel_m_s2;
-    case RAS_PARAM_MAX_STEER:
-      return obj->config.max_steer_rad;
     case RAS_PARAM_TC_ENABLE:
       return obj->config.tc_enabled ? 1.0f : 0.0f;
     case RAS_PARAM_TV_ENABLE:
@@ -621,9 +593,6 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
   QueueInit(&obj->tx_queue[RAS_TXQ_INFO], obj->tx_info_storage, sizeof(obj->tx_info_storage));
   QueueInit(&obj->tx_queue[RAS_TXQ_LOG], obj->tx_log_storage, sizeof(obj->tx_log_storage));
 
-  obj->config.max_speed_m_s = RAS_DEFAULT_MAX_SPEED_M_S;
-  obj->config.max_accel_m_s2 = RAS_DEFAULT_MAX_ACCEL_M_S2;
-  obj->config.max_steer_rad = Steering_GetMaxRoadWheelAngleRad();
   obj->config.tc_enabled = true;
   obj->config.tv_enabled = true;
   obj->config.wheel_lift_guard_enabled = true;

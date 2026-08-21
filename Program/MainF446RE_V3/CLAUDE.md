@@ -23,6 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 前後超音波 (`RangeSensor`) を使った自動停止が v0.7 で追加された。上位が `COMMAND.flags` bit7 (`RAS_CMD_FLAG_AUTO_STOP`) を立てている間だけ有効になり、進行方向 (`target_speed`/`torque_mode` 中は `target_torque` の符号) の超音波距離が `VEHICLE_AUTO_STOP_DISTANCE_CM` (20cm) 未満で最大制動トルクをかける (`IsAutoStopObstacleAhead()` / `ApplyRasCommand()`, `src/vehicle/vehicle.c`)。`brake` (bit1) が同時に立っていればそちらが優先。ラッチせず、しきい値を上回れば自動解除 (ヒステリシス無し)。実機での検知距離・チャタリングの検証は未了。
 - TC/TV の実行時 ON/OFF が v0.8 で追加された。`COMMAND.flags` は8bit全部埋まっているため `CONFIG_SET`/`CONFIG_GET` (`param_id = 0x0010` = TC, `0x0020` = TV) 経由。`RasConfig.tc_enabled`/`tv_enabled` (既定 true) を `ApplyRasCommand()` が毎周期 `Drive_SetTractionControlEnabled()`/`Drive_SetTorqueVectoringEnabled()` へ橋渡しする。**実機での動作検証は未了**。
 - 片輪浮き対策 (Wheel Lift Guard) が v0.9 で追加された (`src/control/drive.c`)。既存TC (前輪基準のスリップ率) は基準速度が `DRIVE_TC_MIN_SPEED_M_S` (0.25 m/s) 未満だと無効化されるため、停止/低速からの片輪浮き急発進を捉えられない。この機構は前輪基準速度を使わず「後輪左右の速度差 (ヨーレートで期待される差を差し引いた異常成分)」で判定するため低速域でも機能する。速い方 (浮いていると推定される輪) だけトルク上限を絞り、加えて後輪周速の絶対上限による最終防波堤を持つ。TC本体とは独立したリミッタ状態を持ち、両者の小さい方を実効上限として使う。上位からの ON/OFF は TC本体と独立に `CONFIG_SET`/`CONFIG_GET` (`param_id = 0x0050`) 経由、`RasConfig.wheel_lift_guard_enabled` (既定 true) を `ApplyRasCommand()` が毎周期 `Drive_SetWheelLiftGuardEnabled()` へ橋渡しする。しきい値 (`DRIVE_WHEEL_LIFT_DIFF_THRESHOLD_M_S`, `DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S`) は実測前の机上値で、**実機での動作検証・しきい値のチューニングは未了**。
+- 最大速度・最大加速度・最大舵角の上位からの実行時変更 (`RAS_PARAM_MAX_SPEED`/`MAX_ACCEL`/`MAX_STEER`, `param_id = 0x0001`〜`0x0003`) は v0.10 で廃止した。上位から変更する実用上の必要が無いため、`DRIVE_MAX_SPEED_M_S`/`DRIVE_MAX_ACCEL_M_S2` (`src/control/drive.h`) と `Steering_GetMaxRoadWheelAngleRad()` の固定値に一本化した。目標車速の加速度レート制限もこれに伴い `src/vehicle/vehicle.c` から `src/control/drive.c` (`Drive_SetTargetSpeed()` / `Drive_Update()`) へ移した。`COMMAND.accel_limit_m_s2`/`steer_rate_limit_rad_s` (毎指令ごとにこの上限より緩いレートを指定できるフィールド) はそのまま残っている。舵角のレート制限 (`steer_rate_limit_rad_s` 由来) は引き続き `vehicle.c` が持つ。
 - **未実装**: TC/TV/速度PI/片輪浮き対策の各ゲイン自体の実行時変更 (`param_id` 0x0011/0x0021/0x0030/0x0031/0x0051 は `RAS_CONFIG_UNKNOWN_PARAM` を返す)、LiDAR を使った下位側の緊急停止・自動停止 (実装するなら `src/sensing/lidar.c` に360点の最小距離配列を足すこと。現状の自動停止は前後超音波のみが対象)。
 
 ---
@@ -52,9 +53,10 @@ src/app/        エントリポイント兼コンポジションルート。全�
                 **制御ロジックそのものは書かない** (書きたくなったら該当する src/ のモジュールへ)
 src/vehicle/    車両統括 (Vehicle_*)。上位の指令・緊急停止・フェイルセーフのどれを車両へ適用するかを
                 毎周期決める層で、優先順位は ①緊急停止ラッチ中 → ②COMMAND 生存中は上位指令 →
-                ③それ以外はフェイルセーフ。上位の目標値を accel_limit / steer_rate_limit で
-                レート制限してから Drive / Steering へ渡すのもここ (急な指令変化でタイヤを
-                滑らせたり据え切りでラックを痛めないため)。ハートビート断による緊急停止の
+                ③それ以外はフェイルセーフ。上位の目標舵角を steer_rate_limit でレート制限
+                してから Steering へ渡すのもここ (急な指令変化で据え切りでラックを痛めない
+                ため)。目標車速側の加速度レート制限 (accel_limit) は Drive 側
+                (`Drive_SetTargetSpeed`) が持つ。ハートビート断による緊急停止の
                 ラッチ・解除、クラクション、上位指令由来の灯火 (ブレーキ灯・前照灯・パッシング)
                 もこの層が持つ。個々のアクチュエータ制御には踏み込まない
 src/hmi/        機体の状態を人間へ見せる表示 (Indicator_*)。電源電圧を LED3/LED4 の「呼吸」周期に
@@ -118,8 +120,7 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
                 TorqueVectoring_ReportApplied() に返し、出せなかった分の積分を巻き戻す)
 src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、250000bps。
                 仕様は docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
-                docs/pi_uart_protocol_v0.5_delta.md / docs/pi_uart_protocol_v0.6_delta.md /
-                docs/pi_uart_protocol_v0.7_delta.md。
+                docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.10_delta.md。
                 フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と
                 パケットの解釈・組み立てだけを担い、走行制御には関与しない。受信した COMMAND は
                 RasLink_GetCommand()、送るテレメトリは RasLink_SetTelemetry() に物理量のまま渡す

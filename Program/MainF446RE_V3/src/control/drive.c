@@ -221,6 +221,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->enabled = false;
   obj->tc_enabled = true;
   obj->wheel_lift_guard_enabled = true;
+  obj->speed_setpoint_m_s = 0.0f;
+  obj->accel_limit_m_s2 = DRIVE_MAX_ACCEL_M_S2;
   obj->target_speed_m_s = 0.0f;
   obj->brake_active = false;
   obj->brake_torque_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
@@ -257,8 +259,10 @@ void Drive_Update(Drive* obj) {
     return;
   }
   // ブレーキは車速制御より優先する。PIに「目標0」を与えるだけでは制動力がゲイン任せになり、
-  // 上位が指定した制動トルクどおりに効かないため、指令中はPIごと迂回する
+  // 上位が指定した制動トルクどおりに効かないため、指令中はPIごと迂回する。
+  // 離脱時に停止中の目標車速から急発進しないよう、ここでも目標車速をレート制限の起点0へ戻す
   if (obj->brake_active) {
+    obj->target_speed_m_s = 0.0f;
     SendBrake(obj, obj->brake_torque_nm);
     return;
   }
@@ -266,13 +270,20 @@ void Drive_Update(Drive* obj) {
   float requested_total_nm;
   if (obj->torque_mode_active) {
     // 車速PIを迂回して指令トルクをそのまま使う。離脱時に積分が溜まったまま復帰しないよう
-    // SendBrake と同様に毎周期リセットしておく
+    // SendBrake と同様に毎周期リセットしておく。目標車速もブレーキ同様0へ戻す
+    obj->target_speed_m_s = 0.0f;
     PID_Reset(&obj->speed_pid);
     requested_total_nm = obj->manual_torque_nm * 2.0f;
-  } else if (IsStandstill(obj)) {
-    CoastStandstill(obj);
-    return;
   } else {
+    // 目標車速を accel_limit_m_s2 で speed_setpoint_m_s へ近づける (急な指令変化でタイヤを
+    // 滑らせないため)。IsStandstill() はこのレート制限後の値で判定する
+    float speed_step = obj->accel_limit_m_s2 * dt_s;
+    obj->target_speed_m_s +=
+        Constrain(obj->speed_setpoint_m_s - obj->target_speed_m_s, -speed_step, speed_step);
+    if (IsStandstill(obj)) {
+      CoastStandstill(obj);
+      return;
+    }
     requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
   }
 
@@ -340,8 +351,11 @@ void Drive_Update(Drive* obj) {
   SendTorque(obj, left_nm, right_nm);
 }
 
-void Drive_SetTargetSpeed(Drive* obj, float m_s) {
-  obj->target_speed_m_s = Constrain(m_s, -DRIVE_MAX_SPEED_M_S, DRIVE_MAX_SPEED_M_S);
+void Drive_SetTargetSpeed(Drive* obj, float m_s, float accel_limit_m_s2) {
+  obj->speed_setpoint_m_s = Constrain(m_s, -DRIVE_MAX_SPEED_M_S, DRIVE_MAX_SPEED_M_S);
+  obj->accel_limit_m_s2 = accel_limit_m_s2 > 0.0f
+                               ? Constrain(accel_limit_m_s2, 0.01f, DRIVE_MAX_ACCEL_M_S2)
+                               : DRIVE_MAX_ACCEL_M_S2;
 }
 
 void Drive_SetBrake(Drive* obj, bool on, float torque_nm) {
@@ -372,6 +386,9 @@ void Drive_Enable(Drive* obj) {
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+  // 無効化中に古い目標車速が残っていると再有効化した瞬間に急発進するため、0から始める
+  obj->speed_setpoint_m_s = 0.0f;
+  obj->target_speed_m_s = 0.0f;
   TorqueVectoring_Reset(&obj->tv);
   Timer_Reset(&obj->timer);
   obj->enabled = true;
@@ -379,6 +396,7 @@ void Drive_Enable(Drive* obj) {
 
 void Drive_Disable(Drive* obj) {
   obj->enabled = false;
+  obj->speed_setpoint_m_s = 0.0f;
   obj->target_speed_m_s = 0.0f;
   TorqueVectoring_Reset(&obj->tv);
   Coast(obj);

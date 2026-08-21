@@ -51,9 +51,9 @@ typedef struct {
   DigitalIn* estop_reset_button;
   RangeSensor* range_sensor;
 
-  // 上位から指令された目標値を accel_limit / steer_rate_limit でレート制限したあとの値で、
-  // 実際に Drive / Steering へ渡している量。テレメトリの steer_cmd もこれを返す
-  float applied_speed_m_s;
+  // 上位から指令された目標舵角を steer_rate_limit でレート制限したあとの値で、
+  // 実際に Steering へ渡している量。テレメトリの steer_cmd もこれを返す
+  // (目標車速の加速度レート制限は Drive 側 (Drive_SetTargetSpeed) が持つ)
   float applied_steer_rad;
   Timer command_rate_timer;
 

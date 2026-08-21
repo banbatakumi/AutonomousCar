@@ -67,6 +67,9 @@
 // 上位が指令できる制動トルク (DRIVE_MAX_BRAKE_TORQUE_NM) もこの上限を超えないこと
 #define DRIVE_MAX_TORQUE_NM 0.15f
 #define DRIVE_MAX_SPEED_M_S 5.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
+// 目標車速の変化をこの加速度でレート制限する (急な指令変化でタイヤを滑らせないため)。
+// 上位 (Drive_SetTargetSpeed) が指定できる加速度制限の上限もこの値になる
+#define DRIVE_MAX_ACCEL_M_S2 3.0f
 #define DRIVE_ANTIWINDUP_TT_S 0.10f  // TC/リミッタで飽和したときに積分を巻き戻す時定数 [s]
 
 // 停車: 目標車速がほぼ0かつ実車速もほぼ0のとき、指令を止めて自由回転させる (惰行)。
@@ -136,6 +139,11 @@ typedef struct {
   bool enabled;
   bool tc_enabled;                // 既定は有効。無効時は tc_limit_left/right_nm を上限固定にする
   bool wheel_lift_guard_enabled;  // 既定は有効。TC本体とは独立にON/OFF可能
+  // 上位から指令された生の目標車速 (レート制限前)。Drive_SetTargetSpeed が更新する
+  float speed_setpoint_m_s;
+  float accel_limit_m_s2;  // speed_setpoint_m_s へ向かう加速度の上限 [m/s^2]
+  // レート制限後、実際にPIへ渡している目標車速。Drive_Update が毎周期 speed_setpoint_m_s
+  // へ accel_limit_m_s2 で近づける
   float target_speed_m_s;
   bool brake_active;      // 真の間は車速制御を止めて制動トルクだけを出す
   float brake_torque_nm;  // 制動時に後輪各輪へ掛ける制動トルク [Nm] (常に正)
@@ -183,9 +191,13 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
 void Drive_Update(Drive* obj);
 
 /**
- * @brief 目標車速 [m/s] を設定する (負値で後退)。
+ * @brief 目標車速 [m/s] を設定する (負値で後退)。急な指令変化でタイヤを滑らせないよう、
+ * Drive_Update が毎周期 accel_limit_m_s2 で実際の目標車速をこの値へ近づける
+ * (段階的な変化は Drive_Update 側の責務で、ここでは目的値を差し替えるだけ)。
+ * accel_limit_m_s2 が正なら DRIVE_MAX_ACCEL_M_S2 を上限にクランプして使う。
+ * 0以下を渡すと DRIVE_MAX_ACCEL_M_S2 で代替する (上限0を「制限なし」と誤解させないため)。
  */
-void Drive_SetTargetSpeed(Drive* obj, float m_s);
+void Drive_SetTargetSpeed(Drive* obj, float m_s, float accel_limit_m_s2);
 
 /**
  * @brief ブレーキを掛ける/離す。on の間は車速制御 (PI) を止め、後輪MDを制動モードに切り替えて
