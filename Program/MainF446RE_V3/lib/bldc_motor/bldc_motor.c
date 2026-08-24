@@ -80,6 +80,7 @@ static void ParseStatusFrame(BldcMotor* obj) {
   obj->iq_a = iq_raw * BLDC_MOTOR_RX_SCALE_IQ;
 
   obj->applied_torque_limit_raw = obj->rx_body[8];
+  obj->data_valid = true;
 }
 
 static void Receive(BldcMotor* obj) {
@@ -134,6 +135,7 @@ void BldcMotor_Init(BldcMotor* obj, Serial* serial) {
   obj->angular_speed_rad_s = 0.0f;
   obj->iq_a = 0.0f;
   obj->applied_torque_limit_raw = 0;
+  obj->data_valid = false;
 }
 
 void BldcMotor_Update(BldcMotor* obj) {
@@ -172,6 +174,23 @@ void BldcMotor_SetTorqueLimitNm(BldcMotor* obj, float nm) {
 
 void BldcMotor_Stop(BldcMotor* obj) {
   obj->tx_enabled = false;
+}
+
+void BldcMotor_Reset(BldcMotor* obj) {
+  obj->is_running = false;
+  obj->is_overcurrent = false;
+  obj->is_overheat = false;
+  obj->is_voltage_out_of_range = false;
+  obj->temperature_c = 0;
+  obj->mech_angle_rad = 0.0f;
+  obj->angular_speed_rad_s = 0.0f;
+  obj->iq_a = 0.0f;
+  obj->applied_torque_limit_raw = 0;
+  obj->data_valid = false;
+}
+
+bool BldcMotor_IsDataValid(const BldcMotor* obj) {
+  return obj->data_valid;
 }
 
 bool BldcMotor_IsRunning(const BldcMotor* obj) {

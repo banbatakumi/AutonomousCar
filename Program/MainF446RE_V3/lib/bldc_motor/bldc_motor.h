@@ -83,6 +83,10 @@ typedef struct {
   float angular_speed_rad_s;     // モータ角速度 [rad/s]
   float iq_a;                    // q軸電流 [A]
   uint8_t applied_torque_limit_raw;  // MDが適用中のトルク上限 (エコーバック)
+  bool data_valid;  // 状態フレームを一度でも受信済みか。BldcMotor_Reset() で偽に落ちる
+                    // (受信由来フィールドが「ゼロという実測値」なのか「無効値」なのかを
+                    // 区別できないと、ゼロ点からの相対値を計算する上位側 (例:Steering) が
+                    // 誤った値を作ってしまうため)
 } BldcMotor;
 
 /**
@@ -143,6 +147,25 @@ void BldcMotor_SetTorqueLimitNm(BldcMotor* obj, float nm);
  * (MDのプロトコルに明示的な停止コマンドが無いため)。設定値の再送も併せて止まる。
  */
 void BldcMotor_Stop(BldcMotor* obj);
+
+/**
+ * @brief MDからの状態フレーム由来の情報 (status/temperature/theta/speed/iq/applied_torque_limit)
+ * を初期値へリセットし、data_valid を偽にする。MDへの給電が切れている (DRIVE_POWER OFF) 間、
+ * MDが状態フレームを送ってこないため何もしなければ最後に受信した値を保持し続け、給電が
+ * 切れていることに気付かず古い角度・電流値を現在値だと誤認しうる (幽霊値)。
+ * 呼び出し側が給電状態を把握して都度呼ぶこと。指令 (tx_*) と受信統計
+ * (rx_count/rx_error_count) はここではリセットしない。
+ */
+void BldcMotor_Reset(BldcMotor* obj);
+
+/**
+ * @brief 状態フレームを一度でも受信済み (＝各種取得値が実測値) かを取得する。
+ * BldcMotor_Reset() を呼んだ直後は偽になり、次に状態フレームを受信するまで偽のまま。
+ * ゼロ点からの相対値を計算する上位側 (例: Steering) は、これが偽の間は生値をそのまま
+ * 使わず無効値として扱うこと (でないとリセットされた0とセンター点との差分が実際の
+ * 角度であるかのように計算されてしまう)。
+ */
+bool BldcMotor_IsDataValid(const BldcMotor* obj);
 
 /**
  * @brief MDが停止モードでないか (直近の状態フレームより) を取得する。

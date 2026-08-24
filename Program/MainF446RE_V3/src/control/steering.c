@@ -74,6 +74,9 @@ void Steering_SetAngleRad(Steering* obj, float angle_rad) {
 }
 
 float Steering_GetAngleRad(const Steering* obj) {
+  // 給電が切れている間はMDの機械角がリセットされて0固定になり、中心点との差分をそのまま
+  // 取ると「中心点ぶんズレた角度」という誤った値になる。有効な受信データが無い間は0を返す
+  if (!BldcMotor_IsDataValid(obj->motor)) return 0.0f;
   return STEERING_DIRECTION_SIGN * GapRadians(BldcMotor_GetMechAngle(obj->motor), obj->center_rad);
 }
 

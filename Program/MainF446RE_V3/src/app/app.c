@@ -262,7 +262,7 @@ void MainApp() {
 
     Vehicle_Update(&vehicle);
     Drive_Update(&drive);
-    Motors_Update(&motors);
+    Motors_Update(&motors, Power_IsDriveOn(&power));
 
     // Telemetry_Update 自体が内部で 50Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるため、
     // 毎周期呼んでも問題ない。実際の送信は RasLink 側でさらにキューイングされる
