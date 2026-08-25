@@ -74,7 +74,17 @@ typedef struct {
   uint32_t last_packet_us;
   uint32_t sector_count;       // 組み立てが完了したセクタの累積数
   uint32_t sector_drop_count;  // 取り出される前に上書きしてしまったセクタ数
+
+  // Lidar_TakeReadySector() による取り出しとは独立に保持する、1度ビンごとの直近距離。
+  // 自動停止などの安全判定がテレメトリ送信の消費タイミングに左右されないようにするために持つ
+  uint16_t point_distance_mm[360];              // 0 = 無効
+  uint32_t sector_update_us[LIDAR_SECTOR_NUM];  // 各セクタの最終更新時刻
 } Lidar;
+
+typedef struct {
+  uint16_t fresh_count;  // 窓内で直近 LIDAR_TIMEOUT_US 以内に更新されたビンの数
+  uint16_t hit_count;    // さらに max_distance_cm 以内だったビンの数
+} LidarRoiResult;
 
 /**
  * @brief LiDAR を初期化する。serial には LD06 が繋がった USART6 (230400bps) を、
@@ -99,6 +109,16 @@ const LidarSector* Lidar_TakeReadySector(Lidar* obj);
  * @brief LiDAR から正常にパケットを受信できているかを取得する。
  */
 bool Lidar_IsOk(const Lidar* obj);
+
+/**
+ * @brief center_deg ± half_width_deg の角度窓を、距離 max_distance_cm 以内かどうかで走査する。
+ * fresh_count が0なら窓内に新しいデータが無い(死角・センサ不調)ことを示し、呼び出し側は
+ * 他のセンサへフォールバックすること。
+ * 注意: このモジュールはセンサ基準角度をそのまま保持しており(冒頭コメント参照)、0度(前方)・
+ * 180度(後方)以外は左右が鏡像になる。center_deg は 0 または 180 付近でのみ安全に使えること。
+ */
+LidarRoiResult Lidar_QueryRoi(const Lidar* obj, float center_deg, float half_width_deg,
+                              float max_distance_cm);
 
 /**
  * @brief 回転モータのデューティを設定する (0.0-1.0)。回転数の調整用。

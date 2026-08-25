@@ -42,18 +42,59 @@ static void UpdateLidarPower(Vehicle* obj, bool want_on) {
   }
 }
 
-// 実際の進行方向 (前輪エンコーダから推定した実車速) の超音波距離が
-// VEHICLE_AUTO_STOP_DISTANCE_CM 未満かを見る。逆方向のセンサは見ないため、
-// 例えば前方に障害物があっても後退はできる。
+// 車速から物理的に導かれる制動距離 (反応・処理遅延分 + 制動で止まるまでの距離) に、
+// 上位が直接指定した安全マージン (RasConfig.auto_stop_margin_cm) を加えた
+// 動的停止距離 [cm] を返す
+static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
+  float v = (speed_m_s >= 0.0f) ? speed_m_s : -speed_m_s;
+  float physical_cm =
+      (v * VEHICLE_AUTO_STOP_DELAY_S + (v * v) / (2.0f * DRIVE_MAX_ACCEL_M_S2)) * 100.0f;
+  return physical_cm + config->auto_stop_margin_cm;
+}
+
+// 実際の進行方向 (前輪エンコーダから推定した実車速) について、動的停止距離以内に障害物が
+// あるかを見る。逆方向のセンサは見ないため、例えば前方に障害物があっても後退はできる。
 // 上位が指令した target_speed/target_torque の符号ではなく実車速を使うのは、
 // 「前進中に後退を指令」した瞬間でも実車はまだ前進しており、その一瞬に後方センサへ
-// 切り替わって前方の障害物を見失う窓ができるのを避けるため
-static bool IsAutoStopObstacleAhead(Vehicle* obj) {
-  float direction = Drive_GetVehicleSpeed(obj->drive);
-  float dist_cm = direction >= 0.0f
-                      ? RangeSensor_GetFrontDistanceFilteredCm(obj->range_sensor)
-                      : RangeSensor_GetRearDistanceFilteredCm(obj->range_sensor);
-  return dist_cm >= 0.0f && dist_cm < VEHICLE_AUTO_STOP_DISTANCE_CM;
+// 切り替わって前方の障害物を見失う窓ができるのを避けるため。
+//
+// ただし実車速が VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S 未満 (ほぼ静止) のときは
+// desired_direction (上位が指令した方向) にフォールバックする。停止中は実車速の符号が
+// 定まらず常に非負 (>=0.0) と評価されて前方判定に固定されてしまい、速度制御モードでは
+// 自動停止が braking=true にすると target_speed が常に0へクランプされて実車速も
+// 永久に0のままになる (前方に障害物・後方は空いていても後退できないデッドロック) ため
+//
+// センサはいずれも車体先端(バンパー)より内側に付いているため、しきい値
+// (d_stop / VEHICLE_AUTO_STOP_ULTRASONIC_NEAR_CM) 側に取付オフセットを足して、
+// 「車体先端から障害物まで」を基準に判定する (VEHICLE_AUTO_STOP_*_OFFSET_CM 参照)
+static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
+                                    float desired_direction) {
+  float speed = Drive_GetVehicleSpeed(obj->drive);
+  float abs_speed = (speed >= 0.0f) ? speed : -speed;
+  bool forward = (abs_speed > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S)
+                     ? (speed >= 0.0f)
+                     : (desired_direction >= 0.0f);
+  float d_stop_cm = AutoStopDistanceCm(speed, config);
+  float lidar_center_deg = forward ? 0.0f : 180.0f;
+  float lidar_offset_cm = forward ? VEHICLE_AUTO_STOP_LIDAR_FRONT_OFFSET_CM
+                                   : VEHICLE_AUTO_STOP_LIDAR_REAR_OFFSET_CM;
+  float us_offset_cm = forward ? VEHICLE_AUTO_STOP_ULTRASONIC_FRONT_OFFSET_CM
+                                : VEHICLE_AUTO_STOP_ULTRASONIC_REAR_OFFSET_CM;
+
+  LidarRoiResult roi = Lidar_QueryRoi(obj->lidar, lidar_center_deg,
+                                      VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_DEG,
+                                      d_stop_cm + lidar_offset_cm);
+  bool lidar_fresh = roi.fresh_count > 0;
+  bool lidar_hit = roi.hit_count >= VEHICLE_AUTO_STOP_LIDAR_MIN_POINTS;
+
+  float us_dist_cm = forward ? RangeSensor_GetFrontDistanceFilteredCm(obj->range_sensor)
+                              : RangeSensor_GetRearDistanceFilteredCm(obj->range_sensor);
+  bool us_near_hit = us_dist_cm >= 0.0f &&
+                     us_dist_cm < (VEHICLE_AUTO_STOP_ULTRASONIC_NEAR_CM + us_offset_cm);
+  bool us_fallback_hit = !lidar_fresh && us_dist_cm >= 0.0f &&
+                         us_dist_cm < (d_stop_cm + us_offset_cm);
+
+  return lidar_hit || us_near_hit || us_fallback_hit;
 }
 
 // 上位の指令を車両へ適用する。目標値そのものではなく、加速度・舵角速度の上限で
@@ -83,7 +124,11 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
   bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
 
-  obj->auto_stop_active = armed && auto_stop_enabled && IsAutoStopObstacleAhead(obj);
+  // 静止時の前後判定フォールバック用。torque_mode なら target_torque、そうでなければ
+  // target_speed の符号を「これから進もうとしている方向」として使う
+  float desired_direction = torque_mode ? command->target_torque_nm : command->target_speed_m_s;
+  obj->auto_stop_active =
+      armed && auto_stop_enabled && IsAutoStopObstacleAhead(obj, config, desired_direction);
   bool braking = cmd_braking || obj->auto_stop_active;
 
   float target_speed_m_s = 0.0f;
@@ -182,7 +227,7 @@ static void ApplyFailsafe(Vehicle* obj) {
 
 void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steering,
                   Lighting* lighting, Power* power, Heartbeat* heartbeat, Buzzer* buzzer,
-                  DigitalIn* estop_reset_button, RangeSensor* range_sensor) {
+                  DigitalIn* estop_reset_button, RangeSensor* range_sensor, Lidar* lidar) {
   obj->ras_link = ras_link;
   obj->drive = drive;
   obj->steering = steering;
@@ -192,6 +237,7 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->buzzer = buzzer;
   obj->estop_reset_button = estop_reset_button;
   obj->range_sensor = range_sensor;
+  obj->lidar = lidar;
 
   obj->applied_steer_rad = 0.0f;
   Timer_Init(&obj->command_rate_timer);

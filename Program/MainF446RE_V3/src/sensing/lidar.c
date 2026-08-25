@@ -32,6 +32,12 @@ static void FinishSector(Lidar* obj) {
   obj->ready = obj->building;
   obj->has_ready = true;
   obj->sector_count++;
+
+  uint8_t sector_idx = obj->building.sector_idx;
+  for (int i = 0; i < LIDAR_POINTS_PER_SECTOR; i++) {
+    obj->point_distance_mm[sector_idx * LIDAR_POINTS_PER_SECTOR + i] = obj->building.distance_mm[i];
+  }
+  obj->sector_update_us[sector_idx] = obj->building_last_us;
 }
 
 // 1点をビンへ置く。同じビンに既に点があれば、ビン中心に近い方を残す
@@ -112,6 +118,23 @@ const LidarSector* Lidar_TakeReadySector(Lidar* obj) {
 bool Lidar_IsOk(const Lidar* obj) {
   if (obj->ld06.rx_count == 0) return false;
   return (uint32_t)(Micros() - obj->last_packet_us) < LIDAR_TIMEOUT_US;
+}
+
+LidarRoiResult Lidar_QueryRoi(const Lidar* obj, float center_deg, float half_width_deg,
+                              float max_distance_cm) {
+  LidarRoiResult result = {0, 0};
+  uint32_t now = Micros();
+  int half = (int)(half_width_deg + 0.5f);
+  int center = (int)(center_deg + 0.5f);
+  for (int offset = -half; offset <= half; offset++) {
+    int bin = (center + offset + 360) % 360;
+    uint8_t sector_idx = (uint8_t)(bin / LIDAR_DEG_PER_SECTOR);
+    if ((uint32_t)(now - obj->sector_update_us[sector_idx]) >= LIDAR_TIMEOUT_US) continue;
+    result.fresh_count++;
+    uint16_t mm = obj->point_distance_mm[bin];
+    if (mm != 0 && (float)mm / 10.0f <= max_distance_cm) result.hit_count++;
+  }
+  return result;
 }
 
 void Lidar_SetMotorDuty(Lidar* obj, float duty) {

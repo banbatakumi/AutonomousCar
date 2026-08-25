@@ -440,6 +440,10 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
       obj->config.lidar_format = (uint8_t)(clamped + 0.5f);
       clamped = (float)obj->config.lidar_format;
       break;
+    case RAS_PARAM_AUTO_STOP_MARGIN_CM:
+      clamped = Clampf(value, RAS_AUTO_STOP_MARGIN_MIN_CM, RAS_AUTO_STOP_MARGIN_MAX_CM);
+      obj->config.auto_stop_margin_cm = clamped;
+      break;
     default:
       *applied = 0.0f;
       return RAS_CONFIG_UNKNOWN_PARAM;
@@ -459,6 +463,8 @@ static float ReadConfig(const RasLink* obj, uint16_t param_id, bool* known) {
       return obj->config.wheel_lift_guard_enabled ? 1.0f : 0.0f;
     case RAS_PARAM_LIDAR_FORMAT:
       return (float)obj->config.lidar_format;
+    case RAS_PARAM_AUTO_STOP_MARGIN_CM:
+      return obj->config.auto_stop_margin_cm;
     default:
       break;
   }
@@ -631,6 +637,7 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
   obj->config.tv_enabled = true;
   obj->config.wheel_lift_guard_enabled = true;
   obj->config.lidar_format = RAS_LIDAR_FORMAT_STANDARD;
+  obj->config.auto_stop_margin_cm = RAS_AUTO_STOP_MARGIN_DEFAULT_CM;
 
   uint32_t now = Micros();
   obj->last_telemetry_us = now;

@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x000Bu
+#define RAS_PROTOCOL_VERSION 0x000Cu
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -85,9 +85,12 @@ typedef enum {
 // 立っている間は車速PIを迂回し、target_torque を後輪へ直接指令する。brake と同時に
 // 立っていたら brake を優先する (Drive_Update 側の優先順位で解決する)。v0.6 で新設
 #define RAS_CMD_FLAG_TORQUE_MODE (1u << 6)
-// 立っている間、前後超音波 (RangeSensor) が進行方向に VEHICLE_AUTO_STOP_DISTANCE_CM 未満を
-// 検知したら最大制動トルクで自動停止する (src/vehicle/vehicle.c)。下りている間は従来通り
-// 上位の指令のみに従う。v0.7 で新設
+// 立っている間、進行方向の障害物までの距離が車速から計算した動的停止距離
+// (d_stop = v・t_delay + v²/2a_max + マージン。マージンは RAS_PARAM_AUTO_STOP_MARGIN_CM で
+// cm単位で直接指定) を下回ったら最大制動トルクで自動停止する (src/vehicle/vehicle.c)。判定は前後LiDARの
+// セーフティゾーン(角度×距離のROI内点数)を主に用い、超音波は LiDAR が死角・欠測のときの
+// フォールバックと至近距離の独立トリガーの2役を担う。下りている間は従来通り上位の指令のみに
+// 従う。v0.7 で新設、v0.12 で動的停止距離・LiDAR併用へ拡張
 #define RAS_CMD_FLAG_AUTO_STOP (1u << 7)
 
 // COMMAND.flags bit3-4 (前照灯モード)
@@ -154,6 +157,7 @@ typedef enum {
   RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
   RAS_PARAM_LIDAR_FORMAT = 0x0040,  // RasLidarFormat
   RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)。v0.9 で新設
+  RAS_PARAM_AUTO_STOP_MARGIN_CM = 0x0060,  // 安全マージン [cm] を直接指定。v0.12 で新設
 } RasParamId;
 
 typedef enum {
@@ -162,11 +166,19 @@ typedef enum {
   RAS_LIDAR_FORMAT_COMPACT = 2,    // 0x09 LIDAR_SECTOR_C (u8 2cm/LSB)
 } RasLidarFormat;
 
+// 自動停止の動的停止距離 (d_stop = v・t_delay + v²/2a_max + マージン) に加える安全マージン
+// [cm] の範囲。物理項 (車速由来の制動距離) は車両特性として固定し、上位は margin のみを
+// 任意の値で直接指定できる (段階的なレベルではなく連続値)。範囲外はクランプする。v0.12 で新設
+#define RAS_AUTO_STOP_MARGIN_MIN_CM 0.0f
+#define RAS_AUTO_STOP_MARGIN_MAX_CM 100.0f
+#define RAS_AUTO_STOP_MARGIN_DEFAULT_CM 15.0f
+
 typedef struct {
   bool tc_enabled;
   bool tv_enabled;
   bool wheel_lift_guard_enabled;  // v0.9 で新設。既定は有効
   uint8_t lidar_format;
+  float auto_stop_margin_cm;  // v0.12 で新設。既定は RAS_AUTO_STOP_MARGIN_DEFAULT_CM
 } RasConfig;
 
 // 受信した COMMAND をデコードしたもの
