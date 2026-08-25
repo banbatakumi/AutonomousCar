@@ -156,8 +156,8 @@ void Telemetry_Update(Telemetry* obj) {
     telemetry.temp_c[i] = BldcMotor_GetTemperatureC(MotorByIndex(obj, i));
     telemetry.md_status[i] = BuildMdStatus(obj, i);
   }
-  // 右後輪MDの電流センサ極性が他2台と逆向きのため、報告直前に符号反転して揃える
-  telemetry.motor_current_a[1] = -telemetry.motor_current_a[1];
+  // 左後輪MDの電流センサ極性が他2台と逆向きのため、報告直前に符号反転して揃える
+  telemetry.motor_current_a[0] = -telemetry.motor_current_a[0];
   telemetry.temp_c[3] = (uint8_t)Constrain(Power_GetTemperatureC(obj->power), 0.0f, 255.0f);
 
   telemetry.torque_cmd_nm[0] = Drive_GetTorqueLeft(obj->drive);
