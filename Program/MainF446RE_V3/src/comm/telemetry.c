@@ -72,6 +72,7 @@ static uint32_t BuildFlags(Telemetry* obj) {
   if (Lidar_IsOk(obj->lidar)) flags |= RAS_FLAG_LIDAR_OK;
   if (Steering_IsCenterValid(obj->steering)) flags |= RAS_FLAG_STEER_CENTER_VALID;
   if (Vehicle_IsAutoStopActive(obj->vehicle)) flags |= RAS_FLAG_AUTO_STOP_ACTIVE;
+  if (Drive_IsSideBrakeEngaged(obj->drive)) flags |= RAS_FLAG_SIDE_BRAKE_ACTIVE;
 
   if (faults & POWER_FAULT_DRIVE_OVERCURRENT) flags |= RAS_FLAG_FAULT_DRIVE_OVERCURRENT;
   if (faults & POWER_FAULT_SIGNAL_OVERCURRENT) flags |= RAS_FLAG_FAULT_SIGNAL_OVERCURRENT;
@@ -162,6 +163,11 @@ void Telemetry_Update(Telemetry* obj) {
 
   telemetry.torque_cmd_nm[0] = Drive_GetTorqueLeft(obj->drive);
   telemetry.torque_cmd_nm[1] = Drive_GetTorqueRight(obj->drive);
+
+  telemetry.slip[0] = Drive_GetSlipLeft(obj->drive);
+  telemetry.slip[1] = Drive_GetSlipRight(obj->drive);
+  telemetry.tc_limit_nm[0] = Drive_GetTcLimitLeft(obj->drive);
+  telemetry.tc_limit_nm[1] = Drive_GetTcLimitRight(obj->drive);
 
   telemetry.batt_voltage_v[0] = Power_GetVoltageDriveFiltered(obj->power);
   telemetry.batt_voltage_v[1] = Power_GetVoltageSignalFiltered(obj->power);

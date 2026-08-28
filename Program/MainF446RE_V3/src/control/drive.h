@@ -66,7 +66,7 @@
 // このマイコンのバグや通信異常で過大な指令が出ても最終段で頭打ちになる。
 // 上位が指令できる制動トルク (DRIVE_MAX_BRAKE_TORQUE_NM) もこの上限を超えないこと
 #define DRIVE_MAX_TORQUE_NM 0.15f
-#define DRIVE_MAX_SPEED_M_S 5.0f     // これを超えたら正トルクを出さない (暴走時の最終防壁)
+#define DRIVE_MAX_SPEED_M_S 5.0f  // これを超えたら正トルクを出さない (暴走時の最終防壁)
 // 目標車速の変化をこの加速度でレート制限する (急な指令変化でタイヤを滑らせないため)。
 // 上位 (Drive_SetTargetSpeed) が指定できる加速度制限の上限もこの値になる
 #define DRIVE_MAX_ACCEL_M_S2 3.0f
@@ -84,10 +84,14 @@
 // トラクションコントロール (TC) パラメータ
 // ===========================================================================
 #define DRIVE_TC_SLIP_THRESHOLD 0.2f   // これを超えるスリップ率からトルクを削り始める
-#define DRIVE_TC_CUT_GAIN 0.2f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
-#define DRIVE_TC_RECOVER_RATE 0.2f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
+#define DRIVE_TC_CUT_GAIN 0.1f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
+#define DRIVE_TC_RECOVER_RATE 0.1f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
 #define DRIVE_TC_MIN_TORQUE_NM 0.005f  // 削り切っても完全には0にしない (再加速できなくなるため)
 #define DRIVE_TC_MIN_SPEED_M_S 0.25f   // これ以下の車速ではスリップ率が発散するのでTCを効かせない
+// スリップ率がしきい値を超えてから、実際にトルクを削り始めるまでの継続時間 [s]。
+// DRIVE_LPF_K_FRONT_TC を軽くしてもなお残るノイズ由来の一瞬の超過を無視するためのデバウンス。
+// 本物の空転は超過が持続するのでこの遅延はほぼ影響しない
+#define DRIVE_TC_SLIP_DEBOUNCE_S 0.03f
 
 // ===========================================================================
 // 片輪浮き対策 (Wheel Lift Guard) パラメータ
@@ -119,8 +123,16 @@
 // フィルタ係数 (Drive_Update の呼び出し周期に依存する。実際は 500us = 2kHz で呼ばれるが、
 // 係数から逆算した帯域は約1.6Hzで結果的に妥当なため、値自体はそのままにしてある)
 // ===========================================================================
-#define DRIVE_LPF_K_FRONT 0.995f  // 前輪エンコーダ速度 (ADC量子化ノイズが大きいので強めに)
-#define DRIVE_LPF_K_REAR 0.90f    // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め)
+#define DRIVE_LPF_K_FRONT 0.995f  // 前輪エンコーダ速度 (ADC量子化ノイズが大きいので強めに)。
+                                  // 時定数 τ=-dt/ln(k)≈100ms。PIDフィードバック・上位報告用
+#define DRIVE_LPF_K_REAR 0.90f    // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め)。τ≈4.75ms
+// TCのスリップ判定専用の前輪速度フィルタ。DRIVE_LPF_K_FRONT (τ≈100ms) をそのまま基準速度に
+// 使うと、フル加速のようなランプ入力で τ×加速度 ぶん (最大加速度3.0m/s²なら約0.3m/s) 基準速度が
+// 実速度より系統的に遅れ、後輪 (τ≈4.75ms、ほぼ遅れ無し) との差が「常時空転している」という
+// 誤ったスリップ率を生む (低速ほど基準速度に対する遅れの比率が大きく致命的)。この遅れバイアスを
+// 縮めるため、PID用より軽い τ≈25ms のフィルタをスリップ判定専用に別途持つ
+// (ノイズは残りやすくなるが、DRIVE_TC_SLIP_DEBOUNCE_S 側で吸収する)
+#define DRIVE_LPF_K_FRONT_TC 0.98f
 
 typedef struct {
   Motors* motors;
@@ -132,6 +144,8 @@ typedef struct {
   TorqueVectoring tv;
   LPF lpf_front_left;
   LPF lpf_front_right;
+  LPF lpf_front_left_tc;   // スリップ判定専用 (DRIVE_LPF_K_FRONT_TC)
+  LPF lpf_front_right_tc;  // スリップ判定専用 (DRIVE_LPF_K_FRONT_TC)
   LPF lpf_rear_left;
   LPF lpf_rear_right;
   Timer timer;
@@ -151,6 +165,10 @@ typedef struct {
   // (TC/TV は掛けたまま。brake_active の方が優先される)
   bool torque_mode_active;
   float manual_torque_nm;  // torque_mode 中に指令された1輪あたりの駆動トルク [Nm] (負=後退方向)
+  bool side_brake_active;   // 上位からの要求 (毎周期 Drive_SetSideBrake で更新)
+  bool side_brake_engaged;  // 実際に位置保持へ入っているか (角度をラッチ済みか)
+  float side_brake_target_left_rad;
+  float side_brake_target_right_rad;
 
   // --- 以下は Drive_Update が更新する観測量 (デバッグ・上位への報告用) ---
   // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
@@ -165,8 +183,12 @@ typedef struct {
   float rear_speed_right_m_s;   // 右後輪の周速
   float slip_left;              // 左後輪のスリップ率 (正 = 空転, 負 = ロック傾向)
   float slip_right;             // 右後輪のスリップ率
-  float tc_limit_left_nm;       // TCが動的に決めた左輪のトルク上限
-  float tc_limit_right_nm;      // TCが動的に決めた右輪のトルク上限
+  // slip_left/right がDRIVE_TC_SLIP_THRESHOLDを超えてからの継続時間 [s] (デバウンス用)。
+  // 超過が途切れたら0に戻る
+  float tc_slip_excess_time_left_s;
+  float tc_slip_excess_time_right_s;
+  float tc_limit_left_nm;   // TCが動的に決めた左輪のトルク上限
+  float tc_limit_right_nm;  // TCが動的に決めた右輪のトルク上限
   // 片輪浮き対策が動的に決めた各輪のトルク上限 (tc_limit_*とは独立、最終的にminを取る)
   float wheel_lift_limit_left_nm;
   float wheel_lift_limit_right_nm;
@@ -215,6 +237,21 @@ void Drive_SetBrake(Drive* obj, bool on, float torque_nm);
  * クランプされる (上位のクランプに頼らない)。
  */
 void Drive_SetTorque(Drive* obj, bool on, float torque_nm);
+
+/**
+ * @brief サイドブレーキ (位置制御によるパーキングロック) を掛ける/離す。on の間は
+ * 車速制御・通常のブレーキ・torque_mode より優先し、有効化された瞬間の後輪機械角度を
+ * ラッチして位置制御へ切り替える。MD からの状態フレームが無効 (BldcMotor_IsDataValid が
+ * 偽) な間は角度をラッチできないため、有効な角度が取れるまで通常のトルク制動へ
+ * フォールバックする。
+ */
+void Drive_SetSideBrake(Drive* obj, bool on);
+
+/**
+ * @brief サイドブレーキが実際に位置制御へ切り替わって機械角度を固定中かを取得する
+ * (要求中でもラッチ待ちでフォールバック中の間は偽)。
+ */
+bool Drive_IsSideBrakeEngaged(const Drive* obj);
 
 /**
  * @brief トルクベクタリングの有効/無効を切り替える (既定は有効)。
@@ -282,6 +319,17 @@ float Drive_GetSlipLeft(const Drive* obj);
  * @brief 右後輪のスリップ率を取得する。
  */
 float Drive_GetSlipRight(const Drive* obj);
+
+/**
+ * @brief TCが動的に決めた左後輪のトルク上限 [Nm] を取得する (デバッグ・上位への報告用)。
+ * DRIVE_MAX_TORQUE_NM が「制限なし」、それより小さければ介入中を意味する。
+ */
+float Drive_GetTcLimitLeft(const Drive* obj);
+
+/**
+ * @brief TCが動的に決めた右後輪のトルク上限 [Nm] を取得する。
+ */
+float Drive_GetTcLimitRight(const Drive* obj);
 
 /**
  * @brief いずれかの後輪でTC(本体)が介入中かを取得する。

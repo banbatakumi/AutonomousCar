@@ -27,6 +27,20 @@ static float EstimateVehicleSpeed(Drive* obj) {
   return (obj->front_speed_left_m_s + obj->front_speed_right_m_s) * 0.5f * Cos(steer_rad);
 }
 
+// TCのスリップ判定専用の車体速度推定。EstimateVehicleSpeed() と同じ計算だが、
+// DRIVE_LPF_K_FRONT (τ≈100ms) ではなく軽い DRIVE_LPF_K_FRONT_TC (τ≈25ms) を使う。
+// フル加速のようなランプ入力では前者の遅れが τ×加速度 ぶん基準速度を系統的に低く見せ、
+// 遅れのほぼ無い後輪速度との差が「常時空転」という誤ったスリップ率を生むため、
+// PID用の値とは別に用意する (詳細は DRIVE_LPF_K_FRONT_TC のコメント参照)
+static float EstimateVehicleSpeedForSlip(Drive* obj) {
+  float omega_left = LPF_Update(&obj->lpf_front_left_tc,
+                                Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR);
+  float omega_right = LPF_Update(&obj->lpf_front_right_tc,
+                                 Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR);
+  float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
+  return (omega_left + omega_right) * 0.5f * DRIVE_FRONT_WHEEL_RADIUS_M * Cos(steer_rad);
+}
+
 // ヨーレートは IMU の実測値を優先する。舵角からの幾何計算 (自転車モデル) は前輪が滑ると
 // 実際のヨーレートから乖離するため、まさにTCが必要な場面で基準速度が狂うことになる。
 static float EstimateYawRate(Drive* obj) {
@@ -52,6 +66,7 @@ static float SlipRatio(float wheel_speed_m_s, float reference_speed_m_s) {
 
 static void UpdateObservations(Drive* obj) {
   obj->vehicle_speed_m_s = EstimateVehicleSpeed(obj);
+  float vehicle_speed_for_slip_m_s = EstimateVehicleSpeedForSlip(obj);
 
   float omega_left = LPF_Update(&obj->lpf_rear_left,
                                 BldcMotor_GetAngularSpeed(&obj->motors->rear_left) * DRIVE_REAR_LEFT_DIR);
@@ -64,9 +79,11 @@ static void UpdateObservations(Drive* obj) {
 
   // 旋回中は内輪と外輪で本来の速度が違う。ここを車体速度で共通化すると外輪が常時「空転」と
   // 判定されてTCが誤介入するため、ヨーレートから各輪の基準速度を作る。
+  // 基準速度は PID フィードバック用 (vehicle_speed_m_s) ではなく、遅れの少ない
+  // vehicle_speed_for_slip_m_s (EstimateVehicleSpeedForSlip 参照) を使う
   float half_track = DRIVE_REAR_TRACK_M * 0.5f;
-  float reference_left = obj->vehicle_speed_m_s - obj->yaw_rate_rad_s * half_track;
-  float reference_right = obj->vehicle_speed_m_s + obj->yaw_rate_rad_s * half_track;
+  float reference_left = vehicle_speed_for_slip_m_s - obj->yaw_rate_rad_s * half_track;
+  float reference_right = vehicle_speed_for_slip_m_s + obj->yaw_rate_rad_s * half_track;
   obj->slip_left = SlipRatio(obj->rear_speed_left_m_s, reference_left);
   obj->slip_right = SlipRatio(obj->rear_speed_right_m_s, reference_right);
 }
@@ -106,6 +123,33 @@ static void SendBrake(Drive* obj, float nm) {
   BldcMotor_SetBrakeNm(&obj->motors->rear_right, nm);
 }
 
+// サイドブレーキ: 有効化された瞬間の機械角度をラッチし、位置制御で固定する。
+// 左右は独立にラッチするため、旋回中に停止して左右輪の角度が異なっていても問題ない
+// (各輪は自分自身の角度を自分自身へ送り返すだけなので、DRIVE_REAR_LEFT/RIGHT_DIR の
+// 符号変換もwraparound補正も不要)
+static void SendSideBrake(Drive* obj) {
+  PID_Reset(&obj->speed_pid);
+  TorqueVectoring_Reset(&obj->tv);
+
+  if (!obj->side_brake_engaged) {
+    bool left_valid = BldcMotor_IsDataValid(&obj->motors->rear_left);
+    bool right_valid = BldcMotor_IsDataValid(&obj->motors->rear_right);
+    if (!left_valid || !right_valid) {
+      // 幽霊値 (角度0) をラッチしないよう、有効な角度が取れるまで通常のトルク制動で代用する
+      SendBrake(obj, DRIVE_MAX_BRAKE_TORQUE_NM);
+      return;
+    }
+    obj->side_brake_target_left_rad = BldcMotor_GetMechAngle(&obj->motors->rear_left);
+    obj->side_brake_target_right_rad = BldcMotor_GetMechAngle(&obj->motors->rear_right);
+    obj->side_brake_engaged = true;
+  }
+
+  obj->torque_left_nm = 0.0f;
+  obj->torque_right_nm = 0.0f;
+  BldcMotor_SetPosition(&obj->motors->rear_left, obj->side_brake_target_left_rad);
+  BldcMotor_SetPosition(&obj->motors->rear_right, obj->side_brake_target_right_rad);
+}
+
 // 目標車速も実車速もほぼ0の間は指令を止めて自由回転させる (惰行)。上位が明示的に
 // ブレーキ (RAS_CMD_FLAG_BRAKE) を指定しない限り、停車中も車両を押さえ込まない。
 // 積分・TV を持ち越すと再発進時に停止中に溜まった分が一気に出るのでリセットする
@@ -133,11 +177,18 @@ static bool IsStandstill(const Drive* obj) {
 
 // スリップ超過中はトルク上限を削り、グリップが戻ったらゆっくり戻す。実車のTC ECU と同じ
 // 「即座に削って緩やかに復帰」型。スリップ率の微分を使わないのでノイズに強い。
-static float UpdateTractionLimit(float limit_nm, float slip, float dt_s) {
+// しきい値超過が DRIVE_TC_SLIP_DEBOUNCE_S 継続するまではカットを始めない (デバウンス)。
+// EstimateVehicleSpeedForSlip() の軽いフィルタで残るノイズ由来の一瞬の超過を無視するため。
+// 本物の空転は超過が持続するのでこの遅延はほぼ影響しない
+static float UpdateTractionLimit(float limit_nm, float slip, float dt_s, float* excess_time_s) {
   float excess = Abs(slip) - DRIVE_TC_SLIP_THRESHOLD;
   if (excess > 0.0f) {
-    limit_nm -= DRIVE_TC_CUT_GAIN * excess * dt_s;
+    *excess_time_s += dt_s;
+    if (*excess_time_s >= DRIVE_TC_SLIP_DEBOUNCE_S) {
+      limit_nm -= DRIVE_TC_CUT_GAIN * excess * dt_s;
+    }
   } else {
+    *excess_time_s = 0.0f;
     limit_nm += DRIVE_TC_RECOVER_RATE * dt_s;
   }
   return Constrain(limit_nm, DRIVE_TC_MIN_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
@@ -214,6 +265,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   TorqueVectoring_Init(&obj->tv, DRIVE_WHEELBASE_M, DRIVE_REAR_TRACK_M, DRIVE_REAR_WHEEL_RADIUS_M);
   LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0f);
   LPF_Init(&obj->lpf_front_right, DRIVE_LPF_K_FRONT, 0.0f);
+  LPF_Init(&obj->lpf_front_left_tc, DRIVE_LPF_K_FRONT_TC, 0.0f);
+  LPF_Init(&obj->lpf_front_right_tc, DRIVE_LPF_K_FRONT_TC, 0.0f);
   LPF_Init(&obj->lpf_rear_left, DRIVE_LPF_K_REAR, 0.0f);
   LPF_Init(&obj->lpf_rear_right, DRIVE_LPF_K_REAR, 0.0f);
   Timer_Init(&obj->timer);
@@ -228,6 +281,10 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->brake_torque_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
   obj->torque_mode_active = false;
   obj->manual_torque_nm = 0.0f;
+  obj->side_brake_active = false;
+  obj->side_brake_engaged = false;
+  obj->side_brake_target_left_rad = 0.0f;
+  obj->side_brake_target_right_rad = 0.0f;
 
   obj->vehicle_speed_m_s = 0.0f;
   obj->yaw_rate_rad_s = 0.0f;
@@ -238,6 +295,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->rear_speed_right_m_s = 0.0f;
   obj->slip_left = 0.0f;
   obj->slip_right = 0.0f;
+  obj->tc_slip_excess_time_left_s = 0.0f;
+  obj->tc_slip_excess_time_right_s = 0.0f;
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
@@ -256,6 +315,12 @@ void Drive_Update(Drive* obj) {
 
   if (!obj->enabled) {
     Coast(obj);
+    return;
+  }
+  // サイドブレーキは速度・通常ブレーキ・torque_modeより優先する (速度に関わらず即座に切替)
+  if (obj->side_brake_active) {
+    obj->target_speed_m_s = 0.0f;
+    SendSideBrake(obj);
     return;
   }
   // ブレーキは車速制御より優先する。PIに「目標0」を与えるだけでは制動力がゲイン任せになり、
@@ -288,11 +353,15 @@ void Drive_Update(Drive* obj) {
   }
 
   if (obj->tc_enabled) {
-    obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s);
-    obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s);
+    obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s,
+                                                &obj->tc_slip_excess_time_left_s);
+    obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s,
+                                                 &obj->tc_slip_excess_time_right_s);
   } else {
     obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
     obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+    obj->tc_slip_excess_time_left_s = 0.0f;
+    obj->tc_slip_excess_time_right_s = 0.0f;
   }
 
   if (obj->wheel_lift_guard_enabled) {
@@ -368,6 +437,15 @@ void Drive_SetTorque(Drive* obj, bool on, float torque_nm) {
   obj->manual_torque_nm = Constrain(torque_nm, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
 }
 
+void Drive_SetSideBrake(Drive* obj, bool on) {
+  obj->side_brake_active = on;
+  if (!on) obj->side_brake_engaged = false;
+}
+
+bool Drive_IsSideBrakeEngaged(const Drive* obj) {
+  return obj->side_brake_engaged;
+}
+
 void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled) {
   TorqueVectoring_SetEnabled(&obj->tv, enabled);
 }
@@ -384,11 +462,14 @@ void Drive_Enable(Drive* obj) {
   PID_Reset(&obj->speed_pid);
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+  obj->tc_slip_excess_time_left_s = 0.0f;
+  obj->tc_slip_excess_time_right_s = 0.0f;
   obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   // 無効化中に古い目標車速が残っていると再有効化した瞬間に急発進するため、0から始める
   obj->speed_setpoint_m_s = 0.0f;
   obj->target_speed_m_s = 0.0f;
+  obj->side_brake_engaged = false;
   TorqueVectoring_Reset(&obj->tv);
   Timer_Reset(&obj->timer);
   obj->enabled = true;
@@ -398,6 +479,7 @@ void Drive_Disable(Drive* obj) {
   obj->enabled = false;
   obj->speed_setpoint_m_s = 0.0f;
   obj->target_speed_m_s = 0.0f;
+  obj->side_brake_engaged = false;
   TorqueVectoring_Reset(&obj->tv);
   Coast(obj);
 }
@@ -416,6 +498,14 @@ float Drive_GetSlipLeft(const Drive* obj) {
 
 float Drive_GetSlipRight(const Drive* obj) {
   return obj->slip_right;
+}
+
+float Drive_GetTcLimitLeft(const Drive* obj) {
+  return obj->tc_limit_left_nm;
+}
+
+float Drive_GetTcLimitRight(const Drive* obj) {
+  return obj->tc_limit_right_nm;
 }
 
 bool Drive_IsTractionControlActive(const Drive* obj) {

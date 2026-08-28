@@ -17,7 +17,7 @@
 #define RAS_PONG_TX_TIME_OFFSET 8
 
 // 各パケットのペイロード長
-#define RAS_LEN_TELEMETRY 66
+#define RAS_LEN_TELEMETRY 74
 #define RAS_LEN_PONG 12
 #define RAS_LEN_VERSION 10
 #define RAS_LEN_LIMITS 16
@@ -32,7 +32,7 @@
 #define RAS_LOG_MAX_LEN 128
 
 // Pi → STM32 の各 TYPE が取るべきペイロード長 (これ以外は破棄して len_error に数える)
-#define RAS_LEN_COMMAND 14
+#define RAS_LEN_COMMAND 15
 #define RAS_LEN_CONFIG_SET 6
 #define RAS_LEN_PING 4
 #define RAS_LEN_CONFIG_GET 2
@@ -256,6 +256,8 @@ static void SendTelemetry(RasLink* obj) {
   PutI16(p, &pos, QuantizeI16(t->roll_rad, 0.0001f));
   for (int i = 0; i < 3; i++) PutI16(p, &pos, QuantizeI16(t->motor_current_a[i], 0.001f));
   for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->torque_cmd_nm[i], 0.0001f));
+  for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->slip[i], 0.0001f));
+  for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->tc_limit_nm[i], 0.0001f));
   for (int i = 0; i < 4; i++) PutU8(p, &pos, t->temp_c[i]);
   PutU8(p, &pos, QuantizeU8(t->batt_voltage_v[0], 0.05f));
   PutU8(p, &pos, QuantizeU8(t->batt_voltage_v[1], 0.05f));
@@ -398,6 +400,7 @@ static void HandleCommand(RasLink* obj, const uint8_t* p, uint32_t now_us) {
   obj->command.steer_rate_limit_rad_s = (float)GetU16(&p[8]) * 0.001f;
   obj->command.brake_torque_nm = (float)GetU16(&p[10]) * 0.0001f;
   obj->command.target_torque_nm = (float)GetI16(&p[12]) * 0.0001f;
+  obj->command.flags2 = p[14];
 
   uint8_t light_mode = (uint8_t)((p[1] & RAS_CMD_LIGHT_MODE_MASK) >> RAS_CMD_LIGHT_MODE_SHIFT);
   // 予約値 (3) は最も明るい NORMAL に倒す。灯火は消えるより点く方が安全側

@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x000Cu
+#define RAS_PROTOCOL_VERSION 0x000Du
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -93,6 +93,12 @@ typedef enum {
 // 従う。v0.7 で新設、v0.12 で動的停止距離・LiDAR併用へ拡張
 #define RAS_CMD_FLAG_AUTO_STOP (1u << 7)
 
+// COMMAND.flags2 (v0.13 で新設。flags が8bit使い切ったための拡張バイト)
+// 立っている間、指令を受けた瞬間の後輪モータ機械角度を目標値としてラッチし、位置制御へ
+// 切り替えて機械的に固定する (パーキングロック)。速度に関わらず即座に切り替わり、
+// brake (bit1) より優先する (Drive_Update 側の優先順位で解決する)。
+#define RAS_CMD_FLAG2_SIDE_BRAKE (1u << 0)
+
 // COMMAND.flags bit3-4 (前照灯モード)
 typedef enum {
   RAS_LIGHT_OFF = 0,      // 前照灯・尾灯とも消灯
@@ -119,6 +125,9 @@ typedef enum {
 #define RAS_FLAG_DRIVE_POWER_LOCKED (1u << 15)
 // 障害物により自動停止が実際に作動中 (flags.auto_stop が有効かつ検知中)。v0.7 で新設
 #define RAS_FLAG_AUTO_STOP_ACTIVE (1u << 16)
+// サイドブレーキが実際に位置制御へ切り替わって固定中かどうか (要求中でも
+// MDのデータ無効でトルク制動へフォールバックしている間は偽)。v0.13 で新設
+#define RAS_FLAG_SIDE_BRAKE_ACTIVE (1u << 17)
 
 // TELEMETRY.md_status[i]
 #define RAS_MD_STATUS_RUNNING (1u << 0)
@@ -183,8 +192,9 @@ typedef struct {
 
 // 受信した COMMAND をデコードしたもの
 typedef struct {
-  uint8_t mode;   // RasMode
-  uint8_t flags;  // RAS_CMD_FLAG_*
+  uint8_t mode;    // RasMode
+  uint8_t flags;   // RAS_CMD_FLAG_*
+  uint8_t flags2;  // RAS_CMD_FLAG2_* (v0.13 で新設)
   float target_speed_m_s;
   float target_steer_rad;  // 路面舵角 (反時計回り = 左旋回が正)
   float accel_limit_m_s2;
@@ -221,6 +231,11 @@ typedef struct {
 
   float motor_current_a[3];  // q軸電流 [RL, RR, ST] 制動時は負
   float torque_cmd_nm[2];    // TC 適用後の最終指令トルク [RL, RR]
+
+  // TCのチューニング用 (v0.13 で新設)。slip は正=空転・負=ロック傾向。tc_limit は
+  // DRIVE_MAX_TORQUE_NM が「制限なし」、それより小さければ介入中を意味する
+  float slip[2];         // 後輪スリップ率 [RL, RR] (無次元)
+  float tc_limit_nm[2];  // TCが動的に決めたトルク上限 [RL, RR]
 
   uint8_t temp_c[4];       // [MD後左, MD後右, MDステア, STM32内蔵]
   float batt_voltage_v[2];  // [駆動系, シグナル系]

@@ -123,6 +123,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool cmd_braking = (command->flags & RAS_CMD_FLAG_BRAKE) != 0;
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
   bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
+  bool side_brake_requested = (command->flags2 & RAS_CMD_FLAG2_SIDE_BRAKE) != 0;
 
   // 静止時の前後判定フォールバック用。torque_mode なら target_torque、そうでなければ
   // target_speed の符号を「これから進もうとしている方向」として使う
@@ -132,7 +133,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool braking = cmd_braking || obj->auto_stop_active;
 
   float target_speed_m_s = 0.0f;
-  if (armed && !braking && !torque_mode) {
+  if (armed && !braking && !torque_mode && !side_brake_requested) {
     target_speed_m_s = command->target_speed_m_s;  // 最終クランプは Drive_SetTargetSpeed が行う
   }
   // 制動トルクの指定が無い (0) ときは最大で掛ける。0 をそのまま「制動トルク0」と解釈すると、
@@ -163,6 +164,8 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTargetSpeed(obj->drive, target_speed_m_s, command->accel_limit_m_s2);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
+  // 未アーム中は無効化する (アームが外れた瞬間に位置保持へ入り込まないようにするため)
+  Drive_SetSideBrake(obj->drive, armed && side_brake_requested);
   Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
   Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
@@ -215,9 +218,13 @@ static void ApplyFailsafe(Vehicle* obj) {
 
   Drive_SetTargetSpeed(obj->drive, 0.0f, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
-  // brake が torque_mode より優先されるため現状は表面化しないが、安全層は他モジュールの
-  // 内部優先順位に依存せず自己完結させるべきなので明示的に torque_mode も解除しておく
+  // brake が torque_mode より優先されるため torque_mode の解除は現状表面化しないが、
+  // side_brake は Drive_Update 内で brake より先に判定されるため、これを明示的に解除
+  // しないと緊急停止・COMMAND途絶中に古い side_brake 状態が残っていた場合に位置保持へ
+  // 入り込み、最大制動トルクでの停止 (Drive_SetBrake) が効かなくなる。安全層は他モジュールの
+  // 内部優先順位に依存せず自己完結させるべきという方針からも、ここで明示的に解除しておく
   Drive_SetTorque(obj->drive, false, 0.0f);
+  Drive_SetSideBrake(obj->drive, false);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
   ApplyBrakeLight(obj, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Lighting_SetPassing(obj->lighting, false);
