@@ -73,6 +73,8 @@ static uint32_t BuildFlags(Telemetry* obj) {
   if (Steering_IsCenterValid(obj->steering)) flags |= RAS_FLAG_STEER_CENTER_VALID;
   if (Vehicle_IsAutoStopActive(obj->vehicle)) flags |= RAS_FLAG_AUTO_STOP_ACTIVE;
   if (Drive_IsSideBrakeEngaged(obj->drive)) flags |= RAS_FLAG_SIDE_BRAKE_ACTIVE;
+  if (Vehicle_IsWinkerLeftActive(obj->vehicle)) flags |= RAS_FLAG_WINKER_LEFT_ACTIVE;
+  if (Vehicle_IsWinkerRightActive(obj->vehicle)) flags |= RAS_FLAG_WINKER_RIGHT_ACTIVE;
 
   if (faults & POWER_FAULT_DRIVE_OVERCURRENT) flags |= RAS_FLAG_FAULT_DRIVE_OVERCURRENT;
   if (faults & POWER_FAULT_SIGNAL_OVERCURRENT) flags |= RAS_FLAG_FAULT_SIGNAL_OVERCURRENT;

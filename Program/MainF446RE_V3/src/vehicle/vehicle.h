@@ -91,6 +91,11 @@ typedef struct {
   bool estop_latched;
   bool horn_on;
 
+  // 上位から要求されたウィンカー/ハザード状態 (flags2 の WINKER_LEFT/RIGHT をデコードしたもの)。
+  // Lighting へ直接反映せず、フォールト時のハザード優先の調停は Indicator (src/hmi/indicator.c)
+  // に委ねる (ハザードは Indicator が既に Lighting_SetWinker の唯一の呼び出し元だったため)
+  LightingWinkerState winker_request;
+
   // ARMが外れている(=走らせる予定がない)時間を計り、LiDAR電源の遅延OFFに使う
   Timer lidar_idle_timer;
   bool lidar_on;
@@ -134,5 +139,20 @@ float Vehicle_GetAppliedSteerRad(const Vehicle* obj);
  * @brief 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したかを取得する。
  */
 bool Vehicle_IsAutoStopActive(const Vehicle* obj);
+
+/**
+ * @brief 上位から要求されたウィンカー/ハザード状態を取得する。フォールト時のハザード優先など
+ * 実際に Lighting へ反映する際の調停は Indicator (src/hmi/indicator.c) が行うため、この値は
+ * あくまで上位の「要求」であって実際の点灯状態と一致するとは限らない。
+ */
+LightingWinkerState Vehicle_GetWinkerRequest(const Vehicle* obj);
+
+/**
+ * @brief 左/右ウィンカーが実際に点滅中かどうかを取得する (TELEMETRY.flags の
+ * WINKER_LEFT/RIGHT_ACTIVE 用)。Lighting の実際の状態を見るため、フォールトによる
+ * ハザード優先で上位の要求と異なる状態になっている場合もそれを反映する。
+ */
+bool Vehicle_IsWinkerLeftActive(const Vehicle* obj);
+bool Vehicle_IsWinkerRightActive(const Vehicle* obj);
 
 #endif  // VEHICLE_H_

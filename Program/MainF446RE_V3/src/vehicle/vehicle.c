@@ -124,6 +124,17 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
   bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
   bool side_brake_requested = (command->flags2 & RAS_CMD_FLAG2_SIDE_BRAKE) != 0;
+  bool winker_left = (command->flags2 & RAS_CMD_FLAG2_WINKER_LEFT) != 0;
+  bool winker_right = (command->flags2 & RAS_CMD_FLAG2_WINKER_RIGHT) != 0;
+  if (winker_left && winker_right) {
+    obj->winker_request = LIGHTING_WINKER_HAZARD;
+  } else if (winker_left) {
+    obj->winker_request = LIGHTING_WINKER_LEFT;
+  } else if (winker_right) {
+    obj->winker_request = LIGHTING_WINKER_RIGHT;
+  } else {
+    obj->winker_request = LIGHTING_WINKER_OFF;
+  }
 
   // 静止時の前後判定フォールバック用。torque_mode なら target_torque、そうでなければ
   // target_speed の符号を「これから進もうとしている方向」として使う
@@ -229,6 +240,7 @@ static void ApplyFailsafe(Vehicle* obj) {
   ApplyBrakeLight(obj, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Lighting_SetPassing(obj->lighting, false);
   SetHorn(obj, false);
+  obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
 }
 
@@ -252,6 +264,7 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->mode = RAS_MODE_DISARM;
   obj->estop_latched = false;
   obj->horn_on = false;
+  obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
 
   // Setup() が Vehicle_Init より前に Power_SetLidarPower() でLiDARへ給電済みの状態を反映する
@@ -286,3 +299,15 @@ uint8_t Vehicle_GetMode(const Vehicle* obj) { return obj->mode; }
 float Vehicle_GetAppliedSteerRad(const Vehicle* obj) { return obj->applied_steer_rad; }
 
 bool Vehicle_IsAutoStopActive(const Vehicle* obj) { return obj->auto_stop_active; }
+
+LightingWinkerState Vehicle_GetWinkerRequest(const Vehicle* obj) { return obj->winker_request; }
+
+bool Vehicle_IsWinkerLeftActive(const Vehicle* obj) {
+  LightingWinkerState state = Lighting_GetWinkerState(obj->lighting);
+  return state == LIGHTING_WINKER_LEFT || state == LIGHTING_WINKER_HAZARD;
+}
+
+bool Vehicle_IsWinkerRightActive(const Vehicle* obj) {
+  LightingWinkerState state = Lighting_GetWinkerState(obj->lighting);
+  return state == LIGHTING_WINKER_RIGHT || state == LIGHTING_WINKER_HAZARD;
+}

@@ -164,6 +164,8 @@ void Lighting_Update(Lighting* obj) {
   PwmOut_Write(&obj->right_winker, right_duty);
 }
 
+LightingWinkerState Lighting_GetWinkerState(const Lighting* obj) { return obj->winker_state; }
+
 uint32_t Lighting_GetWinkerPeriodMs(void) {
   return LIGHTING_WINKER_PERIOD_MS;
 }

@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x000Du
+#define RAS_PROTOCOL_VERSION 0x000Eu
 #define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
 
 #define RAS_SYNC1 0xAAu
@@ -95,9 +95,16 @@ typedef enum {
 
 // COMMAND.flags2 (v0.13 で新設。flags が8bit使い切ったための拡張バイト)
 // 立っている間、指令を受けた瞬間の後輪モータ機械角度を目標値としてラッチし、位置制御へ
-// 切り替えて機械的に固定する (パーキングロック)。速度に関わらず即座に切り替わり、
+// 切り替えて機械的に切り替える (パーキングロック)。速度に関わらず即座に切り替わり、
 // brake (bit1) より優先する (Drive_Update 側の優先順位で解決する)。
 #define RAS_CMD_FLAG2_SIDE_BRAKE (1u << 0)
+// 立っている間、左/右ウィンカーを点滅させる (自律走行中の右左折・車線変更の意思表示用)。
+// 両方同時に立っていればハザード (左右同時点滅) として扱う。brake/side_brake と違い
+// 走行系には関与しないため優先順位の調停は不要。フォールト表示のハザード点滅
+// (src/hmi/indicator.c) の方が優先し、フォールト中はこのビットの状態に関わらずハザードになる。
+// COMMAND 途絶・緊急停止では horn/passing と同様に強制的に消灯する。v0.14 で新設
+#define RAS_CMD_FLAG2_WINKER_LEFT (1u << 1)
+#define RAS_CMD_FLAG2_WINKER_RIGHT (1u << 2)
 
 // COMMAND.flags bit3-4 (前照灯モード)
 typedef enum {
@@ -128,6 +135,11 @@ typedef enum {
 // サイドブレーキが実際に位置制御へ切り替わって固定中かどうか (要求中でも
 // MDのデータ無効でトルク制動へフォールバックしている間は偽)。v0.13 で新設
 #define RAS_FLAG_SIDE_BRAKE_ACTIVE (1u << 17)
+// 左/右ウィンカーが実際に点滅中かどうか。フォールトによるハザード表示 (src/hmi/indicator.c)
+// が上位のウィンカー要求より優先するため、要求どおりとは限らない (フォールト中は要求に
+// 関わらず両方立つ)。v0.14 で新設
+#define RAS_FLAG_WINKER_LEFT_ACTIVE (1u << 18)
+#define RAS_FLAG_WINKER_RIGHT_ACTIVE (1u << 19)
 
 // TELEMETRY.md_status[i]
 #define RAS_MD_STATUS_RUNNING (1u << 0)

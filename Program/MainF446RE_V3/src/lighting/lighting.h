@@ -78,6 +78,13 @@ void Lighting_SetBrakeFlashing(Lighting* obj, bool on);
 void Lighting_SetWinker(Lighting* obj, LightingWinkerState state);
 
 /**
+ * @brief 直近に設定したウィンカー/ハザードの状態を取得する。
+ * ハザード表示 (src/hmi/indicator.c) と方向指示 (src/vehicle/vehicle.c) の
+ * どちらが最終的に反映されているかを、呼び出し元に関わらず知りたい場合に使う。
+ */
+LightingWinkerState Lighting_GetWinkerState(const Lighting* obj);
+
+/**
  * @brief ウィンカーの点滅処理を更新する。メインループで毎ティック呼ぶこと。
  */
 void Lighting_Update(Lighting* obj);

@@ -13,8 +13,8 @@
 //
 // 上位からの指令で点く灯火 (ブレーキ灯・前照灯・パッシング) は車両制御側 (Vehicle) が
 // 扱い、こちらは「機体が今どういう状態か」から導かれる表示だけを担当する。
-// ハザードはウィンカーと灯火を共有するため、方向指示を実装するときはここで優先度を
-// 調停すること。
+// ハザードはウィンカーと灯火を共有するため、方向指示 (Vehicle_GetWinkerRequest()) と
+// フォールト表示の優先度調停は v0.14 でここに実装した (フォールト優先)。
 // ===========================================================================
 
 // --- 電源状態の表示 (LED3: シグナル系, LED4: 駆動系) ---
@@ -49,8 +49,11 @@ void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
 /**
  * @brief 電源表示と異常表示を1周期分更新する。制御周期ごとに呼ぶこと。
  * estop_active には緊急停止のラッチ状態を渡す (電源フォールトと同じくハザードで表示する)。
+ * winker_request には上位 (Raspberry Pi) から要求されたウィンカー/ハザード状態
+ * (Vehicle_GetWinkerRequest()) を渡す。フォールト・緊急停止中はこれより優先してハザードを表示する
+ * (ウィンカーとハザードは Lighting 上で表現を共有するため、優先度の調停をここに集約している)。
  * Lighting_Update より前に呼ぶこと。
  */
-void Indicator_Update(Indicator* obj, bool estop_active);
+void Indicator_Update(Indicator* obj, bool estop_active, LightingWinkerState winker_request);
 
 #endif  // INDICATOR_H_

@@ -40,9 +40,14 @@ static void UpdatePowerIndication(Indicator* obj) {
 // 何らかの異常が出ていればハザードを点滅させ、車外から異常だと分かるようにする。
 // 復帰しうる異常 (電圧低下) もあるため、消えたらハザードも消す。
 // 電源系以外のモジュールのエラーも、実装したらここに集約する。
-static void UpdateFaultIndication(Indicator* obj, bool estop_active) {
+//
+// 上位 (Raspberry Pi) からの方向指示要求 (winker_request) はフォールト時のハザードより
+// 優先度が低い。ウィンカーとハザードは Lighting 上で表現を共有しているため、この
+// 調停を一箇所 (ここ) に集約する。
+static void UpdateFaultIndication(Indicator* obj, bool estop_active,
+                                  LightingWinkerState winker_request) {
   bool fault = Power_GetFaults(obj->power) != POWER_FAULT_NONE || estop_active;
-  Lighting_SetWinker(obj->lighting, fault ? LIGHTING_WINKER_HAZARD : LIGHTING_WINKER_OFF);
+  Lighting_SetWinker(obj->lighting, fault ? LIGHTING_WINKER_HAZARD : winker_request);
 }
 
 void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
@@ -53,7 +58,7 @@ void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
   BreathLed_Init(&obj->breath_drive, drive_led);
 }
 
-void Indicator_Update(Indicator* obj, bool estop_active) {
-  UpdateFaultIndication(obj, estop_active);
+void Indicator_Update(Indicator* obj, bool estop_active, LightingWinkerState winker_request) {
+  UpdateFaultIndication(obj, estop_active, winker_request);
   UpdatePowerIndication(obj);
 }
