@@ -228,7 +228,11 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
 static void UpdateSensors() {
   Encoder_Update(&encoder);
   Imu_Update(&imu);
-  RangeSensor_Update(&range_sensor);
+  // DISARM中は自動停止判定 (vehicle.c) が超音波値を参照しないため、トリガ送出自体を
+  // 止めて消費電力を抑える。Drive_IsEnabled は直前周期の armed 状態 (Vehicle_Update が
+  // このあとで更新する) なので 1周期 (500us) 遅れるが、判定を止めるだけで安全側には
+  // ならない要件ではないため許容する
+  if (Drive_IsEnabled(&drive)) RangeSensor_Update(&range_sensor);
   Lidar_Update(&lidar);
 
   // IMU の I2C 復旧処理 (imu.c の Recover()) は ~190ms メインループをブロッキングする

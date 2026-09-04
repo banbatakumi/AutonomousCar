@@ -32,6 +32,8 @@ typedef struct {
   bool brake_on;
   bool brake_flashing;
   Timer brake_flash_timer;
+  float front_light_duty;  // front_light に直近書き込んだ duty (ウィンカー減光判定に使う)
+  float rear_light_duty;   // rear_light に直近書き込んだ duty (ウィンカー減光判定に使う)
 
   LightingWinkerState winker_state;
   Timer winker_timer;

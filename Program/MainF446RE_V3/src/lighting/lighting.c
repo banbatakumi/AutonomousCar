@@ -2,6 +2,8 @@
 
 #define LIGHTING_DAYTIME_DUTY 0.1f
 #define LIGHTING_TAILLIGHT_DUTY 0.1f
+// ウィンカーの最低 duty (省電力用の下限。前後灯がこれより暗ければこの値まで持ち上げる)
+#define LIGHTING_WINKER_MIN_DUTY 0.5f
 
 // マツダ車のような上品な点滅を再現するため、単純な on/off ではなく
 // 「素早く点灯 → 一定時間保持 → ゆっくり消灯 → 間隔を空ける」の
@@ -36,6 +38,15 @@ static float Lighting_WinkerDutyAt(uint32_t elapsed_ms) {
   return 0.0f;
 }
 
+// 前後灯 (前照灯・尾灯/ブレーキ灯) が眩しく点いている間はウィンカーが埋もれないよう、
+// その実効 duty に合わせて底上げする。左右ウィンカーは前後共有の1灯のため前後どちらの
+// duty が高くても埋もれ得るので、両方の大きい方を見る。両方とも暗いとき (前照灯 OFF かつ
+// ブレーキ非点灯) は視認性を落とさない範囲で LIGHTING_WINKER_MIN_DUTY まで省電力化する
+static float Lighting_WinkerPeakDuty(const Lighting* obj) {
+  float duty = obj->front_light_duty > obj->rear_light_duty ? obj->front_light_duty : obj->rear_light_duty;
+  return duty > LIGHTING_WINKER_MIN_DUTY ? duty : LIGHTING_WINKER_MIN_DUTY;
+}
+
 // パッシング中は前照灯だけを全光量にする。尾灯を連動させないのは、消灯状態でパッシングした
 // ときに尾灯まで一緒に瞬くと後続車から見て制動と紛らわしいため
 static void Lighting_ApplyFrontLight(Lighting* obj) {
@@ -45,6 +56,7 @@ static void Lighting_ApplyFrontLight(Lighting* obj) {
   } else if (obj->headlight_mode == LIGHTING_HEADLIGHT_DAYTIME) {
     duty = LIGHTING_DAYTIME_DUTY;
   }
+  obj->front_light_duty = duty;
   PwmOut_Write(&obj->front_light, duty);
 }
 
@@ -67,6 +79,7 @@ static void Lighting_ApplyRearLight(Lighting* obj) {
   } else if (obj->headlight_mode != LIGHTING_HEADLIGHT_OFF) {
     duty = LIGHTING_TAILLIGHT_DUTY;
   }
+  obj->rear_light_duty = duty;
   PwmOut_Write(&obj->rear_light, duty);
 }
 
@@ -84,6 +97,8 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
   obj->brake_on = false;
   obj->brake_flashing = false;
   obj->winker_state = LIGHTING_WINKER_OFF;
+  obj->front_light_duty = 0.0f;
+  obj->rear_light_duty = 0.0f;
 
   PwmOut_Write(&obj->front_light, 0.0f);
   PwmOut_Write(&obj->rear_light, 0.0f);
@@ -150,7 +165,7 @@ void Lighting_Update(Lighting* obj) {
     Timer_Reset(&obj->winker_timer);
     elapsed_ms = 0;
   }
-  float duty = Lighting_WinkerDutyAt(elapsed_ms);
+  float duty = Lighting_WinkerDutyAt(elapsed_ms) * Lighting_WinkerPeakDuty(obj);
 
   float left_duty = 0.0f;
   float right_duty = 0.0f;
