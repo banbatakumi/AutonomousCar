@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Raspberry Pi から `COMMAND` が来ていない/途絶している間、および緊急停止中は `ApplyFailsafe()` (`src/vehicle/vehicle.c`) が最大制動トルクでブレーキを掛け続け、停車保持する (クラクション・パッシングも解除する)。ボタン1起点の単体走行テスト (`UpdateDriveTest`) は Pi 統合に伴い削除済み (Pi 未接続時でも駆動電源が入ってしまう fail-open だったため)。
 - `DRIVE_POWER` は既定で OFF。ボタン1を押しながら起動してステアリング原点較正をする場合のみ、MD 通信が要るため `Setup()` 中に一時的に ON にして較正後 OFF に戻す (較正しない起動では一度も投入しない)。以降は `ApplyRasCommand()` (`src/vehicle/vehicle.c`) が上位の arm 要求 (`RAS_CMD_FLAG_ARM`) に従って ON/OFF する。つまり **Pi が未接続または DISARM の間は駆動電源が入らないのが既定**。
-- LD06 (LiDAR) は Setup で給電・初期化され、120Hz でセクタを上位へ送っている。
+- LD06 (LiDAR) は `LIDAR_POWER` も既定で OFF。`Setup()` では MCU側ペリフェラル (PWM/シリアル) の初期化だけを行い給電はしない。`DRIVE_POWER` と同様、上位の ARM 要求に応じて `UpdateLidarPower()` (`src/vehicle/vehicle.c`) が給電する (実機確認済み)。ARM 後は 120Hz でセクタを上位へ送る。
 - 安全層は 4段: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 → ④`COMMAND` 途絶 100ms で自動ブレーキ。緊急停止はラッチし、**ハートビートが戻っている状態でボタン2を押すまで解除しない**。緊急停止で駆動電源を切らないのは、切るとMDが制動をかけられず惰行して停止距離が伸びるため。
 - トルクベクタリング (`src/control/torque_vectoring.c`) は実装済みで既定は有効。ただしゲイン・安定係数・横加速度上限はいずれも机上値のままで、**実機での符号確認とチューニングが未了**。
 - 前後超音波 (`RangeSensor`) を使った自動停止が v0.7 で追加された。上位が `COMMAND.flags` bit7 (`RAS_CMD_FLAG_AUTO_STOP`) を立てている間だけ有効になる。`brake` (bit1) が同時に立っていればそちらが優先。ラッチせず、しきい値を上回れば自動解除 (ヒステリシス無し)。判定ロジックは v0.12 で下記の通り全面刷新した。
