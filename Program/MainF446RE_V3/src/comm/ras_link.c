@@ -364,7 +364,10 @@ void RasLink_PublishLidarSector(RasLink* obj, uint8_t sector_idx, uint32_t t_sta
       } else if (mm >= 5100) {
         value = 255;
       } else {
-        value = (uint8_t)(mm / 20);
+        // QuantizeI16/QuantizeU8 と同じく四捨五入する。切り捨てだと全点が実距離より
+        // 系統的に最大2cm近い値になり、lidar.c が避けようとしている「近距離側への歪み」を
+        // 再導入してしまうため
+        value = (uint8_t)((mm / 20.0f) + 0.5f);
         if (value == 0) value = 1;  // 2cm未満を無効値に潰さない
       }
       PutU8(p, &pos, value);
