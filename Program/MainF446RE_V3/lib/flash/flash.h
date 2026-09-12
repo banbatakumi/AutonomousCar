@@ -16,6 +16,11 @@
 #define FLASH_MPU_SECTOR FLASH_SECTOR_6
 #define FLASH_MPU_VOLTAGE_RANGE FLASH_VOLTAGE_RANGE_3
 
+// 注意: 呼ぶたびに対象セクタ全体を消去してから書き込む。同一セクタに複数データを
+// 保存する用途を将来追加する場合、別々に Flash_WriteDataToSector() を呼ぶと
+// 後から書いたデータが先に書いたデータを消去ごと巻き添えにする。そのようなケースでは
+// 呼び出し側でまとめて1つのバッファへ再構成してから一括で書き込むこと
+// (現状は steering.c の1箇所のみで、Sector 7 に単一データしか置いていないため実害なし)
 static inline HAL_StatusTypeDef Flash_WriteDataToSector(uint32_t address,
                                                         uint32_t sector,
                                                         uint32_t voltage_range,
