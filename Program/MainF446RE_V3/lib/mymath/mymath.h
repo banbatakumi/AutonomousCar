@@ -256,12 +256,18 @@ static inline float CosDeg(int deg) {
       return SinDeg(deg + 90);
 }
 
+// float から int への暗黙変換は切り捨て (0方向への丸め) のため、そのまま
+// SinDeg/CosDeg へ渡すと最大1度分の系統バイアスが乗る。四捨五入してから渡す
+static inline int RoundToInt(float x) {
+      return (int)(x >= 0.0f ? x + 0.5f : x - 0.5f);
+}
+
 static inline float Sin(float rad) {
-      return SinDeg(Degrees(rad));
+      return SinDeg(RoundToInt(Degrees(rad)));
 }
 
 static inline float Cos(float rad) {
-      return CosDeg(Degrees(rad));
+      return CosDeg(RoundToInt(Degrees(rad)));
 }
 
 static inline float Atan2(float y, float x) {
