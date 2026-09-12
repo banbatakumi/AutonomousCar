@@ -81,9 +81,15 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
   float us_offset_cm = forward ? VEHICLE_AUTO_STOP_ULTRASONIC_FRONT_OFFSET_CM
                                 : VEHICLE_AUTO_STOP_ULTRASONIC_REAR_OFFSET_CM;
 
-  LidarRoiResult roi = Lidar_QueryRoi(obj->lidar, lidar_center_deg,
-                                      VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_DEG,
-                                      d_stop_cm + lidar_offset_cm);
+  // Lidar_IsOk() (rx_count==0 か、300ms以上パケット自体が来ていない) を先に見ておく。
+  // 未受信セクタの sector_update_us は起動直後から stale 初期化されているため
+  // roi.fresh_count は本来ここが無くても正しく0になるが、センサ未接続時に
+  // Lidar_QueryRoi へ触れず即座に超音波フォールバックへ倒すことを明示する
+  LidarRoiResult roi = {0, 0};
+  if (Lidar_IsOk(obj->lidar)) {
+    roi = Lidar_QueryRoi(obj->lidar, lidar_center_deg, VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_DEG,
+                         d_stop_cm + lidar_offset_cm);
+  }
   bool lidar_fresh = roi.fresh_count > 0;
   bool lidar_hit = roi.hit_count >= VEHICLE_AUTO_STOP_LIDAR_MIN_POINTS;
 

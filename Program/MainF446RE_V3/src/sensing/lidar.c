@@ -71,6 +71,15 @@ static void PlacePoint(Lidar* obj, float angle_deg, uint16_t distance_mm, uint8_
 void Lidar_Init(Lidar* obj, Serial* serial, TIM_HandleTypeDef* htim, uint32_t channel) {
   memset(obj, 0, sizeof(*obj));
 
+  // memset で sector_update_us[] は0になるが、Micros() は起動直後で0付近のため
+  // 「0 = 起動時刻」と「0 = 一度も更新されていない」を区別できず、LIDAR_TIMEOUT_US
+  // (300ms) が経過するまで未受信セクタを誤って fresh と判定してしまう
+  // (Lidar_QueryRoi 参照)。uint32_t の差分は周回しても正しく評価される (Lidar_IsOk と
+  // 同じ手法) ため、あらかじめ「十分過去」の時刻で埋めておき起動直後から確実に
+  // stale 扱いにする
+  uint32_t stale_us = Micros() - LIDAR_TIMEOUT_US - 1u;
+  for (int i = 0; i < LIDAR_SECTOR_NUM; i++) obj->sector_update_us[i] = stale_us;
+
   // PwmOut は htim->Init.Period を分解能として読むため、ARR と併せて張り替える
   htim->Init.Period = LIDAR_PWM_PERIOD;
   __HAL_TIM_SET_AUTORELOAD(htim, LIDAR_PWM_PERIOD);
