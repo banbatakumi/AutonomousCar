@@ -51,7 +51,21 @@ static inline void WaitUs(uint32_t micros) {
   }
 }
 
+// DWT->CYCCNT は32bitカウンタで、180MHzでは約23.9秒 (2^32/180e6) でラップする。
+// requiredTicks = millis * (SystemCoreClock/1000) をそのまま uint32_t で計算すると、
+// 引数がそれより大きいときに乗算自体がオーバーフローし、要求より大幅に短い時間で
+// 返ってしまう (現状呼び出し箇所は無いが、将来の呼び出しで無音のバグにならないよう
+// 安全な範囲ずつに分割して繰り返す)
+#define TIMER_MAX_SAFE_WAIT_MS 1000u  // 180MHzでも十分な安全マージンを残せる長さ
+
 static inline void WaitMs(uint32_t millis) {
+  while (millis > TIMER_MAX_SAFE_WAIT_MS) {
+    uint32_t startTick = DWT->CYCCNT;
+    uint32_t requiredTicks = TIMER_MAX_SAFE_WAIT_MS * (SystemCoreClock / 1000);
+    while ((DWT->CYCCNT - startTick) < requiredTicks) {
+    }
+    millis -= TIMER_MAX_SAFE_WAIT_MS;
+  }
   uint32_t startTick = DWT->CYCCNT;
   uint32_t requiredTicks = millis * (SystemCoreClock / 1000);
   while ((DWT->CYCCNT - startTick) < requiredTicks) {
@@ -59,9 +73,10 @@ static inline void WaitMs(uint32_t millis) {
 }
 
 static inline void Wait(uint32_t seconds) {
-  uint32_t startTick = DWT->CYCCNT;
-  uint32_t requiredTicks = seconds * SystemCoreClock;
-  while ((DWT->CYCCNT - startTick) < requiredTicks) {
+  // seconds * SystemCoreClock を直接計算せず、オーバーフローしない安全な単位
+  // (WaitMs 1回分) の呼び出しへ分解する
+  for (uint32_t i = 0; i < seconds; i++) {
+    WaitMs(1000);
   }
 }
 
