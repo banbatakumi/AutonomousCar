@@ -1,6 +1,8 @@
 #ifndef WATCHDOG_H_
 #define WATCHDOG_H_
 
+#include <stdbool.h>
+
 #include "main.h"
 
 // 独立ウォッチドッグ (IWDG)。LSI で動くため、システムクロックが止まっても、HAL や
@@ -31,10 +33,15 @@
  * LSI の周波数は 32kHz が標準値だが、STM32F446 のデータシートでは 17〜47kHz と幅がある。
  * 実際のタイムアウトは指定値の約 0.68〜1.9 倍に振れるため、リフレッシュ周期より桁で
  * 大きい値を指定すること (500ms 指定なら最悪 340ms まで縮む)。
+ *
+ * @return true: 指定通りのタイムアウトを設定できた。false: RLR が12bitしかなく
+ *         (WATCHDOG_RELOAD_MAX)、指定値が最大値 (約8.19秒相当) を超えていたため
+ *         そこへクランプされた。呼び出し側で意図した値と違うことを検知できるようにする
  */
-static inline void Watchdog_Start(uint32_t timeout_ms) {
+static inline bool Watchdog_Start(uint32_t timeout_ms) {
   uint32_t reload = timeout_ms * 1000u / WATCHDOG_TICK_US;
-  if (reload > WATCHDOG_RELOAD_MAX) reload = WATCHDOG_RELOAD_MAX;
+  bool clamped = reload > WATCHDOG_RELOAD_MAX;
+  if (clamped) reload = WATCHDOG_RELOAD_MAX;
   if (reload == 0u) reload = 1u;
 
   // デバッガでコアを止めている間はカウントも止める。これが無いとブレークポイントで
@@ -49,6 +56,7 @@ static inline void Watchdog_Start(uint32_t timeout_ms) {
   while (IWDG->SR != 0u) {
   }
   IWDG->KR = WATCHDOG_KEY_RELOAD;
+  return !clamped;
 }
 
 /**

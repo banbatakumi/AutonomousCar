@@ -210,7 +210,11 @@ void Setup() {
   // ウォッチドッグは一度起動すると止められないため、ブロッキングする初期化 (IMU の静止
   // 較正・起動演出・ステアリング中心点の記録) がすべて終わってから最後に起動する。
   // 裏を返すと Setup 中のハングは検出できない
-  Watchdog_Start(WATCHDOG_TIMEOUT_MS);
+  if (!Watchdog_Start(WATCHDOG_TIMEOUT_MS)) {
+    // RLRが12bitしかなく約8.19秒が上限のため、要求値がそれを超えるとクランプされる。
+    // WATCHDOG_TIMEOUT_MS の変更でこれを踏んだことに気づけるよう警告を出す
+    printf("Watchdog: requested timeout clamped to max (~8.19s)\n");
+  }
 }
 
 // ECHOピンの変化割り込み (stm32f4xx_it.c の EXTI9_5_IRQHandler/EXTI15_10_IRQHandler 経由) から呼ばれる
