@@ -22,6 +22,9 @@ static inline void PwmOut_Init(PwmOut *obj, TIM_HandleTypeDef *htim, uint32_t ch
 }
 
 static inline void PwmOut_Write(PwmOut *obj, float duty) {
+      // NaN は Constrain() の大小比較がすべて偽になるため素通りしてしまい、
+      // (int)キャストが未定義動作になる。安全側 (消灯/無音) の0として扱う
+      if (duty != duty) duty = 0.0f;
       int val = (int)(Constrain(duty, 0.0f, 1.0f) * obj->maxValue);
       __HAL_TIM_SET_COMPARE(obj->htim, obj->channel, val);
 }
