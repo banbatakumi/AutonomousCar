@@ -1,5 +1,7 @@
 #include "bldc_motor.h"
 
+#include <math.h>
+
 #include "crc8.h"
 
 #define BLDC_MOTOR_HEADER 0xAA
@@ -23,10 +25,32 @@
 // (電流センサの量子化 0.0081A/LSB = 0.158mN・m と釣り合う粒度)。
 #define BLDC_MOTOR_SCALE_TORQUE_LIMIT 0.001f
 
+// 指令値本体のエンコード。value は上位の指令やTC/TV・PIDの出力を経由してくるため、
+// 実機チューニング前の発散・0除算・符号ミス等でNaN/Infinityや極端な大きさになりうる。
+// value/scale をそのまま (int16_t) へキャストすると、NaN・Infinity・int16_t の範囲
+// (-32768〜32767) を超える値のいずれもC規格上未定義動作になるため、EncodeLimit() と
+// 同様にここで明示的にガードする。
+// 境界値の目安: scale が最小の BLDC_MOTOR_SCALE_TORQUE_NM/BRAKE_NM (0.0001) のとき、
+// tx_raw が INT16_MAX(32767) に達するのは value = 3.2767 N・m 相当で、想定される
+// 実際のトルク指令 (STEERING_MAX_TORQUE_NM や DRIVE_MAX_BRAKE_TORQUE_NM) より
+// 一桁以上大きい異常値でしか飽和しない
 static void SetCommand(BldcMotor* obj, uint8_t header, float value, float scale) {
   obj->tx_enabled = true;
   obj->tx_header = header;
-  obj->tx_raw = (int16_t)(value / scale);
+
+  if (isnan(value) || isinf(value)) {
+    obj->tx_raw = 0;
+    return;
+  }
+
+  float raw = value / scale;
+  if (raw >= (float)INT16_MAX) {
+    obj->tx_raw = INT16_MAX;
+  } else if (raw <= (float)INT16_MIN) {
+    obj->tx_raw = INT16_MIN;
+  } else {
+    obj->tx_raw = (int16_t)raw;
+  }
 }
 
 // 上限値として使う量なので、切り捨て (安全側) で量子化し、レンジ外は飽和させる。
