@@ -12,6 +12,9 @@ typedef struct {
 static inline void LPF_Init(LPF *lpf, float k_lpf, float initial_val) {
       lpf->k_lpf = k_lpf;
       lpf->prev_val = initial_val;
+      // LPF_Update() を呼ぶ前に current_val を読むゲッター (Power_GetVoltage*Filtered() 等) が
+      // 未初期化値を返さないよう、prev_val と揃えておく
+      lpf->current_val = initial_val;
 }
 
 static inline float LPF_Update(LPF *lpf, float new_val) {
