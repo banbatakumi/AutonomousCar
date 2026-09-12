@@ -161,9 +161,18 @@ static void ApplyRasCommand(Vehicle* obj) {
                                ? command->steer_rate_limit_rad_s
                                : Steering_GetMaxRoadWheelAngleRad();
 
-  float steer_step = steer_rate_limit * dt_s;
-  obj->applied_steer_rad +=
-      Constrain(target_steer_rad - obj->applied_steer_rad, -steer_step, steer_step);
+  // armed でない間 (中心点未較正・DISARM・自律/手動以外のモード) は target_speed 側と同様に
+  // 舵角も進めない。center_valid が偽だと Steering_SetAngleRad は無意味な中心点 (0など) を
+  // 基準に絶対角を送ってしまうため、applied_steer_rad を凍結して最後に送った角度を
+  // MD に保持させ続ける (急変も、未較正の中心点に基づく指令も避けられる)。再アーム時は
+  // 凍結していた applied_steer_rad から steer_rate_limit で滑らかに追従するため、
+  // 既存のレート制限ロジックはそのまま活きる
+  if (armed) {
+    float steer_step = steer_rate_limit * dt_s;
+    obj->applied_steer_rad +=
+        Constrain(target_steer_rad - obj->applied_steer_rad, -steer_step, steer_step);
+    Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
+  }
 
   // Drive_Enable は積分項とTCの上限をリセットするため、状態が変わったときだけ呼ぶ
   if (armed && !Drive_IsEnabled(obj->drive)) Drive_Enable(obj->drive);
@@ -180,7 +189,6 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
   Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
-  Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
 
   ApplyBrakeLight(obj, braking, brake_torque_nm);
   Lighting_SetHeadlight(obj->lighting, HeadlightModeFromCommand(command->light_mode));
