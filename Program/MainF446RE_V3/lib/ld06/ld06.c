@@ -65,8 +65,13 @@ bool LD06_Update(LD06* lidar) {
         if ((b & 0x1F) == LD06_POINT_PER_PACK) {
           lidar->rx_buf[1] = b;
           lidar->rx_state = 2;
+        } else if (b == 0x54) {
+          // ヘッダに続かなかった場合、このバイト自体が次のヘッダかもしれないので
+          // 読み捨てずに state=0 (ヘッダ探索) の判定を同じバイトへ適用し直す
+          lidar->rx_buf[0] = b;
+          lidar->rx_state = 1;
         } else {
-          lidar->rx_state = 0;  // ヘッダに続かなかった場合はリセット
+          lidar->rx_state = 0;  // ヘッダにもヘッダ候補にも合致しなかった
         }
         break;
 
