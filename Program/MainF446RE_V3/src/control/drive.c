@@ -181,7 +181,11 @@ static bool IsStandstill(const Drive* obj) {
 // EstimateVehicleSpeedForSlip() の軽いフィルタで残るノイズ由来の一瞬の超過を無視するため。
 // 本物の空転は超過が持続するのでこの遅延はほぼ影響しない
 static float UpdateTractionLimit(float limit_nm, float slip, float dt_s, float* excess_time_s) {
-  float excess = Abs(slip) - DRIVE_TC_SLIP_THRESHOLD;
+  // slip は正=空転・負=ロック傾向 (drive.h の slip_left/right 参照)。制動 (SendBrake/
+  // SendSideBrake) はここを迂回する別経路なので、このパスで意味を持つ異常は空転側だけ。
+  // 負のスリップは減速などによる一時的な基準速度割れに過ぎず、駆動トルクを削る理由にならない
+  // ため Abs() を取らず符号付きで判定する
+  float excess = slip - DRIVE_TC_SLIP_THRESHOLD;
   if (excess > 0.0f) {
     *excess_time_s += dt_s;
     if (*excess_time_s >= DRIVE_TC_SLIP_DEBOUNCE_S) {
