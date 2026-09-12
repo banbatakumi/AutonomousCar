@@ -4,6 +4,13 @@
 
 #define AHRS_DEG_TO_RAD 0.017453292519943295f
 #define AHRS_RAD_TO_DEG 57.29577951308232f
+#define AHRS_INTEGRAL_FB_LIMIT_RAD_S (AHRS_INTEGRAL_FB_LIMIT_DPS * AHRS_DEG_TO_RAD)
+
+static float ClampSym(float value, float limit) {
+  if (value > limit) return limit;
+  if (value < -limit) return -limit;
+  return value;
+}
 
 // クォータニオン -> ZYX オイラー角 [deg]
 static void UpdateEuler(Ahrs *obj) {
@@ -92,9 +99,14 @@ void Ahrs_Update(Ahrs *obj, float gx_dps, float gy_dps, float gz_dps, float ax,
     float half_ez = ax * half_vy - ay * half_vx;
 
     if (obj->two_ki > 0.0f) {
-      obj->integral_fb_x += obj->two_ki * half_ex * dt;
-      obj->integral_fb_y += obj->two_ki * half_ey * dt;
-      obj->integral_fb_z += obj->two_ki * half_ez * dt;
+      // 姿勢誤差が長時間残る (センサ取付誤差の残留バイアス等) と際限なく蓄積し、
+      // 誤差反転時にオーバーシュート・発振しうるためクランプする
+      obj->integral_fb_x =
+          ClampSym(obj->integral_fb_x + obj->two_ki * half_ex * dt, AHRS_INTEGRAL_FB_LIMIT_RAD_S);
+      obj->integral_fb_y =
+          ClampSym(obj->integral_fb_y + obj->two_ki * half_ey * dt, AHRS_INTEGRAL_FB_LIMIT_RAD_S);
+      obj->integral_fb_z =
+          ClampSym(obj->integral_fb_z + obj->two_ki * half_ez * dt, AHRS_INTEGRAL_FB_LIMIT_RAD_S);
       gx += obj->integral_fb_x;
       gy += obj->integral_fb_y;
       gz += obj->integral_fb_z;
