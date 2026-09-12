@@ -181,7 +181,8 @@ static bool IsStandstill(const Drive* obj) {
 // しきい値超過が DRIVE_TC_SLIP_DEBOUNCE_S 継続するまではカットを始めない (デバウンス)。
 // EstimateVehicleSpeedForSlip() の軽いフィルタで残るノイズ由来の一瞬の超過を無視するため。
 // 本物の空転は超過が持続するのでこの遅延はほぼ影響しない
-static float UpdateTractionLimit(float limit_nm, float slip, float dt_s, float* excess_time_s) {
+static float UpdateTractionLimit(float limit_nm, float slip, float dt_s, float* excess_time_s,
+                                 float* below_time_s) {
   // slip は正=空転・負=ロック傾向 (drive.h の slip_left/right 参照)。制動 (SendBrake/
   // SendSideBrake) はここを迂回する別経路なので、このパスで意味を持つ異常は空転側だけ。
   // 負のスリップは減速などによる一時的な基準速度割れに過ぎず、駆動トルクを削る理由にならない
@@ -189,11 +190,18 @@ static float UpdateTractionLimit(float limit_nm, float slip, float dt_s, float* 
   float excess = slip - DRIVE_TC_SLIP_THRESHOLD;
   if (excess > 0.0f) {
     *excess_time_s += dt_s;
+    *below_time_s = 0.0f;
     if (*excess_time_s >= DRIVE_TC_SLIP_DEBOUNCE_S) {
       limit_nm -= DRIVE_TC_CUT_GAIN * excess * dt_s;
     }
   } else {
-    *excess_time_s = 0.0f;
+    // しきい値をわずかでも下回った瞬間に excess_time_s を0リセットすると、しきい値付近の
+    // ノイズで一瞬下回るたびにデバウンスの積み上げが失われ、持続的な空転の検出が遅れる。
+    // DRIVE_TC_SLIP_HOLD_DOWN_S だけ連続して下回ってから初めてリセットする
+    *below_time_s += dt_s;
+    if (*below_time_s >= DRIVE_TC_SLIP_HOLD_DOWN_S) {
+      *excess_time_s = 0.0f;
+    }
     limit_nm += DRIVE_TC_RECOVER_RATE * dt_s;
   }
   return Constrain(limit_nm, DRIVE_TC_MIN_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
@@ -303,6 +311,8 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->slip_right = 0.0f;
   obj->tc_slip_excess_time_left_s = 0.0f;
   obj->tc_slip_excess_time_right_s = 0.0f;
+  obj->tc_slip_below_time_left_s = 0.0f;
+  obj->tc_slip_below_time_right_s = 0.0f;
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
@@ -359,15 +369,19 @@ void Drive_Update(Drive* obj) {
   }
 
   if (obj->tc_enabled) {
-    obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s,
-                                                &obj->tc_slip_excess_time_left_s);
-    obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s,
-                                                 &obj->tc_slip_excess_time_right_s);
+    obj->tc_limit_left_nm =
+        UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s,
+                           &obj->tc_slip_excess_time_left_s, &obj->tc_slip_below_time_left_s);
+    obj->tc_limit_right_nm =
+        UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s,
+                           &obj->tc_slip_excess_time_right_s, &obj->tc_slip_below_time_right_s);
   } else {
     obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
     obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
     obj->tc_slip_excess_time_left_s = 0.0f;
     obj->tc_slip_excess_time_right_s = 0.0f;
+    obj->tc_slip_below_time_left_s = 0.0f;
+    obj->tc_slip_below_time_right_s = 0.0f;
   }
 
   if (obj->wheel_lift_guard_enabled) {
@@ -477,6 +491,8 @@ void Drive_Enable(Drive* obj) {
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_slip_excess_time_left_s = 0.0f;
   obj->tc_slip_excess_time_right_s = 0.0f;
+  obj->tc_slip_below_time_left_s = 0.0f;
+  obj->tc_slip_below_time_right_s = 0.0f;
   obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   // 無効化中に古い目標車速が残っていると再有効化した瞬間に急発進するため、0から始める

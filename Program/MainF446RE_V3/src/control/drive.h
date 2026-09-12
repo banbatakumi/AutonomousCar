@@ -92,6 +92,10 @@
 // DRIVE_LPF_K_FRONT_TC を軽くしてもなお残るノイズ由来の一瞬の超過を無視するためのデバウンス。
 // 本物の空転は超過が持続するのでこの遅延はほぼ影響しない
 #define DRIVE_TC_SLIP_DEBOUNCE_S 0.03f
+// スリップ率がしきい値をわずかに下回ってから、継続時間 (excess_time_s) を実際に
+// リセットするまでのホールドダウン [s]。これが無いとしきい値付近のノイズで一瞬でも
+// 下回るたびにデバウンスの積み上げが0に戻り、本物の持続的な空転の検出が遅れうる
+#define DRIVE_TC_SLIP_HOLD_DOWN_S 0.05f
 
 // ===========================================================================
 // 片輪浮き対策 (Wheel Lift Guard) パラメータ
@@ -188,9 +192,14 @@ typedef struct {
   float slip_left;              // 左後輪のスリップ率 (正 = 空転, 負 = ロック傾向)
   float slip_right;             // 右後輪のスリップ率
   // slip_left/right がDRIVE_TC_SLIP_THRESHOLDを超えてからの継続時間 [s] (デバウンス用)。
-  // 超過が途切れたら0に戻る
+  // 超過が途切れてから DRIVE_TC_SLIP_HOLD_DOWN_S 継続するまでは0に戻さない
+  // (tc_slip_below_time_*_s 参照)
   float tc_slip_excess_time_left_s;
   float tc_slip_excess_time_right_s;
+  // slip_left/right がDRIVE_TC_SLIP_THRESHOLD以下になってからの継続時間 [s]
+  // (tc_slip_excess_time_*_s のホールドダウン用)。超過が再発したら0に戻る
+  float tc_slip_below_time_left_s;
+  float tc_slip_below_time_right_s;
   float tc_limit_left_nm;   // TCが動的に決めた左輪のトルク上限
   float tc_limit_right_nm;  // TCが動的に決めた右輪のトルク上限
   // 片輪浮き対策が動的に決めた各輪のトルク上限 (tc_limit_*とは独立、最終的にminを取る)
