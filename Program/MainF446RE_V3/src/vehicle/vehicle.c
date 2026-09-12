@@ -69,7 +69,9 @@ static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
 // 「車体先端から障害物まで」を基準に判定する (VEHICLE_AUTO_STOP_*_OFFSET_CM 参照)
 static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
                                     float desired_direction) {
-  float speed = Drive_GetVehicleSpeed(obj->drive);
+  // 前後判定は符号反転への追従速度が重要なため、PID/上位報告用の重いLPF
+  // (Drive_GetVehicleSpeed, τ≈100ms) ではなく応答の速い方 (τ≈25ms) を使う
+  float speed = Drive_GetVehicleSpeedForDirection(obj->drive);
   float abs_speed = (speed >= 0.0f) ? speed : -speed;
   bool forward = (abs_speed > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S)
                      ? (speed >= 0.0f)

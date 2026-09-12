@@ -175,6 +175,10 @@ typedef struct {
   // 1LSB = 2pi/4096 = 1.53mrad で、これを 500us で微分すると 1LSB あたり 3.07rad/s
   // (= 0.09m/s) に化ける。実測ではノイズが ±100mV 程度あり、静止中でも生値は ±12m/s 振れる
   float vehicle_speed_m_s;      // 前輪から推定した車体前後方向の速度 (舵角で射影済み)
+  // 前後方向判定用の応答が速い車速 (EstimateVehicleSpeedForSlip 由来、τ≈25ms)。
+  // vehicle_speed_m_s (τ≈100ms) では急減速時の符号反転検出が最大100ms遅れるため、
+  // 自動停止の前後判定 (vehicle.c) 向けに分けて保持する
+  float vehicle_speed_for_direction_m_s;
   float yaw_rate_rad_s;         // スリップ率の基準速度を作るのに使ったヨーレート
   bool yaw_rate_measured;       // 上がIMUの実測値か (偽 = 舵角からの幾何計算で代用中)
   float front_speed_left_m_s;   // 左前輪の周速 (射影前。車体速度ではなく車輪自身の軌跡上の速度)
@@ -309,6 +313,16 @@ bool Drive_IsEnabled(const Drive* obj);
  * @brief 前輪エンコーダから推定した車速 [m/s] を取得する。
  */
 float Drive_GetVehicleSpeed(const Drive* obj);
+
+/**
+ * @brief 前後方向判定用の応答が速い車速 [m/s] を取得する。
+ *
+ * vehicle_speed_m_s (DRIVE_LPF_K_FRONT, τ≈100ms) と同じ前輪エンコーダ由来だが、
+ * TCのスリップ判定専用フィルタ (DRIVE_LPF_K_FRONT_TC, τ≈25ms) を共用しており、
+ * 急減速時の符号反転への追従が速い。PID/上位報告用の Drive_GetVehicleSpeed とは
+ * 用途が異なるため混同しないこと (自動停止の前後方向判定向け)。
+ */
+float Drive_GetVehicleSpeedForDirection(const Drive* obj);
 
 /**
  * @brief 左後輪のスリップ率を取得する (正 = 空転、負 = ロック傾向)。

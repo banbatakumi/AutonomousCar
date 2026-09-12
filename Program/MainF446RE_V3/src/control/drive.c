@@ -67,6 +67,7 @@ static float SlipRatio(float wheel_speed_m_s, float reference_speed_m_s) {
 static void UpdateObservations(Drive* obj) {
   obj->vehicle_speed_m_s = EstimateVehicleSpeed(obj);
   float vehicle_speed_for_slip_m_s = EstimateVehicleSpeedForSlip(obj);
+  obj->vehicle_speed_for_direction_m_s = vehicle_speed_for_slip_m_s;
 
   float omega_left = LPF_Update(&obj->lpf_rear_left,
                                 BldcMotor_GetAngularSpeed(&obj->motors->rear_left) * DRIVE_REAR_LEFT_DIR);
@@ -291,6 +292,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->side_brake_target_right_rad = 0.0f;
 
   obj->vehicle_speed_m_s = 0.0f;
+  obj->vehicle_speed_for_direction_m_s = 0.0f;
   obj->yaw_rate_rad_s = 0.0f;
   obj->yaw_rate_measured = false;
   obj->front_speed_left_m_s = 0.0f;
@@ -501,6 +503,10 @@ bool Drive_IsEnabled(const Drive* obj) {
 
 float Drive_GetVehicleSpeed(const Drive* obj) {
   return obj->vehicle_speed_m_s;
+}
+
+float Drive_GetVehicleSpeedForDirection(const Drive* obj) {
+  return obj->vehicle_speed_for_direction_m_s;
 }
 
 float Drive_GetSlipLeft(const Drive* obj) {
