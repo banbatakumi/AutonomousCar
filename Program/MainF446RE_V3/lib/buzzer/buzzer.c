@@ -43,7 +43,12 @@ static void SetTone(Buzzer* obj, uint32_t freq_hz) {
     return;
   }
   DriveGpio(obj);
-  arr = (obj->timer_clock_hz / ((obj->prescaler + 1) * freq_hz)) - 1;
+  // freq_hz が極端に高いと timer_clock_hz / ((prescaler+1)*freq_hz) が整数除算で0になり、
+  // その後の -1 で uint32_t がアンダーフローしてARRに巨大な値 (≒最低周波数) を設定して
+  // しまう。1未満にはならないようガードする (現状は固定値のみ使用で非発現)
+  uint32_t count = obj->timer_clock_hz / ((obj->prescaler + 1) * freq_hz);
+  if (count == 0) count = 1;
+  arr = count - 1;
   __HAL_TIM_SET_AUTORELOAD(obj->htim, arr);
   __HAL_TIM_SET_COMPARE(obj->htim, obj->channel, arr / 2);
   // ARR はプリロード無効で即時反映されるため、CNT が新 ARR を超えたままだと
