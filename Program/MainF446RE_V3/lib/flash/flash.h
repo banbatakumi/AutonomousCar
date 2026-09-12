@@ -39,9 +39,25 @@ static inline HAL_StatusTypeDef Flash_WriteDataToSector(uint32_t address,
     return HAL_ERROR;
   }
 
+  const uint8_t* bytes = (const uint8_t*)data;
   const uint32_t* p = (const uint32_t*)data;
-  for (size_t i = 0; i < (size + 3) / 4; i++) {
+  size_t full_words = size / 4;
+  for (size_t i = 0; i < full_words; i++) {
     if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address + i * 4, p[i]) != HAL_OK) {
+      HAL_FLASH_Lock();
+      return HAL_ERROR;
+    }
+  }
+
+  // size が4の倍数でない端数分。p[full_words] をそのまま読むと呼び出し元バッファの
+  // 末尾を最大3バイト超えて読むことになるため、一時ワードへ端数バイトだけコピーしてから
+  // 書き込む。消去済みフラッシュは0xFFなので、端数に含まれない上位バイトは0xFFのままにして
+  // 書き込んでも無害 (0xFF→0xFFのプログラムは実質no-op)
+  size_t remainder = size - full_words * 4;
+  if (remainder > 0) {
+    uint32_t last_word = 0xFFFFFFFFu;
+    memcpy(&last_word, bytes + full_words * 4, remainder);
+    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address + full_words * 4, last_word) != HAL_OK) {
       HAL_FLASH_Lock();
       return HAL_ERROR;
     }
@@ -62,9 +78,20 @@ static inline HAL_StatusTypeDef Flash_WriteData(uint32_t address,
 }
 
 static inline void Flash_ReadData(uint32_t address, void* buffer, size_t size) {
+  uint8_t* bytes = (uint8_t*)buffer;
   uint32_t* p = (uint32_t*)buffer;
-  for (size_t i = 0; i < (size + 3) / 4; i++) {
+  size_t full_words = size / 4;
+  for (size_t i = 0; i < full_words; i++) {
     p[i] = *(volatile uint32_t*)(address + i * 4);
+  }
+
+  // size が4の倍数でない端数分。p[full_words] へそのまま書くと呼び出し元バッファの
+  // 末尾を最大3バイト超えて書き込むことになるため、一旦ワード単位で読んでから
+  // 端数バイトだけをバッファへコピーする
+  size_t remainder = size - full_words * 4;
+  if (remainder > 0) {
+    uint32_t last_word = *(volatile uint32_t*)(address + full_words * 4);
+    memcpy(bytes + full_words * 4, &last_word, remainder);
   }
 }
 
