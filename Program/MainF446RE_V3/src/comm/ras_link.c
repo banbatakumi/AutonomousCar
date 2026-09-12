@@ -125,8 +125,13 @@ static uint8_t QuantizeU8(float value, float scale) {
   return (uint8_t)(raw + 0.5f);
 }
 
+// 値域外は飽和させる方針 (ファイル冒頭コメント参照) だが、NaNは大小比較が常に偽になり
+// 素通ししてしまうため個別に弾く。+Infinity (や3e38を超える異常大値) を一律minへ倒すと、
+// 例えば自動停止マージンで安全マージンが最も少ない側に落ちてしまい方針と矛盾するため、
+// 符号に応じてNaN→min、+Infinity→max、-Infinity→minへ振り分ける
 static float Clampf(float value, float min, float max) {
-  if (!IsFinite(value)) return min;
+  if (value != value) return min;  // NaN
+  if (!IsFinite(value)) return value > 0.0f ? max : min;  // ±Infinity
   if (value < min) return min;
   if (value > max) return max;
   return value;
