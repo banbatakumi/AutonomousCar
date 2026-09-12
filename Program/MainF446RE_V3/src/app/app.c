@@ -141,8 +141,7 @@ void Setup() {
   bool calibrate_imu = DigitalIn_Read(&button2);
   // 較正モードで起動したことを即座に返す。特にIMUの静止較正は数秒かかるため、表示がないと
   // ボタンを認識したのか判断できない。各較正が終わった時点で消灯する
-  DigitalOut_Write(&led2, calibrate_steering);
-  DigitalOut_Write(&led2, calibrate_imu);
+  DigitalOut_Write(&led2, calibrate_steering || calibrate_imu);
 
   // ステアリングモータ(USART2)・左後輪モータ(USART3)・右後輪モータ(UART4) のBLDC MDと通信する
   Serial_Init(&steering_serial, &huart2, steering_serial_rx_buf, MD_SERIAL_RX_BUF_SIZE);
