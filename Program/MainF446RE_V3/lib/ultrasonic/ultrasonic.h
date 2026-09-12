@@ -45,11 +45,23 @@ static inline void Ultrasonic_Init(Ultrasonic *obj, GPIO_TypeDef *trig_port, uin
 static inline void Ultrasonic_Update(Ultrasonic *obj) {
   if (Timer_ReadUs(&obj->trigger_timer) >= ULTRASONIC_TRIGGER_INTERVAL_US) {
     Timer_Reset(&obj->trigger_timer);
+
+    // 前回計測の立ち下がりを検知できないままタイムアウトした場合の後始末。
+    // waiting_fall の読み取りとその後の書き込みの間に本物の立ち下がりがISR
+    // (Ultrasonic_OnEchoEdge) で処理されると、ISRが確定させた新しい距離を
+    // ここでの書き込みが上書きしてしまう (waiting_fall/distance_cm の2フィールド
+    // 更新がアトミックでないため)。対象ECHOピンのEXTIラインだけ一時マスクして
+    // この区間をISRに対して排他にする (src/sensing/imu.c のDATA_RDYマスクと同じ手法。
+    // マスク中に来たエッジはEXTIのペンディングビットに残るため、解除した瞬間に
+    // 取りこぼさず処理される)
+    uint32_t exti_line = obj->echo.pin;
+    EXTI->IMR &= ~exti_line;
     if (obj->waiting_fall) {
-      // 前回計測の立ち下がりを検知できないままタイムアウトした場合の後始末
       obj->waiting_fall = 0;
       obj->distance_cm = ULTRASONIC_NO_ECHO;
     }
+    EXTI->IMR |= exti_line;
+
     DigitalOut_Write(&obj->trig, 1);
     WaitUs(10);
     DigitalOut_Write(&obj->trig, 0);
