@@ -175,10 +175,10 @@ void Setup() {
   Drive_Init(&drive, &motors, &encoder, &steering, &imu);
 
   // LD06 LiDAR (USART6, 230400bps)。
-  // 回転が安定するまで数秒かかるが、その間は Lidar_IsOk() が偽になるだけで待つ必要はない。
-  // Lidar_Init() は「呼ぶ前に給電済みであること」を契約としており (lidar.h)、Vehicle_Init()
-  // も obj->lidar_on = true という前提でここでの給電を初期化することを踏まえている
-  Power_SetLidarPower(&power, 1);
+  // LIDAR_POWER は起動時点では意図的に投入しない (Pi 未接続/DISARM の間は駆動系だけでなく
+  // LiDAR も無給電にする既定のため)。Lidar_Init() 自体はMCU側のペリフェラル (PWM/シリアル)
+  // を組み立てるだけで LD06 本体の給電は前提にしないため、ここで呼んでも問題ない。
+  // 実際の給電は Vehicle 層が上位の ARM 要求に応じて行う (UpdateLidarPower(), vehicle.c)
   Serial_Init(&lidar_serial, &huart6, lidar_serial_rx_buf, LIDAR_SERIAL_RX_BUF_SIZE);
   Lidar_Init(&lidar, &lidar_serial, &htim1, TIM_CHANNEL_1);
 

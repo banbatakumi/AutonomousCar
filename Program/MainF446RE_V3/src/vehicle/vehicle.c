@@ -283,9 +283,13 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
 
-  // Setup() が Vehicle_Init より前に Power_SetLidarPower() でLiDARへ給電済みの状態を反映する
+  // Setup() は LIDAR_POWER を意図的に投入しない (Pi 未接続/DISARM の間は LiDAR も
+  // 無給電にする既定のため、実機で確認済み)。ここを true にすると UpdateLidarPower() の
+  // if (!obj->lidar_on) が常に偽になり、初回 ARM で Power_SetLidarPower() が一度も
+  // 呼ばれず給電されないまま放置される不具合になるため、実際の起動時給電状態 (false) に
+  // 合わせておく
   Timer_Init(&obj->lidar_idle_timer);
-  obj->lidar_on = true;
+  obj->lidar_on = false;
 }
 
 void Vehicle_Update(Vehicle* obj) {

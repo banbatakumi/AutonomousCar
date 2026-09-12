@@ -90,7 +90,9 @@ typedef struct {
  * @brief LiDAR を初期化する。serial には LD06 が繋がった USART6 (230400bps) を、
  * htim/channel には回転モータ PWM (LIDAR_OUT = PA8, TIM1 CH1) を渡す。
  * PWM の周期を 30kHz へ張り替えてからモータを回し始める。
- * 呼ぶ前に Power_SetLidarPower() で LiDAR の電源を入れておくこと。
+ * ここではMCU側のペリフェラル (PWM/シリアル) を組み立てるだけで LD06 本体の給電は
+ * 前提にしないため、LIDAR_POWER が未投入 (Setup() 時点など) のまま呼んでよい。
+ * 実際の給電は上位の ARM 要求に応じて Vehicle 層が行う (UpdateLidarPower(), vehicle.c)。
  */
 void Lidar_Init(Lidar* obj, Serial* serial, TIM_HandleTypeDef* htim, uint32_t channel);
 
