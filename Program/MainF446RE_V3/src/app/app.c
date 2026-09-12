@@ -194,6 +194,17 @@ void Setup() {
   Telemetry_Init(&telemetry, &ras_link, &vehicle, &power, &encoder, &imu, &lidar, &motors,
                  &steering, &drive, &range_sensor);
 
+  // Setup() 中の長時間ブロッキング処理 (IMU静止較正のHAL_Delay、起動演出、ステアリング
+  // 較正のFlash書き込み等) はすべてここまでに出そろっている。Serial_Available() の
+  // オーバーラン検出はポーリング間隔の実時間で判定するため、このままだと直後の
+  // 最初のポーリングでブロッキングしていた分を誤ってオーバーランと判定してしまう
+  // (serial.h のコメント参照)。実際にポーリングを再開する直前でタイマーを仕切り直す
+  Serial_ResetOverrunTimer(&steering_serial);
+  Serial_ResetOverrunTimer(&rear_left_serial);
+  Serial_ResetOverrunTimer(&rear_right_serial);
+  Serial_ResetOverrunTimer(&lidar_serial);
+  Serial_ResetOverrunTimer(&ras_serial);
+
   Timer_Init(&control_interval_timer);
   printf("Setup finished\n");
 

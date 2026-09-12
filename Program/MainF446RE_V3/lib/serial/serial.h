@@ -36,7 +36,14 @@ static inline void Serial_Init(Serial* self, UART_HandleTypeDef* huart, uint8_t*
 // 「一度も追い越されていない」のか「何周も追い越された」のかを区別できない
 // (周回数ぶんの情報が失われる)。そのため何バイト流れたかではなく、「バッファを満たすのに
 // 要する時間より長くポーリング間隔が空いたか」を実時間 (Micros) で判定する。
-// 呼び出し側 (RasLink_Update 等) が制御周期ごとに呼ぶ前提 (でなければこの判定自体が狂う)
+// 呼び出し側 (RasLink_Update 等) が制御周期ごとに呼ぶ前提 (でなければこの判定自体が狂う)。
+//
+// 注意: この前提が崩れる代表例が、メインループを止める長時間ブロッキング処理
+// (src/sensing/imu.c の静止キャリブレーション中の HAL_Delay、lib/flash/flash.h の
+// HAL_FLASHEx_Erase 等) の直後。ブロッキングしていた間はポーリングできていないだけで
+// 実際にオーバーランしたとは限らないため、そのままだと誤検知しうる。Setup() 完了直後
+// (=長時間ブロッキング処理が出そろった後) に Serial_ResetOverrunTimer() でタイマーを
+// 仕切り直しておくこと
 static inline bool Serial_Available(Serial* self) {
   uint32_t baud = self->huart->Init.BaudRate;
   uint32_t now = Micros();
@@ -91,6 +98,15 @@ static inline bool Serial_IsTxBusy(Serial* self) {
 static inline bool Serial_WriteAsync(Serial* self, const uint8_t* data, uint16_t len) {
   if (Serial_IsTxBusy(self)) return false;
   return HAL_UART_Transmit_DMA(self->huart, (uint8_t*)data, len) == HAL_OK;
+}
+
+// Setup() など長時間ブロッキングする処理が出そろった直後に呼ぶ。rxLastPollUs を
+// そのままにしておくと、ブロッキングしていた間の空白がそのまま「オーバーランの疑い」
+// として Serial_Available に誤検知される (コメント参照) ため、実際にポーリングを
+// 再開する直前でタイマーだけ仕切り直す。受信済みバッファやDMAには触れない
+static inline void Serial_ResetOverrunTimer(Serial* self) {
+  self->rxLastPollUs = Micros();
+  self->rxOverrun = false;
 }
 
 static inline void Serial_Reset(Serial* self) {
