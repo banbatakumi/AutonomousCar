@@ -58,10 +58,18 @@ static float EstimateYawRate(Drive* obj) {
 
 // スリップ率 = (駆動輪周速 - その輪が本来出るべき速度) / 基準速度。
 // 低速域は分母が0に近づいて発散するため、TCごと無効化する。
+//
+// reference の符号 (進行方向) で正規化する: 後退中 (reference<0) は生の差分
+// (wheel_speed - reference) の符号が前進中と逆転する (例: 後退で本当に空転して
+// wheel_speed がreferenceより大きく負に振れている場合、差分は負になる) ため、
+// 正規化しないと UpdateTractionLimit() の符号付き判定 (正=空転) が後退中は
+// 逆側 (ロック側) をカットしてしまい、本当の空転を見逃す。片輪浮き対策
+// (WheelSpeedDiffAnomaly 呼び出し側) が dir で同様の正規化をしているのと同じ理由
 static float SlipRatio(float wheel_speed_m_s, float reference_speed_m_s) {
   float denominator = Abs(reference_speed_m_s);
   if (denominator < DRIVE_TC_MIN_SPEED_M_S) return 0.0f;
-  return (wheel_speed_m_s - reference_speed_m_s) / denominator;
+  float dir = reference_speed_m_s >= 0.0f ? 1.0f : -1.0f;
+  return (wheel_speed_m_s - reference_speed_m_s) * dir / denominator;
 }
 
 static void UpdateObservations(Drive* obj) {
