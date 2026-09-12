@@ -38,12 +38,15 @@ static inline void Serial_Init(Serial* self, UART_HandleTypeDef* huart, uint8_t*
 // 要する時間より長くポーリング間隔が空いたか」を実時間 (Micros) で判定する。
 // 呼び出し側 (RasLink_Update 等) が制御周期ごとに呼ぶ前提 (でなければこの判定自体が狂う)。
 //
-// 注意: この前提が崩れる代表例が、メインループを止める長時間ブロッキング処理
-// (src/sensing/imu.c の静止キャリブレーション中の HAL_Delay、lib/flash/flash.h の
-// HAL_FLASHEx_Erase 等) の直後。ブロッキングしていた間はポーリングできていないだけで
-// 実際にオーバーランしたとは限らないため、そのままだと誤検知しうる。Setup() 完了直後
-// (=長時間ブロッキング処理が出そろった後) に Serial_ResetOverrunTimer() でタイマーを
-// 仕切り直しておくこと
+// 注意: メインループを止める長時間ブロッキング処理 (src/sensing/imu.c の静止キャリブレー
+// ション中の HAL_Delay、lib/flash/flash.h の HAL_FLASHEx_Erase、IMU の I2C復旧処理等) の
+// 直後は、実際の受信バイト数によらず (baudレートの理論上限で計算した) fill_time_us を
+// 上回りやすく、保守的に「オーバーランの疑いあり」と判定されやすい。ただしこれは
+// Serial_Read() 側の「最新位置まで読み捨てて追いつく」動作と対になっており、ブロッキング
+// 中に溜まった (既に上書きされ得る) 古いバッファ内容を処理せず安全に読み飛ばして最新位置へ
+// 復帰する設計なので、それ自体は正常な自己修復動作である。実際に受信済みで未上書きの
+// フレームまで読み飛ばしてしまう (真の誤検知) 可能性はあるが、そちらはCRCチェックのある
+// 上位のフレームパーサ側で1フレーム分の取りこぼしとして許容する設計になっている
 static inline bool Serial_Available(Serial* self) {
   uint32_t baud = self->huart->Init.BaudRate;
   uint32_t now = Micros();
@@ -98,15 +101,6 @@ static inline bool Serial_IsTxBusy(Serial* self) {
 static inline bool Serial_WriteAsync(Serial* self, const uint8_t* data, uint16_t len) {
   if (Serial_IsTxBusy(self)) return false;
   return HAL_UART_Transmit_DMA(self->huart, (uint8_t*)data, len) == HAL_OK;
-}
-
-// Setup() など長時間ブロッキングする処理が出そろった直後に呼ぶ。rxLastPollUs を
-// そのままにしておくと、ブロッキングしていた間の空白がそのまま「オーバーランの疑い」
-// として Serial_Available に誤検知される (コメント参照) ため、実際にポーリングを
-// 再開する直前でタイマーだけ仕切り直す。受信済みバッファやDMAには触れない
-static inline void Serial_ResetOverrunTimer(Serial* self) {
-  self->rxLastPollUs = Micros();
-  self->rxOverrun = false;
 }
 
 static inline void Serial_Reset(Serial* self) {
