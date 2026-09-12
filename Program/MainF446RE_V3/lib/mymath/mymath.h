@@ -270,6 +270,10 @@ static inline float Atan2(float y, float x) {
             if (y < 0) return -HALF_PI;
             return 0;
       }
+      // y==0 かつ 0<|x|<1e-10 のとき、abs_y の epsilon (1e-10) が Abs(x) を上回って
+      // 下の分岐 (r = x/y) へ入り、x/0 (無限大) から NaN が生じる。x==0 の場合と同様に
+      // ここで明示的に処理する
+      if (y == 0) return x > 0.0f ? 0.0f : PI;
 
       float abs_y = Abs(y) + 1e-10f;  // 0除算防止
       float angle;
