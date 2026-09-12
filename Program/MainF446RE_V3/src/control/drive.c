@@ -398,13 +398,13 @@ void Drive_Update(Drive* obj) {
 
   // トルクベクタリングには実測ヨーレートが要る。IMU が使えないときの代用値 (舵角からの
   // 幾何計算) は規範モデルとほぼ同じ式なので、偏差が常に0付近になり制御として成立しない
+  bool tv_active = obj->yaw_rate_measured;
   float diff_nm = 0.0f;
-  if (obj->yaw_rate_measured) {
+  if (tv_active) {
     diff_nm = TorqueVectoring_Update(&obj->tv, obj->vehicle_speed_m_s,
                                      Steering_GetRoadWheelAngleRad(obj->steering),
                                      obj->yaw_rate_rad_s, dt_s);
     diff_nm = LimitDiffTorque(effective_limit_left_nm, effective_limit_right_nm, requested_total_nm, diff_nm);
-    TorqueVectoring_ReportApplied(&obj->tv, diff_nm, dt_s);
   } else {
     TorqueVectoring_Reset(&obj->tv);
   }
@@ -418,6 +418,13 @@ void Drive_Update(Drive* obj) {
 
   left_nm = ApplyOverspeedLimit(obj, left_nm);
   right_nm = ApplyOverspeedLimit(obj, right_nm);
+
+  // LimitDiffTorque() は通常この後のクランプをno-opにする設計だが、左右の実効上限
+  // (effective_limit_left/right_nm) がTC/片輪浮き対策で非対称に強く削られている場合、
+  // ApplyOverspeedLimit も含めた後続クランプで実際に送信される差分が diff_nm と
+  // 食い違いうる。積分の巻き戻し (UnwindIntegral 相当) と同じ理由で、TVへ報告する
+  // 適用済み差分も「実際に送信される値」に揃えるため、全クランプ後にここで算出し直す
+  if (tv_active) TorqueVectoring_ReportApplied(&obj->tv, right_nm - left_nm, dt_s);
 
   // torque_mode 中は PID を使っていない (毎周期リセット済み) ので巻き戻しは無意味
   if (!obj->torque_mode_active) UnwindIntegral(obj, requested_total_nm, left_nm + right_nm, dt_s);
