@@ -43,7 +43,13 @@ static float Lighting_WinkerDutyAt(uint32_t elapsed_ms) {
 // duty が高くても埋もれ得るので、両方の大きい方を見る。両方とも暗いとき (前照灯 OFF かつ
 // ブレーキ非点灯) は視認性を落とさない範囲で LIGHTING_WINKER_MIN_DUTY まで省電力化する
 static float Lighting_WinkerPeakDuty(const Lighting* obj) {
-  float duty = obj->front_light_duty > obj->rear_light_duty ? obj->front_light_duty : obj->rear_light_duty;
+  // brake_flashing 中 (緊急制動) の rear_light_duty は LIGHTING_BRAKE_FLASH_PERIOD_MS (250ms)
+  // 周期で 1.0/0.0(またはLIGHTING_TAILLIGHT_DUTY) を振動する瞬時値。これをそのまま基準にすると
+  // ハザードとの同時発生時にウィンカーの明るさがブレーキ点滅レートでビートを打ってしまう
+  // (どちらも独立した周期の点滅のため)。点滅の山では結局1.0まで明るくなる想定なので、
+  // 瞬時値ではなく点滅ピーク相当の1.0で代用し、ウィンカー側の duty を安定させる
+  float rear_reference = obj->brake_flashing ? 1.0f : obj->rear_light_duty;
+  float duty = obj->front_light_duty > rear_reference ? obj->front_light_duty : rear_reference;
   return duty > LIGHTING_WINKER_MIN_DUTY ? duty : LIGHTING_WINKER_MIN_DUTY;
 }
 
