@@ -52,8 +52,8 @@
 // ---------------------------------------------------------------------------
 // モジュールのインスタンス
 // ---------------------------------------------------------------------------
-static uint16_t adc1_buffer[POWER_ADC1_NUM_CH];
-static uint16_t adc2_buffer[ENCODER_ADC2_NUM_CH];
+static uint16_t adc1_buffer[POWER_ADC1_NUM_CH * POWER_ADC1_NUM_SAMPLES];
+static uint16_t adc2_buffer[ENCODER_ADC2_NUM_CH * ENCODER_ADC2_NUM_SAMPLES];
 static AdcDma adc1;
 static AdcDma adc2;
 
@@ -122,8 +122,8 @@ void Setup() {
   Lighting_Init(&lighting, &htim3, TIM_CHANNEL_1, &htim3, TIM_CHANNEL_3,
                 &htim3, TIM_CHANNEL_2, &htim3, TIM_CHANNEL_4);
 
-  AdcDma_Init(&adc1, &hadc1, adc1_buffer, POWER_ADC1_NUM_CH);
-  AdcDma_Init(&adc2, &hadc2, adc2_buffer, ENCODER_ADC2_NUM_CH);
+  AdcDma_Init(&adc1, &hadc1, adc1_buffer, POWER_ADC1_NUM_CH, POWER_ADC1_NUM_SAMPLES);
+  AdcDma_Init(&adc2, &hadc2, adc2_buffer, ENCODER_ADC2_NUM_CH, ENCODER_ADC2_NUM_SAMPLES);
   Power_Init(&power, &adc1,
              DRIVE_POWER_GPIO_Port, DRIVE_POWER_Pin,
              LIDAR_POWER_GPIO_Port, LIDAR_POWER_Pin);

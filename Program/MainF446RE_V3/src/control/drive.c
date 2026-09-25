@@ -28,7 +28,7 @@ static float EstimateVehicleSpeed(Drive* obj) {
 }
 
 // TCのスリップ判定専用の車体速度推定。EstimateVehicleSpeed() と同じ計算だが、
-// DRIVE_LPF_K_FRONT (τ≈100ms) ではなく軽い DRIVE_LPF_K_FRONT_TC (τ≈25ms) を使う。
+// DRIVE_LPF_K_FRONT (τ≈10ms) ではなく軽い DRIVE_LPF_K_FRONT_TC (τ≈5ms) を使う。
 // フル加速のようなランプ入力では前者の遅れが τ×加速度 ぶん基準速度を系統的に低く見せ、
 // 遅れのほぼ無い後輪速度との差が「常時空転」という誤ったスリップ率を生むため、
 // PID用の値とは別に用意する (詳細は DRIVE_LPF_K_FRONT_TC のコメント参照)

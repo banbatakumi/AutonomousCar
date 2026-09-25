@@ -11,6 +11,12 @@ typedef enum {
   ENCODER_ADC2_NUM_CH,
 } EncoderAdc2Channel;
 
+// ADC2 の DMA 循環バッファに溜めるスキャン数。毎周期これを全部平均して角度の ADC ノイズを
+// √N 倍に下げる。1スキャン (2ch × (144+12)cycle @22.5MHz) ≈ 13.9us なので 32 スキャンで約 444us。
+// バッファが1制御周期 (500us) より長いと、前周期と同じサンプルを平均に含めてしまい
+// 実質的な移動平均の窓が延びて遅れが増えるので、500us に収まる範囲で選ぶこと
+#define ENCODER_ADC2_NUM_SAMPLES 32
+
 typedef struct {
   AdcDma* adc2;
   Timer timer;
@@ -30,7 +36,8 @@ typedef struct {
 } Encoder;
 
 /**
- * @brief エンコーダ読み取りモジュールを初期化する。ADC2 (ENCODER_LEFT/RIGHT) を DMA で読む AdcDma を渡す。
+ * @brief エンコーダ読み取りモジュールを初期化する。ADC2 (ENCODER_LEFT/RIGHT) を DMA で読む AdcDma を渡す
+ * (num_samples = ENCODER_ADC2_NUM_SAMPLES で初期化しておくこと)。循環バッファが一巡するのを待つため 1〜2ms ブロックする。
  * アナログ出力エンコーダは +3V3 をフルスケールとして 1回転 (0-2*PI rad) で電圧が線形に一周する前提。
  */
 void Encoder_Init(Encoder* obj, AdcDma* adc2);
