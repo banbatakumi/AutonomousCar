@@ -21,7 +21,8 @@
 
 // トルク上限のスケール。MD側の SERIAL_TORQUE_LIMIT_SCALE と必ず一致させること。
 // 上限値なので符号を持たせず uint8 のレンジをすべて正側に使う (0〜0.255 N・m)。
-// モータ最大 0.1557 N・m に対してレンジを詰めてあり、分解能 1mN・m で 155段階を取れる
+// モータ最大 (MD側 Kt × MAX_CURRENT = 約0.195 N・m、Kt は較正値から決まる) に対してレンジを
+// 詰めてあり、分解能 1mN・m で約195段階を取れる
 // (電流センサの量子化 0.0081A/LSB = 0.158mN・m と釣り合う粒度)。
 #define BLDC_MOTOR_SCALE_TORQUE_LIMIT 0.001f
 
@@ -66,15 +67,21 @@ static uint8_t EncodeLimit(float value, float scale) {
   return (uint8_t)raw;
 }
 
-static void Transmit(BldcMotor* obj) {
-  if (Timer_ReadUs(&obj->tx_timer) < BLDC_MOTOR_TX_INTERVAL_US) {
-    return;
-  }
-  Timer_Reset(&obj->tx_timer);
+// 1フレームの送信時間 [us] (8N1 = 1バイト10bit)
+static uint32_t FrameTimeUs(const BldcMotor* obj) {
+  uint32_t baud = obj->serial->huart->Init.BaudRate;
+  if (baud == 0) return 0;
+  return (uint32_t)((BLDC_MOTOR_TX_FRAME_SIZE * 10ULL * 1000000ULL) / baud);
+}
 
+void BldcMotor_Transmit(BldcMotor* obj) {
   if (!obj->tx_enabled) {
     return;
   }
+  if (Timer_ReadUs(&obj->tx_timer) < FrameTimeUs(obj) + BLDC_MOTOR_TX_GUARD_US) {
+    return;
+  }
+  Timer_Reset(&obj->tx_timer);
 
   obj->tx_frame[0] = BLDC_MOTOR_HEADER;
   obj->tx_frame[1] = obj->tx_header;
@@ -107,7 +114,7 @@ static void ParseStatusFrame(BldcMotor* obj) {
   obj->data_valid = true;
 }
 
-static void Receive(BldcMotor* obj) {
+void BldcMotor_Receive(BldcMotor* obj) {
   while (Serial_Available(obj->serial)) {
     uint8_t b = Serial_Read(obj->serial);
 
@@ -163,9 +170,8 @@ void BldcMotor_Init(BldcMotor* obj, Serial* serial) {
 }
 
 void BldcMotor_Update(BldcMotor* obj) {
-  // 受信は間引かない。Serialのリングバッファは64バイトしかなく、溢れると状態フレームを失う
-  Receive(obj);
-  Transmit(obj);
+  BldcMotor_Receive(obj);
+  BldcMotor_Transmit(obj);
 }
 
 void BldcMotor_SetAngularSpeed(BldcMotor* obj, float rad_s) {

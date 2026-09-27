@@ -48,9 +48,13 @@
 // 溜まる分 (約9バイト) に対して十分な余裕を取る
 #define LIDAR_SERIAL_RX_BUF_SIZE 256
 
-// ステアリング/左後輪/右後輪 各MDとのシリアル受信バッファサイズ [B] (11バイトの状態フレーム
-// 1つに対して十分な余裕)
-#define MD_SERIAL_RX_BUF_SIZE 64
+// ステアリング/左後輪/右後輪 各MDとのシリアル受信バッファサイズ [B]。
+// MD とは USART2/USART3/UART4 とも 1000000bps (2026-09-27 に 250000bps から変更。APB1 45MHz で
+// USARTDIV = 45M/(16×1M) = 2.8125 = 2+13/16 となり誤差 0%。MD側は PCLK1 36MHz ÷ 1M = 36 で誤差 0%)。
+// MDは 500us ごとに11バイトの状態フレームを返すので1周期あたり約11バイト。Serial_Available() は
+// バッファが線速で満杯になる時間より長くポーリングが空くと読み捨てるため、1Mbps では
+// 64バイトだと 640us しか猶予が無く制御周期の揺らぎで誤判定しうる。256バイト (2.56ms) 取る
+#define MD_SERIAL_RX_BUF_SIZE 256
 
 // ---------------------------------------------------------------------------
 // モジュールのインスタンス
@@ -273,9 +277,12 @@ void MainApp() {
     Buzzer_Update(&buzzer);
     UpdateSensors();
 
+    // MDの状態 (舵角・後輪速度) は Vehicle/Drive が使うので先に受信し、Drive が決めた指令は
+    // その周期のうちに送る (受信を後に回すと1周期古い値で制御することになる)
+    Motors_Receive(&motors, Power_IsDriveOn(&power));
     Vehicle_Update(&vehicle);
     Drive_Update(&drive);
-    Motors_Update(&motors, Power_IsDriveOn(&power));
+    Motors_Transmit(&motors, Power_IsDriveOn(&power));
 
     // Telemetry_Update 自体が内部で 100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるため、
     // 毎周期呼んでも問題ない。実際の送信は RasLink 側でさらにキューイングされる

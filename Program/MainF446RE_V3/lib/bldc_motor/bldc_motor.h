@@ -43,9 +43,10 @@
 // ---------------------------------------------------------------------------
 #define BLDC_MOTOR_RX_BODY_SIZE 9  // status+temp+theta+speed+iq+torque_limit (CRCとヘッダを除く)
 
-// 指令フレームの送信周期 [us]。制御ループより遅い周期で送るため、BldcMotor_Update() は
-// これより短い間隔で呼ばれても送信をスキップする (受信の取りこぼしを防ぐため受信は毎回行う)
-#define BLDC_MOTOR_TX_INTERVAL_US 1000
+// 送信間隔の下限に、1フレームの送信時間 (ボーレートから算出) へ上乗せする余裕 [us]。
+// Serial_Write は進行中の送信を打ち切るため、前のフレームを送り切る前に次を送らないための下限。
+// 制御周期 (500us) より十分短いので、通常の制御ループでは毎周期送られる
+#define BLDC_MOTOR_TX_GUARD_US 20
 
 // BLDCモータドライバ (MD) との通信ヘッダ。MD側の SERIAL_COMMANDS テーブルの header と対応させること。
 typedef enum {
@@ -95,10 +96,24 @@ typedef struct {
 void BldcMotor_Init(BldcMotor* obj, Serial* serial);
 
 /**
- * @brief 指令の送信と状態フレームの受信・パースを行う。MDが無通信0.5秒で停止モードに移行するため、
- * 制御周期ごと (目安 10ms 以内) に呼び続けること。
- * 呼び出し間隔が BLDC_MOTOR_TX_INTERVAL_US より短い場合、送信のみが間引かれる
- * (受信は毎回処理する)。制御ループの周期を気にせず毎周期呼んでよい。
+ * @brief 状態フレームを受信・パースする。制御ループでは、受信した値を使うモジュール
+ * (Steering/Drive 等) の更新より前に毎周期呼ぶこと (後に呼ぶと1周期古い値で制御することになる)。
+ * Serial のリングバッファを溢れさせないため、間引かずに毎周期呼ぶこと。
+ */
+void BldcMotor_Receive(BldcMotor* obj);
+
+/**
+ * @brief 現在の指令を送信する。MDが無通信0.5秒で停止モードに移行するため、制御周期ごとに
+ * 呼び続けること。指令を決めるモジュール (Drive/Steering 等) の更新の直後に呼ぶと、
+ * 決めた指令がそのまま送られる (間引くと、その分だけ古い指令がMDに届く)。
+ * 前のフレームを送り切っていない (1フレームの送信時間 + BLDC_MOTOR_TX_GUARD_US 未満) 間は
+ * 送信をスキップする。
+ */
+void BldcMotor_Transmit(BldcMotor* obj);
+
+/**
+ * @brief BldcMotor_Receive と BldcMotor_Transmit をこの順に呼ぶ。制御ループ以外
+ * (初期化中の待ちループ等) で使う。
  */
 void BldcMotor_Update(BldcMotor* obj);
 

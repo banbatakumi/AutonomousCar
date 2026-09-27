@@ -84,8 +84,8 @@
 // トラクションコントロール (TC) パラメータ
 // ===========================================================================
 #define DRIVE_TC_SLIP_THRESHOLD 0.2f   // これを超えるスリップ率からトルクを削り始める
-#define DRIVE_TC_CUT_GAIN 0.1f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
-#define DRIVE_TC_RECOVER_RATE 0.1f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
+#define DRIVE_TC_CUT_GAIN 0.3f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
+#define DRIVE_TC_RECOVER_RATE 0.2f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
 #define DRIVE_TC_MIN_TORQUE_NM 0.005f  // 削り切っても完全には0にしない (再加速できなくなるため)
 #define DRIVE_TC_MIN_SPEED_M_S 0.25f   // これ以下の車速ではスリップ率が発散するのでTCを効かせない
 // スリップ率がしきい値を超えてから、実際にトルクを削り始めるまでの継続時間 [s]。
@@ -171,7 +171,7 @@ typedef struct {
   // 真の間は車速PIを迂回し、manual_torque_nm を左右等配分の総駆動トルクとして直接使う
   // (TC/TV は掛けたまま。brake_active の方が優先される)
   bool torque_mode_active;
-  float manual_torque_nm;  // torque_mode 中に指令された1輪あたりの駆動トルク [Nm] (負=後退方向)
+  float manual_torque_nm;   // torque_mode 中に指令された1輪あたりの駆動トルク [Nm] (負=後退方向)
   bool side_brake_active;   // 上位からの要求 (毎周期 Drive_SetSideBrake で更新)
   bool side_brake_engaged;  // 実際に位置保持へ入っているか (角度をラッチ済みか)
   float side_brake_target_left_rad;
@@ -181,7 +181,7 @@ typedef struct {
   // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
   // 1LSB = 2pi/4096 = 1.53mrad で、これを 500us で微分すると 1LSB あたり 3.07rad/s
   // (= 0.09m/s) に化ける。実測ではノイズが ±100mV 程度あり、静止中でも生値は ±12m/s 振れる
-  float vehicle_speed_m_s;      // 前輪から推定した車体前後方向の速度 (舵角で射影済み)
+  float vehicle_speed_m_s;  // 前輪から推定した車体前後方向の速度 (舵角で射影済み)
   // 前後方向判定用の応答が速い車速 (EstimateVehicleSpeedForSlip 由来、τ≈5ms)。
   // vehicle_speed_m_s (τ≈10ms) では急減速時の符号反転検出が遅れるため、
   // 自動停止の前後判定 (vehicle.c) 向けに分けて保持する
@@ -223,7 +223,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
 
 /**
  * @brief 車速制御・TC を1周期分実行し、後輪MDへのトルク指令を更新する。
- * 実際の送信は Motors_Update が行うため、本関数の後に Motors_Update を呼ぶこと。
+ * 実際の送信は Motors_Transmit が行うため、本関数の後に Motors_Transmit を呼ぶこと。
  * フィルタ係数が周期に依存するため、一定周期 (500us = 2kHz 想定) で呼ぶこと。
  */
 void Drive_Update(Drive* obj);

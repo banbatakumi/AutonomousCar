@@ -32,6 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - TCのゲイン (`DRIVE_TC_CUT_GAIN`/`DRIVE_TC_RECOVER_RATE`) チューニング用に、v0.13で `TELEMETRY` へ `slip[2]` (RL/RR、無次元)・`tc_limit_nm[2]` (RL/RR、TCが動的に決めているトルク上限) を追加した (`Drive_GetTcLimitLeft/Right()` を新設、`src/comm/telemetry.c`)。`TELEMETRY` の LEN は66→74。プロトコルは `docs/pi_uart_protocol_v0.13_delta.md` 参照 (`protocol_version` 0x000C→0x000D)。
 - サイドブレーキ (後輪の位置制御によるパーキングロック) がv0.13で追加された。`COMMAND.flags` は8bit全て使用済みのため、新設した `flags2` (`param_id`と違いCONFIG系ではなくCOMMANDの拡張バイト。brakeと同じ「上位が送り続けている間だけ有効」な継続コマンドの性質のため) のbit0 (`RAS_CMD_FLAG2_SIDE_BRAKE`) で伝える。有効化された瞬間の後輪モータ機械角度を `BldcMotor_GetMechAngle()` でラッチし、`BldcMotor_SetPosition()` で位置制御へ切り替えて機械的に固定する (`Drive_SetSideBrake()`、`src/control/drive.c`)。後輪はダイレクトドライブのためモータ機械角=車輪角そのもので、かつ「読み取った角度をそのまま送り返すだけ」なので左右の符号反転・0/2π境界の正規化のいずれも不要。速度・通常ブレーキ・torque_modeより優先し、**速度に関わらず即座に切り替わる** (停止を待たない、ユーザーの明示判断)。MDの状態フレームが無効 (給電直後など) でラッチ角度が取れない間は幽霊値 (角度0) を避けるため通常の最大トルク制動へフォールバックし、実際に位置保持へ入っているかは `TELEMETRY.flags` の `RAS_FLAG_SIDE_BRAKE_ACTIVE` (bit17) で区別できる。`COMMAND` の LEN は14→15。プロトコルは `docs/pi_uart_protocol_v0.13_delta.md` 参照。**実機での動作検証は未了**。
 - ウィンカー (右左折・車線変更の意思表示) がv0.14で追加された。`Lighting_SetWinker()` (`src/lighting/lighting.c`) 自体はv0.13以前から存在しハザード表示 (`src/hmi/indicator.c`) が使っていたが、`ApplyRasCommand()` から一度も呼ばれていない実装漏れだった。`flags2` (v0.13で新設済み、ワイヤ形式・LENの変更は無い) のbit1/bit2 (`RAS_CMD_FLAG2_WINKER_LEFT`/`_RIGHT`) で伝え、両方立てるとハザードとして扱う (専用のハザードビットは無い)。`Vehicle` は上位の要求を `winker_request` (Vehicle_GetWinkerRequest()) として保持するだけで `Lighting_SetWinker()` を直接呼ばない — フォールト時のハザード表示 (`indicator.c`) の方が優先すべきで、両モジュールが同じ `Lighting_SetWinker()` を無条件に呼び合うと呼び出し順で優先度が決まってしまうため、調停を `Indicator_Update()` (`src/hmi/indicator.c`、フォールト中はwinker_requestを無視してHAZARD固定) の一箇所に集約した。`TELEMETRY.flags` のbit18/19 (`RAS_FLAG_WINKER_LEFT/RIGHT_ACTIVE`) は要求ではなく `Lighting_GetWinkerState()` (新設) が返す実際の点灯状態を反映するため、フォールト中は要求と食い違いうる。`COMMAND` 途絶・緊急停止では horn/passing と同様に `winker_request` を強制OFFする。`protocol_version` 0x000D→0x000E。プロトコルは `docs/pi_uart_protocol_v0.14_delta.md` 参照。**実機での動作検証は未了**。
+- MD (BLDC, `../../../BLDC/ProgramV4`) との通信遅延を 2026-09-27 に見直した。MD側: ①受信位置を DMA の半分/満了割り込みでしか進めておらず、128バイト (指令約21ms分) 溜まるまで受信が見えなかったのを CNDTR 読みに変更、②送信DMAが Circular で同じバッファを延々再送しつつ上書きしていた (送信途中で中身が入れ替わったフレームがCRC不一致で捨てられる) のを Normal に変更、③トルク・制動モードのIq指令を1kHzの外側ループではなく20kHzで反映、④状態フレームを1kHz→2kHz。メイン側: 指令を1kHz間引き→毎周期 (2kHz) 送信、MD状態の受信を Vehicle/Drive の前へ移動。両側のボーレートを 250000→1000000bps に上げた (配線は約20cm。インパルス性のノイズに対してはフレームが短い方がむしろ化けにくく、化けてもCRCで破棄され前回値保持になる)。加えてMD側で状態フレームの角速度が ±3.28rad/s (後輪周速約0.1m/s) で頭打ちになるバグ (2026-09-12 の 8983d7f で混入、クランプ範囲を100倍前の値で書いていた) を修正した。このバグ入りのMDファームで取ったTC・片輪浮き対策・後輪速度のデータは信用できない。**MD・メイン両方の書き込みと、`md_rx_error` (テレメトリ) の増加有無の実機確認は未了**。
 
 ---
 
@@ -149,8 +150,11 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
   adc_dma/      ADC を DMA (Circular+ContinuousConvMode) で連続変換させ最新値を非ブロッキングで読む薄いラッパ
   ahrs/         6軸 (ジャイロ+加速度) Mahony 相補フィルタによる姿勢推定 (HAL 非依存)
   bldc_motor/   BLDC モータドライバ (MD) とのシリアル通信プロトコル実装 (指令送信・状態フレーム受信/パース)。
-                送信のみ 1kHz (BLDC_MOTOR_TX_INTERVAL_US) に間引かれ、受信は呼ばれるたびに処理する
-                (Serial のリングバッファ 64 バイトを溢れさせないため)。
+                受信 (BldcMotor_Receive) と送信 (BldcMotor_Transmit) は分かれており、メインループでは
+                Motors_Receive → Vehicle_Update → Drive_Update → Motors_Transmit の順に毎周期 (2kHz) 呼ぶ
+                (受信を指令計算の前に置かないと1周期古い状態で制御することになり、送信を間引くと
+                その分古い指令が届くため)。送信は前のフレームを送り切る時間 (フレーム長÷ボーレート +
+                BLDC_MOTOR_TX_GUARD_US) 未満の間隔では行わない。MD側は状態フレームを 500us ごとに返す。
                 指令フレームは 6 バイト固定長で、モード・指令値に加えてトルク上限を毎回載せる
                 (CANopen の RxPDO 相当。フレーム1つが常に完結した状態を表すので、取りこぼしや
                 MD 単独のリセットがあっても次のフレームで復元され、設定値を別途同期する
@@ -158,15 +162,17 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
                 (固定値のフッタはペイロードの情報を含まないためデータ化けを検出できない)。
                 トルク上限は uint8 で符号なし・切り捨て量子化・レンジ外飽和とし、初期値 0 は
                 「無制限」ではなく「上限 0」= 動かない側に倒してある。
-                速度上限は持たない。位置制御では速度指令が Kp × 位置偏差 で決まり舵角が
-                ±60度に有界なので位置ゲイン自体がリミッタとして働き、後輪はトルクモードなので
-                過速度の歯止めは Drive_Update の車速リミッタ側にある。
+                速度上限は持たない。MDの位置モードは位置PIDの出力をそのままIq指令にする構成
+                (速度ループは無い) で、移動速度は加速側がトルク上限、減速側がMDの kp/kd で決まる。
+                後輪はトルクモードなので過速度の歯止めは Drive_Update の車速リミッタ側にある。
+                MDはトルク・制動モードの指令を 20kHz の電流ループで毎周期反映する (速度・位置モードは 1kHz)。
                 MD からの状態フレーム (11バイト) も同じ方針で CRC-8 + フッタ無しとし、末尾に
                 MD が適用中のトルク上限をエコーバックさせている。CRC 不一致のフレームは破棄して
                 前回値を保持する (誤った角度・速度で制御するより保持する方が安全)。
                 指令した制限値と一致しているかは BldcMotor_IsLimitSynced() で確認できる。
                 Serial_Write は先頭で HAL_UART_AbortTransmit を呼ぶため、1回の送信
-                (6バイト=240us) は必ず次の送信までに完了させること
+                (6バイト=60us@1Mbps) は必ず次の送信までに完了させること。
+                MD側のファームウェアは ../../../BLDC/ProgramV4 (仕様は docs/SERIAL_PROTOCOL.md)
   buzzer/       PWM ブザー制御 (パターン再生、起動メロディ)
   crc8/         CRC-8/AUTOSAR (poly=0x2F)。ヘッダオンリー。MD との通信で使用する。
                 **BLDC リポジトリ (ProgramV4/lib/crc8/crc8.h) とバイト単位で同一に保つこと**
@@ -236,7 +242,7 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
 - **TIM3**: Prescaler 9, Period 899 — ライト系 PWM (前照灯/尾灯/左右ウィンカー)
 - **TIM4**: Prescaler 9, Period 899 — LED3/LED4 PWM
 
-UART は USART1/2/3/6, UART4/5 の 6 系統が CubeMX で設定済み (USART6 のみ 230400bps、USART1 (Raspberry Pi) は 1000000bps、他は 250000bps)。BLDC MD は USART2 (ステアリング) / USART3 (左後輪) / UART4 (右後輪) に割り当て済み。250000bps 8N1 は 1 バイト 40us なので、5 バイトのフレーム 1 つに 200us かかる (送信周期を決めるときはこれを基準にする)。`Buzzer_Init` に渡すクロック/プリスケーラ値は `Core/Src/tim.c` の `MX_TIMx_Init` の設定値と必ず一致させること (不一致は無音・音程ズレの原因になる)。
+UART は USART1/2/3/6, UART4/5 の 6 系統が CubeMX で設定済み (USART6 のみ 230400bps、USART1 (Raspberry Pi) と MD 用の USART2/USART3/UART4 は 1000000bps、UART5 は 250000bps)。BLDC MD は USART2 (ステアリング) / USART3 (左後輪) / UART4 (右後輪) に割り当て済み。MD との通信は 2026-09-27 に 250000bps から 1000000bps へ上げた (MD側と同時に書き換えること。片側だけだと全フレームが化けて通信断になる)。1000000bps 8N1 は 1 バイト 10us なので、指令フレーム (6バイト) は 60us、状態フレーム (11バイト) は 110us かかる (送信周期を決めるときはこれを基準にする)。`Buzzer_Init` に渡すクロック/プリスケーラ値は `Core/Src/tim.c` の `MX_TIMx_Init` の設定値と必ず一致させること (不一致は無音・音程ズレの原因になる)。
 
 DMA の割り当て (`Core/Src/dma.c`): **DMA1 の Stream0–7 はすべて UART が使用済み**。STM32F446 の I2C1 は DMA1 (RX: Stream0/5、TX: Stream6/7) しか使えないため、UART の DMA を潰さない限り I2C に DMA は割り当てられない。そのため MPU6050 は割り込み駆動 I2C (`HAL_I2C_Mem_Read_IT`) で読んでいる。
 

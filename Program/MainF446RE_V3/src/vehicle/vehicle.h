@@ -116,7 +116,7 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
 
 /**
  * @brief ハートビート監視・緊急停止の判定と、指令の車両への適用を1周期分行う。
- * Drive_Update / Motors_Update より前に、制御周期ごとに呼ぶこと。
+ * Drive_Update / Motors_Transmit より前に、制御周期ごとに呼ぶこと。
  */
 void Vehicle_Update(Vehicle* obj);
 
