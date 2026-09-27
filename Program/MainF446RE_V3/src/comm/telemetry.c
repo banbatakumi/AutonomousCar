@@ -118,7 +118,7 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
 }
 
 void Telemetry_Update(Telemetry* obj) {
-  // RasLink 側の実送信自体が50Hzに間引かれるので、ここでの組み立ても同じ周期に間引く
+  // RasLink 側の実送信自体が100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるので、ここでの組み立ても同じ周期に間引く
   // (ADC読み・MD状態集計・BuildFlags()の全モジュール問い合わせを2kHzで回す必要はない)
   if (Timer_ReadUs(&obj->update_timer) < RAS_TELEMETRY_INTERVAL_US) return;
   Timer_Reset(&obj->update_timer);
@@ -129,6 +129,8 @@ void Telemetry_Update(Telemetry* obj) {
   const ImuData* imu_data = Imu_GetData(obj->imu);
   RasTelemetry telemetry;
 
+  // スナップショットの時刻。送信時刻ではなくこれを TELEMETRY の t_us に載せる (RasTelemetry.t_us)
+  telemetry.t_us = Micros();
   telemetry.flags = BuildFlags(obj);
   telemetry.speed_m_s = Drive_GetVehicleSpeed(obj->drive);  // Drive 側で車体中心線方向へ射影済み
   telemetry.yaw_rate_rad_s = Radians(imu_data->gyro_z);

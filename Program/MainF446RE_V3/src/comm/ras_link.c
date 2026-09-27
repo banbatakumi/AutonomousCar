@@ -248,7 +248,7 @@ static void SendTelemetry(RasLink* obj) {
   uint8_t p[RAS_LEN_TELEMETRY];
   uint16_t pos = 0;
 
-  PutU32(p, &pos, Micros());
+  PutU32(p, &pos, t->t_us);  // スナップショットの時刻 (送信時刻ではない。RasTelemetry.t_us 参照)
   PutU32(p, &pos, t->flags);
   PutI16(p, &pos, QuantizeI16(t->speed_m_s, 0.001f));
   PutI16(p, &pos, QuantizeI16(t->yaw_rate_rad_s, 0.001f));
@@ -273,6 +273,8 @@ static void SendTelemetry(RasLink* obj) {
   PutU8(p, &pos, QuantizeU8(t->us_distance_m[0], 0.02f));
   PutU8(p, &pos, QuantizeU8(t->us_distance_m[1], 0.02f));
   for (int i = 0; i < 3; i++) PutU8(p, &pos, t->md_status[i]);
+  // cmd_seq_echo はスナップショットの時点ではなく**送信時点**で最後に受けた COMMAND の SEQ
+  // (他のフィールドより最大1周期新しい)。上位の往復時間 (cmd_rtt_ms) の測定にはこの方が正しい
   PutU8(p, &pos, obj->has_command ? obj->command.seq : 0);
 
   SendFrame(obj, RAS_TXQ_TELEMETRY, RAS_TYPE_TELEMETRY, p, RAS_LEN_TELEMETRY, 0);
@@ -572,16 +574,19 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
       obj->rx_index = 0;
 
       int expected = ExpectedPayloadLen(obj->rx_type);
-      if (expected < 0) {
-        obj->rx_unknown_type++;
-        obj->rx_discard = true;
-      } else if (expected != (int)obj->rx_len) {
-        obj->rx_len_error++;
-        obj->rx_discard = true;
-      } else {
-        obj->rx_discard = false;
+      if (expected < 0 || expected != (int)obj->rx_len) {
+        if (expected < 0) {
+          obj->rx_unknown_type++;
+        } else {
+          obj->rx_len_error++;
+        }
+        // その場で同期ワードの探し直しに戻る。上位から来るのは既知の TYPE・固定長だけなので、
+        // ここに来るのは TYPE/LEN が化けたとき。以前は化けた LEN ぶん (最大 255+CRC2 バイト) を
+        // 読み飛ばしており、Pi→STM は約 2.3〜3.4kB/s なので 75〜110ms 分の COMMAND を失って
+        // COMMAND 途絶 (100ms) の自動ブレーキに入りえた (2026-09-27)
+        obj->rx_state = RX_SYNC1;
+        break;
       }
-      // 破棄する場合でも同期を保つためペイロードと CRC は読み飛ばす
       obj->rx_state = (obj->rx_len > 0) ? RX_PAYLOAD : RX_CRC_LO;
       break;
     }
@@ -606,7 +611,6 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
         obj->rx_crc_error++;
         break;
       }
-      if (obj->rx_discard) break;
 
       // SEQ の欠番からロス数を数える (方向ごとの通し番号なのでリンク全体の指標になる)
       if (obj->rx_seq_valid) {
@@ -651,7 +655,7 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
   obj->config.auto_stop_margin_cm = RAS_AUTO_STOP_MARGIN_DEFAULT_CM;
 
   uint32_t now = Micros();
-  obj->last_telemetry_us = now;
+  obj->telemetry_ready = false;
   obj->last_stats_us = now;
   obj->last_version_us = now;
   obj->version_burst_left = RAS_VERSION_BURST_COUNT;
@@ -673,8 +677,7 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
 
 void RasLink_OnUartIdle(RasLink* obj) {
   obj->rx_idle_time_us = Micros();
-  obj->rx_idle_head =
-      (uint16_t)(obj->serial->rxBufSize - obj->serial->huart->hdmarx->Instance->NDTR);
+  obj->rx_idle_head = Serial_DmaHead(obj->serial);
 }
 
 void RasLink_Update(RasLink* obj) {
@@ -693,8 +696,11 @@ void RasLink_Update(RasLink* obj) {
     obj->last_version_us = now;
     obj->version_burst_left--;
   }
-  if ((uint32_t)(now - obj->last_telemetry_us) >= RAS_TELEMETRY_INTERVAL_US) {
-    obj->last_telemetry_us = now;
+  // テレメトリは Telemetry_Update が新しいスナップショットを作ったときに1回だけ送る (周期は
+  // Telemetry_Update 側の 100Hz)。以前は独立した 50Hz タイマーで送っており、スナップショットとの
+  // 位相差 (0〜20ms) だけ古い中身を送り、位相がずれると同じ中身を2回送る・1回飛ばすこともあった
+  if (obj->telemetry_ready) {
+    obj->telemetry_ready = false;
     SendTelemetry(obj);
   }
   if ((uint32_t)(now - obj->last_stats_us) >= RAS_STATS_INTERVAL_US) {
@@ -707,6 +713,7 @@ void RasLink_Update(RasLink* obj) {
 
 void RasLink_SetTelemetry(RasLink* obj, const RasTelemetry* telemetry) {
   obj->telemetry = *telemetry;
+  obj->telemetry_ready = true;
 }
 
 void RasLink_SetMdStats(RasLink* obj, const uint32_t* rx_count, const uint32_t* rx_error) {

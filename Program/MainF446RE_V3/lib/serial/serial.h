@@ -31,6 +31,14 @@ static inline void Serial_Init(Serial* self, UART_HandleTypeDef* huart, uint8_t*
   HAL_UART_Receive_DMA(huart, self->rxBuf, rxBufSize);
 }
 
+// DMA の書き込み位置 [0, rxBufSize)。循環モードの NDTR は 0 になると rxBufSize へ再ロードされる
+// が、その瞬間に 0 と読める可能性に備えて丸める (そのまま使うと rxBufSize になり、rxBtm に
+// 入れると範囲外を読む)
+static inline uint16_t Serial_DmaHead(Serial* self) {
+  uint16_t head = self->rxBufSize - self->huart->hdmarx->Instance->NDTR;
+  return head >= self->rxBufSize ? 0 : head;
+}
+
 // データ受信可否。DMAが読み出し位置を追い越した(オーバーラン)かも合わせて判定する。
 // rxTop/rxBtmの差分だけを見ると mod 演算の結果は常に [0, rxBufSize-1] に収まってしまい、
 // 「一度も追い越されていない」のか「何周も追い越された」のかを区別できない
@@ -42,7 +50,7 @@ static inline void Serial_Init(Serial* self, UART_HandleTypeDef* huart, uint8_t*
 // ション中の HAL_Delay、lib/flash/flash.h の HAL_FLASHEx_Erase、IMU の I2C復旧処理等) の
 // 直後は、実際の受信バイト数によらず (baudレートの理論上限で計算した) fill_time_us を
 // 上回りやすく、保守的に「オーバーランの疑いあり」と判定されやすい。ただしこれは
-// Serial_Read() 側の「最新位置まで読み捨てて追いつく」動作と対になっており、ブロッキング
+// 下の「最新位置まで読み捨てて追いつく」動作と対になっており、ブロッキング
 // 中に溜まった (既に上書きされ得る) 古いバッファ内容を処理せず安全に読み飛ばして最新位置へ
 // 復帰する設計なので、それ自体は正常な自己修復動作である。実際に受信済みで未上書きの
 // フレームまで読み飛ばしてしまう (真の誤検知) 可能性はあるが、そちらはCRCチェックのある
@@ -57,19 +65,20 @@ static inline bool Serial_Available(Serial* self) {
     if (elapsed_us > fill_time_us) self->rxOverrun = true;
   }
 
-  uint16_t rxTop = self->rxBufSize - self->huart->hdmarx->Instance->NDTR;
-  return rxTop != self->rxBtm || self->rxOverrun;
-}
-
-// 1バイト受信
-static inline uint8_t Serial_Read(Serial* self) {
   if (self->rxOverrun) {
     // 積んだままの分は既に上書きされて信頼できないので、最新位置まで読み捨てて追いつく
-    // (誤った過去データで制御するより、フレームを1つ失う方が安全)
-    self->rxBtm = self->rxBufSize - self->huart->hdmarx->Instance->NDTR;
+    // (誤った過去データで制御するより、フレームを1つ失う方が安全)。以前は Serial_Read() 側で
+    // 追いついた後に「データ無し」の 0x00 を1バイト返しており、上位のパーサへ偽のバイトが
+    // 入っていた (2026-09-27)
+    self->rxBtm = Serial_DmaHead(self);
     self->rxOverrun = false;
   }
-  uint16_t rxTop = self->rxBufSize - self->huart->hdmarx->Instance->NDTR;
+  return Serial_DmaHead(self) != self->rxBtm;
+}
+
+// 1バイト受信 (Serial_Available() が true を返したときだけ呼ぶ)
+static inline uint8_t Serial_Read(Serial* self) {
+  uint16_t rxTop = Serial_DmaHead(self);
   if (rxTop == self->rxBtm) {
     return 0;
   }

@@ -36,10 +36,13 @@
 // LSI のばらつき (17〜47kHz) で実際は 340ms〜940ms に振れる
 #define WATCHDOG_TIMEOUT_MS 500
 
-// Raspberry Pi (上位) との通信。USART1、250000bps。
-// 受信リングバッファは 25kB/s に対して 64バイトでは 2.5ms 分しかなく、制御ループが
-// 一度でも詰まると取りこぼすため大きめに取る
-#define RAS_SERIAL_RX_BUF_SIZE 512
+// Raspberry Pi (上位) との通信。USART1、1000000bps (2026-09-26 に 250000bps から変更。
+// APB2 45MHz (HCLK 180MHz の 1/4) で USARTDIV = 45M/(16×1M) = 2.8125 = 2+13/16 となり誤差 0%)。
+// 受信リングバッファは制御ループが一度でも詰まると取りこぼすため大きめに取る。
+// Serial_Available() はバッファが線速で満杯になる時間 (サイズ×10bit÷ボーレート) より長く
+// ポーリングが空くと上書きとみなして読み捨てるので、ボーレートを4倍にした分サイズも4倍にし、
+// その猶予を 250000bps・512バイトのときと同じ約20msに保つ
+#define RAS_SERIAL_RX_BUF_SIZE 2048
 
 // LD06 LiDAR (USART6, 230400bps)。約17.6kB/s 流れ込むため、制御周期 500us の間に
 // 溜まる分 (約9バイト) に対して十分な余裕を取る
@@ -274,7 +277,7 @@ void MainApp() {
     Drive_Update(&drive);
     Motors_Update(&motors, Power_IsDriveOn(&power));
 
-    // Telemetry_Update 自体が内部で 50Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるため、
+    // Telemetry_Update 自体が内部で 100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるため、
     // 毎周期呼んでも問題ない。実際の送信は RasLink 側でさらにキューイングされる
     Telemetry_Update(&telemetry);
     Telemetry_PublishLidarSector(&telemetry);

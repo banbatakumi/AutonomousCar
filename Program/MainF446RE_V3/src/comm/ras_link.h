@@ -12,7 +12,7 @@
 // docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
 // docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.11_delta.md に対応する。
 //
-// 物理層: USART1, 250000bps 8N1 (分周誤差0%)。
+// 物理層: USART1, 1000000bps 8N1 (分周誤差0%。2026-09-26 に 250000bps から変更)。
 //
 // このモジュールが持つのはフレーミング (SYNC/TYPE/SEQ/LEN/CRC16) とパケットの
 // 解釈・組み立てだけで、走行制御そのものには関与しない。受信した指令は
@@ -25,7 +25,10 @@
 // ===========================================================================
 
 #define RAS_PROTOCOL_VERSION 0x000Eu
-#define RAS_FIRMWARE_ID 0x4D463303u  // "MF3" + 版数。Pi 側のログで機体を識別するための任意値
+// "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
+// 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
+// Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
+#define RAS_FIRMWARE_ID 0x4D463304u
 
 #define RAS_SYNC1 0xAAu
 #define RAS_SYNC2 0x55u
@@ -41,7 +44,9 @@
 #define RAS_COMMAND_TIMEOUT_US 100000u
 
 // 定期送信の周期 [us]
-#define RAS_TELEMETRY_INTERVAL_US 20000u   // 50Hz
+// 100Hz (2026-09-26 に 50Hz から変更。上位が受け取る値の古さ (次のスナップショットまでの待ち)
+// を平均10ms→5msに縮める。1Mbps で上りの使用率は約21%)
+#define RAS_TELEMETRY_INTERVAL_US 10000u   // 100Hz
 #define RAS_STATS_INTERVAL_US 1000000u     // 1Hz
 #define RAS_VERSION_BURST_INTERVAL_US 100000u
 #define RAS_VERSION_BURST_COUNT 3
@@ -224,6 +229,11 @@ typedef struct {
 
 // 送信するテレメトリ。呼び出し側は物理量のまま埋める (量子化は RasLink が行う)
 typedef struct {
+  // このスナップショットを取った時刻 (Micros())。TELEMETRY の t_us にはこれを載せる。
+  // 以前は送信時の Micros() を載せていたが、スナップショットは Telemetry_Update の、送信は
+  // RasLink_Update の別々の 50Hz タイマーで動いていたため、中身が最大 20ms 古いのに送信時刻が
+  // 付き、上位の時刻合わせ (制御遅延の同定など) が最大 20ms ずれていた
+  uint32_t t_us;
   uint32_t flags;  // RAS_FLAG_*
 
   float speed_m_s;         // 車体中心線方向の車速 (前輪速を舵角で射影したもの)
@@ -297,7 +307,6 @@ typedef struct {
   uint16_t rx_index;
   uint16_t rx_crc;
   uint16_t rx_crc_received;
-  bool rx_discard;
   bool rx_seq_valid;
   uint8_t rx_last_seq;
   uint8_t rx_payload[RAS_PAYLOAD_MAX];
@@ -314,7 +323,7 @@ typedef struct {
   RasConfig config;
   RasTelemetry telemetry;
 
-  uint32_t last_telemetry_us;
+  bool telemetry_ready;  // RasLink_SetTelemetry で新しいスナップショットが届き、まだ送っていない
   uint32_t last_stats_us;
   uint32_t last_version_us;
   uint8_t version_burst_left;

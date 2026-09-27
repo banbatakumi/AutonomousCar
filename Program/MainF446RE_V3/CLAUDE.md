@@ -125,7 +125,7 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
                 呼ばない (偏差が常に0付近になり制御が成立しないため)。TC が削っている最中は
                 トルク差を付ける余力が無いので、Drive の LimitDiffTorque() で丸めてから
                 TorqueVectoring_ReportApplied() に返し、出せなかった分の積分を巻き戻す)
-src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、250000bps。
+src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、1000000bps (2026-09-26 に 250000bps から変更)。
                 仕様は docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
                 docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.11_delta.md。
                 フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と
@@ -236,7 +236,7 @@ lib/            特定の車両ロジックに依存しない汎用ライブラ�
 - **TIM3**: Prescaler 9, Period 899 — ライト系 PWM (前照灯/尾灯/左右ウィンカー)
 - **TIM4**: Prescaler 9, Period 899 — LED3/LED4 PWM
 
-UART は USART1/2/3/6, UART4/5 の 6 系統が CubeMX で設定済み (USART6 のみ 230400bps、他は 250000bps)。BLDC MD は USART2 (ステアリング) / USART3 (左後輪) / UART4 (右後輪) に割り当て済み。250000bps 8N1 は 1 バイト 40us なので、5 バイトのフレーム 1 つに 200us かかる (送信周期を決めるときはこれを基準にする)。`Buzzer_Init` に渡すクロック/プリスケーラ値は `Core/Src/tim.c` の `MX_TIMx_Init` の設定値と必ず一致させること (不一致は無音・音程ズレの原因になる)。
+UART は USART1/2/3/6, UART4/5 の 6 系統が CubeMX で設定済み (USART6 のみ 230400bps、USART1 (Raspberry Pi) は 1000000bps、他は 250000bps)。BLDC MD は USART2 (ステアリング) / USART3 (左後輪) / UART4 (右後輪) に割り当て済み。250000bps 8N1 は 1 バイト 40us なので、5 バイトのフレーム 1 つに 200us かかる (送信周期を決めるときはこれを基準にする)。`Buzzer_Init` に渡すクロック/プリスケーラ値は `Core/Src/tim.c` の `MX_TIMx_Init` の設定値と必ず一致させること (不一致は無音・音程ズレの原因になる)。
 
 DMA の割り当て (`Core/Src/dma.c`): **DMA1 の Stream0–7 はすべて UART が使用済み**。STM32F446 の I2C1 は DMA1 (RX: Stream0/5、TX: Stream6/7) しか使えないため、UART の DMA を潰さない限り I2C に DMA は割り当てられない。そのため MPU6050 は割り込み駆動 I2C (`HAL_I2C_Mem_Read_IT`) で読んでいる。
 
