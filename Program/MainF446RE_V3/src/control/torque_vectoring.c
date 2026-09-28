@@ -14,13 +14,14 @@ static float DiffTorqueToYawMoment(const TorqueVectoring* obj, float diff_nm) {
   return diff_nm * obj->track_m / (2.0f * obj->wheel_radius_m);
 }
 
-// 舵角と車速から「本来出るはずのヨーレート」を作る (自転車モデル + 安定係数)。
+// 舵角と車速から「本来出るはずのヨーレート」を作る (実効舵角 + 自転車モデル + 安定係数)。
 //
 // tan に mymath の Sin/Cos を使わないのは、あちらが1度刻みのテーブル引きで、目標ヨーレートが
 // 1度ごとの階段状になるため。刻み幅は 2m/s で 0.15rad/s 程度あり、不感帯 (0.05rad/s) より
 // 大きい = 直進付近で出力がカタカタ切り替わることになる。ここは精度が要るので libm を使う
 static float TargetYawRate(const TorqueVectoring* obj, float speed_m_s, float steer_rad) {
-  float yaw_rate = speed_m_s * tanf(steer_rad) /
+  float effective_rad = TV_STEER_GAIN * steer_rad + TV_STEER_GAIN_CUBIC * steer_rad * steer_rad * steer_rad;
+  float yaw_rate = speed_m_s * tanf(effective_rad) /
                    (obj->wheelbase_m * (1.0f + TV_STABILITY_FACTOR * speed_m_s * speed_m_s));
 
   // 横加速度 a_y = v * r の頭打ち。低速側は分母が 0 に近づくので制限しない

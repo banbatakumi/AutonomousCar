@@ -220,6 +220,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
   Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
+  Drive_SetAbsEnabled(obj->drive, config->abs_enabled);
 
   ApplyBrakeLight(obj, braking);
   Lighting_SetHeadlight(obj->lighting, HeadlightModeFromCommand(command->light_mode));

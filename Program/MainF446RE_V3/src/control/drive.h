@@ -28,7 +28,8 @@
 // (片輪が押して片輪が引く状態) が原理的に発生しない。
 //
 // 車速の真値は非駆動輪である前輪エンコーダから得るため、駆動輪速度との比較でスリップ率が
-// 直接計算でき、トラクションコントロール (TC) が成立する。
+// 直接計算でき、トラクションコントロール (TC) が成立する。制動 (Drive_SetBrake) 側も同じ
+// スリップ率を負側で見て、ロックしかけたら制動トルクを抜く (ABS)。
 
 // ===========================================================================
 // 車両パラメータ (実測値)
@@ -82,20 +83,28 @@
 
 // ===========================================================================
 // トラクションコントロール (TC) パラメータ
+// 各輪独立。ABS (下) と同じ「滑り始めたときのトルクを覚えて、そこを基準に上下させる」型:
+//   ①空転し始めを検知したら、その輪に掛けていたトルク (tc_*.lock_nm) を覚え、上限を
+//     DRIVE_TC_CUT_RATIO 倍へ一度だけ下げる
+//   ②DRIVE_TC_RELEASE_TIMEOUT_S 経ってもグリップが戻らなければもう一段下げる
+//   ③戻ったら覚えたトルクの DRIVE_TC_REAPPLY_RATIO 倍へすぐ戻し、DRIVE_TC_RECOVER_RATE で上げる
+// 2026-09-27 までは超過スリップに比例して 0.3Nm/s で削る型で、実機の全開加速で右後輪が
+// 滑り率0.3〜0.8を約0.4s続けても上限は 0.15→0.118Nm しか下がらず (実トルク約0.10Nm に
+// 届かない)、一度も絞っていなかった。上限を 0.15 から削り始める (掛けているトルクから削らない)
+// ことも効かない理由だった。実機記録で較正した後輪+タイヤのモデルで、空転している時間が
+// 77%→13% に減ることを確認 (Pi側リポジトリの PROGRESS.md)。
+// ★しきい値 0.2 は横グリップ優先の選択。この路面は滑らせても駆動力がほぼ落ちない可能性があり
+// (モデルの較正結果)、その場合の直線の加速は約0.4m/s²下がる。直線を優先するなら0.3へ★
 // ===========================================================================
-#define DRIVE_TC_SLIP_THRESHOLD 0.2f   // これを超えるスリップ率からトルクを削り始める
-#define DRIVE_TC_CUT_GAIN 0.3f         // 超過スリップ率あたりのトルク削減速度 [Nm/s]
-#define DRIVE_TC_RECOVER_RATE 0.2f     // グリップ回復後にトルク上限を戻す速度 [Nm/s]
+#define DRIVE_TC_SLIP_THRESHOLD 0.2f   // スリップ率がこれを超えたら空転し始めとみなす
+#define DRIVE_TC_RECOVER_SLIP 0.1f     // スリップ率がこれより小さくなったらグリップが戻ったとみなす
+#define DRIVE_TC_SLIP_DEBOUNCE_S 0.005f  // ABS と同じ。本物の空転は数十msで深くなるので応答を優先
+#define DRIVE_TC_CUT_RATIO 0.7f          // 空転し始めで上限を掛けていたトルクの何倍へ下げるか
+#define DRIVE_TC_RELEASE_TIMEOUT_S 0.025f  // 下げてもこの時間グリップが戻らなければもう一段下げる
+#define DRIVE_TC_REAPPLY_RATIO 0.9f      // グリップが戻ったら覚えたトルクの何倍へすぐ戻すか
+#define DRIVE_TC_RECOVER_RATE 0.2f       // そこから上限を上げる速度 [Nm/s]
 #define DRIVE_TC_MIN_TORQUE_NM 0.005f  // 削り切っても完全には0にしない (再加速できなくなるため)
 #define DRIVE_TC_MIN_SPEED_M_S 0.25f   // これ以下の車速ではスリップ率が発散するのでTCを効かせない
-// スリップ率がしきい値を超えてから、実際にトルクを削り始めるまでの継続時間 [s]。
-// DRIVE_LPF_K_FRONT_TC を軽くしてもなお残るノイズ由来の一瞬の超過を無視するためのデバウンス。
-// 本物の空転は超過が持続するのでこの遅延はほぼ影響しない
-#define DRIVE_TC_SLIP_DEBOUNCE_S 0.01f
-// スリップ率がしきい値をわずかに下回ってから、継続時間 (excess_time_s) を実際に
-// リセットするまでのホールドダウン [s]。これが無いとしきい値付近のノイズで一瞬でも
-// 下回るたびにデバウンスの積み上げが0に戻り、本物の持続的な空転の検出が遅れうる
-#define DRIVE_TC_SLIP_HOLD_DOWN_S 0.05f
 
 // ===========================================================================
 // 片輪浮き対策 (Wheel Lift Guard) パラメータ
@@ -124,6 +133,45 @@
 #define DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S (DRIVE_MAX_SPEED_M_S * 1.5f)  // 4.5 m/s
 
 // ===========================================================================
+// ABS (アンチロックブレーキ) パラメータ
+// 制動モード (Drive_SetBrake) の間だけ働く。制動トルクの上限を左右共通の1つだけ持つ
+// (select-low: ロックしかけている側に合わせる)。左右独立にすると左右で路面μが違うときに
+// 後輪側でヨーモーメントが出てスピン方向に振れるため、実車の後輪ABSと同じく安定性を優先する。
+// 車速PIの減速・torque_mode の逆向きトルクは対象外 (ユーザー判断)。
+//
+// 実車のABSの定石どおり「滑り始めたときのトルクを覚えて、そこを基準に上下させる」:
+//   ①滑り始めを検知したら、そのとき掛けていたトルク (abs_lock_nm) を覚え、上限を
+//     DRIVE_ABS_CUT_RATIO 倍へ一度だけ下げる (削り続けない)
+//   ②DRIVE_ABS_RELEASE_TIMEOUT_S 経ってもグリップが戻らなければ、もう一段同じ比で下げる
+//     (低μ路。覚えるトルクも下げた値に更新する)
+//   ③グリップが戻ったら (スリップが DRIVE_ABS_RECOVER_SLIP より浅い) 覚えたトルクの
+//     DRIVE_ABS_REAPPLY_RATIO 倍へすぐ戻し、そこから DRIVE_ABS_RECOVER_RATE でゆっくり上げる
+//     (グリップの限界の少し手前に長く留まる)
+// 2026-09-27 の初版は超過スリップに比例して削り続ける TC と同じ型だったが、実機では検知の遅れの
+// 間に上限がほぼ0まで削られ、1.0Nm/s でゆっくり戻すので平均の制動トルクが約0.06Nm (限界は約
+// 0.09Nm) に留まり、要求0.12・0.15Nm の方が0.08Nm より減速が弱かった (2.3〜2.5m/s²、ロックなし
+// だと3.67m/s²)。実機の記録で較正した後輪+タイヤのモデルで比べ、この方式で平均の減速度が約25%
+// 上がり (ロックなしの約97%)、後輪がロック気味の時間も減ることを確認した (低μ・ノイズ・遅れでも同様)。
+// ★ゲインはモデルでの机上値。実機で制動中の torque_cmd と slip を見て詰めること★
+// ===========================================================================
+#define DRIVE_ABS_SLIP_THRESHOLD 0.2f  // スリップ率がこれより負になったら滑り始めとみなす
+#define DRIVE_ABS_RECOVER_SLIP 0.1f    // スリップ率がこれより浅くなったらグリップが戻ったとみなす (ヒステリシス)
+#define DRIVE_ABS_SLIP_DEBOUNCE_S 0.005f  // TCより短い。制動中はノイズ耐性より応答を優先する
+#define DRIVE_ABS_CUT_RATIO 0.7f          // 滑り始めで上限を掛けていたトルクの何倍へ下げるか
+#define DRIVE_ABS_RELEASE_TIMEOUT_S 0.025f  // 下げてもこの時間グリップが戻らなければもう一段下げる
+#define DRIVE_ABS_REAPPLY_RATIO 0.9f      // グリップが戻ったら覚えたトルクの何倍へすぐ戻すか
+#define DRIVE_ABS_RECOVER_RATE 0.2f       // そこから上限を上げる速度 [Nm/s] (限界の手前に長く留まる)
+// フォールバック: 上限が要求の DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いたまま
+// DRIVE_ABS_FALLBACK_TIME_S 続いたら、ブレーキを離すまでABSを止めて要求どおりに制動する。
+// 前輪エンコーダの故障・符号ミスで基準車速が高く出るとスリップが負に張り付き、緊急停止中も
+// 制動を抜き続けてしまうため。本来のABSは上限を上下させるので下限付近に長く張り付くことは
+// 少ない、という前提に立つ (非常に滑る路面で本当に抜き続ける場面ではロック側に倒れる)。
+// 上限は DRIVE_ABS_RELEASE_TIMEOUT_S ごとに CUT_RATIO 倍ずつ下がるので、最大制動から20%以下へ
+// 届くまで約0.125s掛かる。そこから0.1sで、初版 (ほぼ即座に0へ削って0.2s) と同じ約0.2sで戻る
+#define DRIVE_ABS_FALLBACK_LIMIT_RATIO 0.2f
+#define DRIVE_ABS_FALLBACK_TIME_S 0.1f
+
+// ===========================================================================
 // フィルタ係数 (Drive_Update の呼び出し周期 500us = 2kHz に依存する。τ=-dt/ln(k))
 // 前輪の2つは、Encoder 側で ADC を32サンプル平均して角度ノイズを下げたのに合わせ、
 // 平均化前 (PID用 k=0.995 τ≈100ms / TC用 k=0.98 τ≈25ms) から縮めたもの。
@@ -140,6 +188,14 @@
 // 縮めるため、PID用より軽い τ≈5ms のフィルタをスリップ判定専用に別途持つ
 // (ノイズは残りやすくなるが、DRIVE_TC_SLIP_DEBOUNCE_S 側で吸収する)
 #define DRIVE_LPF_K_FRONT_TC 0.905f
+
+// TC の1輪ぶんの状態 (ABS の abs_* と同じ役割)
+typedef struct {
+  float lock_nm;         // 直近に空転し始めたときに掛けていたトルク (戻す基準)
+  bool releasing;        // 空転を検知して上限を下げ、グリップが戻るのを待っている間
+  float release_time_s;  // releasing の継続時間 (DRIVE_TC_RELEASE_TIMEOUT_S ごとに下げ直す)
+  float excess_time_s;   // スリップ率がしきい値を超えてからの継続時間 (デバウンス用)
+} TractionState;
 
 typedef struct {
   Motors* motors;
@@ -160,6 +216,7 @@ typedef struct {
   bool enabled;
   bool tc_enabled;                // 既定は有効。無効時は tc_limit_left/right_nm を上限固定にする
   bool wheel_lift_guard_enabled;  // 既定は有効。TC本体とは独立にON/OFF可能
+  bool abs_enabled;               // 既定は有効
   // 上位から指令された生の目標車速 (レート制限前)。Drive_SetTargetSpeed が更新する
   float speed_setpoint_m_s;
   float accel_limit_m_s2;  // speed_setpoint_m_s へ向かう加速度の上限 [m/s^2]
@@ -194,20 +251,23 @@ typedef struct {
   float rear_speed_right_m_s;   // 右後輪の周速
   float slip_left;              // 左後輪のスリップ率 (正 = 空転, 負 = ロック傾向)
   float slip_right;             // 右後輪のスリップ率
-  // slip_left/right がDRIVE_TC_SLIP_THRESHOLDを超えてからの継続時間 [s] (デバウンス用)。
-  // 超過が途切れてから DRIVE_TC_SLIP_HOLD_DOWN_S 継続するまでは0に戻さない
-  // (tc_slip_below_time_*_s 参照)
-  float tc_slip_excess_time_left_s;
-  float tc_slip_excess_time_right_s;
-  // slip_left/right がDRIVE_TC_SLIP_THRESHOLD以下になってからの継続時間 [s]
-  // (tc_slip_excess_time_*_s のホールドダウン用)。超過が再発したら0に戻る
-  float tc_slip_below_time_left_s;
-  float tc_slip_below_time_right_s;
+  // TC の各輪の状態 (TractionState 参照)
+  TractionState tc_left;
+  TractionState tc_right;
   float tc_limit_left_nm;   // TCが動的に決めた左輪のトルク上限
   float tc_limit_right_nm;  // TCが動的に決めた右輪のトルク上限
   // 片輪浮き対策が動的に決めた各輪のトルク上限 (tc_limit_*とは独立、最終的にminを取る)
   float wheel_lift_limit_left_nm;
   float wheel_lift_limit_right_nm;
+  // ABSが動的に決めた制動トルク上限 (左右共通、select-low)。制動していない間は
+  // DRIVE_MAX_BRAKE_TORQUE_NM に戻しておき、次の制動を全量から始める
+  float abs_limit_nm;
+  float abs_lock_nm;        // 直近に滑り始めたときに掛けていた制動トルク (戻す基準)
+  bool abs_releasing;       // 滑り始めを検知して上限を下げ、グリップが戻るのを待っている間
+  float abs_release_time_s; // abs_releasing の継続時間 (DRIVE_ABS_RELEASE_TIMEOUT_S ごとに下げ直す)
+  float abs_excess_time_s;  // TractionState.excess_time_s と同じデバウンス用
+  float abs_floor_time_s;   // 上限が DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いている継続時間
+  bool abs_fallback_latched;  // 真の間はABSを止めて要求どおりに制動する (ブレーキ解除で戻る)
   // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
   // Drive_SetBrake) のときは制動トルクを負値として入れるので、符号を見れば駆動しているのか
   // 押さえているのかが上位から区別できる
@@ -289,6 +349,18 @@ void Drive_SetTractionControlEnabled(Drive* obj, bool enabled);
  * 切り替える (既定は有効)。トラクションコントロール (TC) 本体とは独立に切替可能。
  */
 void Drive_SetWheelLiftGuardEnabled(Drive* obj, bool enabled);
+
+/**
+ * @brief ABS (制動時の後輪ロック防止) の有効/無効を切り替える (既定は有効)。
+ * 無効にすると Drive_SetBrake で指定した制動トルクをそのまま掛ける。
+ */
+void Drive_SetAbsEnabled(Drive* obj, bool enabled);
+
+/**
+ * @brief ABSが今まさに制動トルクを要求より削っているかを取得する (デバッグ・上位への報告用)。
+ * フォールバック中 (ABSを止めて要求どおりに制動している間) は偽。
+ */
+bool Drive_IsAbsActive(const Drive* obj);
 
 /**
  * @brief トルクベクタリングが今まさに左右へトルク差を付けているかを取得する。

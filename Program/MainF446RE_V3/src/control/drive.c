@@ -184,33 +184,48 @@ static bool IsStandstill(const Drive* obj) {
 // トルク配分
 // ---------------------------------------------------------------------------
 
-// スリップ超過中はトルク上限を削り、グリップが戻ったらゆっくり戻す。実車のTC ECU と同じ
-// 「即座に削って緩やかに復帰」型。スリップ率の微分を使わないのでノイズに強い。
-// しきい値超過が DRIVE_TC_SLIP_DEBOUNCE_S 継続するまではカットを始めない (デバウンス)。
-// EstimateVehicleSpeedForSlip() の軽いフィルタで残るノイズ由来の一瞬の超過を無視するため。
-// 本物の空転は超過が持続するのでこの遅延はほぼ影響しない
-static float UpdateTractionLimit(float limit_nm, float slip, float dt_s, float* excess_time_s,
-                                 float* below_time_s) {
-  // slip は正=空転・負=ロック傾向 (drive.h の slip_left/right 参照)。制動 (SendBrake/
-  // SendSideBrake) はここを迂回する別経路なので、このパスで意味を持つ異常は空転側だけ。
-  // 負のスリップは減速などによる一時的な基準速度割れに過ぎず、駆動トルクを削る理由にならない
-  // ため Abs() を取らず符号付きで判定する
-  float excess = slip - DRIVE_TC_SLIP_THRESHOLD;
-  if (excess > 0.0f) {
-    *excess_time_s += dt_s;
-    *below_time_s = 0.0f;
-    if (*excess_time_s >= DRIVE_TC_SLIP_DEBOUNCE_S) {
-      limit_nm -= DRIVE_TC_CUT_GAIN * excess * dt_s;
+static void ResetTractionState(TractionState* st) {
+  st->lock_nm = DRIVE_MAX_TORQUE_NM;
+  st->releasing = false;
+  st->release_time_s = 0.0f;
+  st->excess_time_s = 0.0f;
+}
+
+// TC: 1輪ぶんのトルク上限を更新する。手順は drive.h の TC パラメータの説明 (ABS の ApplyAbs と
+// 同じ型)。applied_nm は前周期にその輪へ実際に送った駆動トルクの大きさで、空転し始めたときの
+// 基準にする (上限が要求より上に残っていても、掛けていた値から下げる)。
+// slip は正=空転・負=ロック傾向 (drive.h の slip_left/right 参照)。制動 (SendBrake/
+// SendSideBrake) はここを迂回する別経路なので、このパスで意味を持つ異常は空転側だけ。
+// 負のスリップは減速などによる一時的な基準速度割れに過ぎず、駆動トルクを削る理由にならない
+// ため Abs() を取らず符号付きで判定する
+static float UpdateTractionLimit(float limit_nm, float slip, float applied_nm, float dt_s,
+                                 TractionState* st) {
+  if (!st->releasing) {
+    if (slip > DRIVE_TC_SLIP_THRESHOLD) {
+      st->excess_time_s += dt_s;
+      if (st->excess_time_s >= DRIVE_TC_SLIP_DEBOUNCE_S) {
+        st->lock_nm = applied_nm;
+        limit_nm = applied_nm * DRIVE_TC_CUT_RATIO;
+        st->releasing = true;
+        st->release_time_s = 0.0f;
+      }
+    } else {
+      st->excess_time_s = 0.0f;
+      limit_nm += DRIVE_TC_RECOVER_RATE * dt_s;
     }
   } else {
-    // しきい値をわずかでも下回った瞬間に excess_time_s を0リセットすると、しきい値付近の
-    // ノイズで一瞬下回るたびにデバウンスの積み上げが失われ、持続的な空転の検出が遅れる。
-    // DRIVE_TC_SLIP_HOLD_DOWN_S だけ連続して下回ってから初めてリセットする
-    *below_time_s += dt_s;
-    if (*below_time_s >= DRIVE_TC_SLIP_HOLD_DOWN_S) {
-      *excess_time_s = 0.0f;
+    st->release_time_s += dt_s;
+    if (slip < DRIVE_TC_RECOVER_SLIP) {
+      st->releasing = false;
+      st->excess_time_s = 0.0f;
+      float reapply_nm = st->lock_nm * DRIVE_TC_REAPPLY_RATIO;
+      if (limit_nm < reapply_nm) limit_nm = reapply_nm;
+    } else if (st->release_time_s >= DRIVE_TC_RELEASE_TIMEOUT_S) {
+      // 下げても空転が収まらない (低μ路) → もう一段下げ、戻す基準もそこへ下げる
+      st->lock_nm = limit_nm;
+      limit_nm *= DRIVE_TC_CUT_RATIO;
+      st->release_time_s = 0.0f;
     }
-    limit_nm += DRIVE_TC_RECOVER_RATE * dt_s;
   }
   return Constrain(limit_nm, DRIVE_TC_MIN_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
 }
@@ -232,6 +247,68 @@ static float UpdateWheelLiftLimit(float limit_nm, float excess, float dt_s) {
 static float ApplyWheelLiftHardSpeedLimit(float limit_nm, float wheel_speed_m_s) {
   if (Abs(wheel_speed_m_s) > DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S) return 0.0f;
   return limit_nm;
+}
+
+static void ResetAbs(Drive* obj) {
+  obj->abs_limit_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
+  obj->abs_lock_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
+  obj->abs_releasing = false;
+  obj->abs_release_time_s = 0.0f;
+  obj->abs_excess_time_s = 0.0f;
+  obj->abs_floor_time_s = 0.0f;
+  obj->abs_fallback_latched = false;
+}
+
+// ABS: 制動トルク上限を更新し、実際に掛ける制動トルクを返す。見るのはスリップの負側
+// (ロック傾向) で、左右の悪い方に合わせる (select-low)。手順は drive.h の ABS パラメータの説明。
+// SlipRatio() は DRIVE_TC_MIN_SPEED_M_S 未満で0を返すので、低速では自然に全量へ戻る
+// (MD側の制動も車輪が止まる手前で tanh により抜けていくため、低速のロックは起きにくい)
+static float ApplyAbs(Drive* obj, float requested_nm, float dt_s) {
+  if (obj->abs_fallback_latched) return requested_nm;
+
+  float slip = obj->slip_left < obj->slip_right ? obj->slip_left : obj->slip_right;
+  float applied_nm = obj->abs_limit_nm < requested_nm ? obj->abs_limit_nm : requested_nm;
+  float limit_nm = obj->abs_limit_nm;
+  if (!obj->abs_releasing) {
+    if (-slip > DRIVE_ABS_SLIP_THRESHOLD) {
+      obj->abs_excess_time_s += dt_s;
+      if (obj->abs_excess_time_s >= DRIVE_ABS_SLIP_DEBOUNCE_S) {
+        // 上限が要求より上に残っていても、実際に掛けていた値を基準にする
+        obj->abs_lock_nm = applied_nm;
+        limit_nm = applied_nm * DRIVE_ABS_CUT_RATIO;
+        obj->abs_releasing = true;
+        obj->abs_release_time_s = 0.0f;
+      }
+    } else {
+      obj->abs_excess_time_s = 0.0f;
+      limit_nm += DRIVE_ABS_RECOVER_RATE * dt_s;
+    }
+  } else {
+    obj->abs_release_time_s += dt_s;
+    if (-slip < DRIVE_ABS_RECOVER_SLIP) {
+      obj->abs_releasing = false;
+      obj->abs_excess_time_s = 0.0f;
+      float reapply_nm = obj->abs_lock_nm * DRIVE_ABS_REAPPLY_RATIO;
+      if (limit_nm < reapply_nm) limit_nm = reapply_nm;
+    } else if (obj->abs_release_time_s >= DRIVE_ABS_RELEASE_TIMEOUT_S) {
+      // 下げてもグリップが戻らない (低μ路) → もう一段下げ、戻す基準もそこへ下げる
+      obj->abs_lock_nm = limit_nm;
+      limit_nm *= DRIVE_ABS_CUT_RATIO;
+      obj->abs_release_time_s = 0.0f;
+    }
+  }
+  obj->abs_limit_nm = Constrain(limit_nm, 0.0f, DRIVE_MAX_BRAKE_TORQUE_NM);
+
+  if (requested_nm > 0.0f && obj->abs_limit_nm <= requested_nm * DRIVE_ABS_FALLBACK_LIMIT_RATIO) {
+    obj->abs_floor_time_s += dt_s;
+    if (obj->abs_floor_time_s >= DRIVE_ABS_FALLBACK_TIME_S) {
+      obj->abs_fallback_latched = true;
+      return requested_nm;
+    }
+  } else {
+    obj->abs_floor_time_s = 0.0f;
+  }
+  return obj->abs_limit_nm < requested_nm ? obj->abs_limit_nm : requested_nm;
 }
 
 // 左右トルク差を、両輪ともTCの上限に収まる範囲へ丸める。
@@ -317,14 +394,14 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->rear_speed_right_m_s = 0.0f;
   obj->slip_left = 0.0f;
   obj->slip_right = 0.0f;
-  obj->tc_slip_excess_time_left_s = 0.0f;
-  obj->tc_slip_excess_time_right_s = 0.0f;
-  obj->tc_slip_below_time_left_s = 0.0f;
-  obj->tc_slip_below_time_right_s = 0.0f;
+  ResetTractionState(&obj->tc_left);
+  ResetTractionState(&obj->tc_right);
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
+  obj->abs_enabled = true;
+  ResetAbs(obj);
   obj->torque_left_nm = 0.0f;
   obj->torque_right_nm = 0.0f;
 }
@@ -336,6 +413,11 @@ void Drive_Update(Drive* obj) {
 
   // 観測量は無効時も更新しておく (惰行中の車速をそのまま使って再発進できるようにするため)
   UpdateObservations(obj);
+
+  // ABSの状態は制動モードの間だけ持ち越す。離したら次の制動を全量から始め、フォールバックも解く
+  if (!(obj->enabled && !obj->side_brake_active && obj->brake_active && obj->abs_enabled)) {
+    ResetAbs(obj);
+  }
 
   if (!obj->enabled) {
     Coast(obj);
@@ -352,7 +434,7 @@ void Drive_Update(Drive* obj) {
   // 離脱時に停止中の目標車速から急発進しないよう、ここでも目標車速をレート制限の起点0へ戻す
   if (obj->brake_active) {
     obj->target_speed_m_s = 0.0f;
-    SendBrake(obj, obj->brake_torque_nm);
+    SendBrake(obj, obj->abs_enabled ? ApplyAbs(obj, obj->brake_torque_nm, dt_s) : obj->brake_torque_nm);
     return;
   }
 
@@ -377,19 +459,18 @@ void Drive_Update(Drive* obj) {
   }
 
   if (obj->tc_enabled) {
-    obj->tc_limit_left_nm =
-        UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, dt_s,
-                           &obj->tc_slip_excess_time_left_s, &obj->tc_slip_below_time_left_s);
-    obj->tc_limit_right_nm =
-        UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right, dt_s,
-                           &obj->tc_slip_excess_time_right_s, &obj->tc_slip_below_time_right_s);
+    // 前周期に実際に送った駆動トルクの大きさ (後退中は負なので Abs。空転し始めの基準にする)
+    float applied_left_nm = Abs(obj->torque_left_nm);
+    float applied_right_nm = Abs(obj->torque_right_nm);
+    obj->tc_limit_left_nm = UpdateTractionLimit(obj->tc_limit_left_nm, obj->slip_left, applied_left_nm,
+                                                dt_s, &obj->tc_left);
+    obj->tc_limit_right_nm = UpdateTractionLimit(obj->tc_limit_right_nm, obj->slip_right,
+                                                 applied_right_nm, dt_s, &obj->tc_right);
   } else {
     obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
     obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
-    obj->tc_slip_excess_time_left_s = 0.0f;
-    obj->tc_slip_excess_time_right_s = 0.0f;
-    obj->tc_slip_below_time_left_s = 0.0f;
-    obj->tc_slip_below_time_right_s = 0.0f;
+    ResetTractionState(&obj->tc_left);
+    ResetTractionState(&obj->tc_right);
   }
 
   if (obj->wheel_lift_guard_enabled) {
@@ -493,14 +574,21 @@ void Drive_SetWheelLiftGuardEnabled(Drive* obj, bool enabled) {
   obj->wheel_lift_guard_enabled = enabled;
 }
 
+void Drive_SetAbsEnabled(Drive* obj, bool enabled) {
+  obj->abs_enabled = enabled;
+}
+
+bool Drive_IsAbsActive(const Drive* obj) {
+  return obj->enabled && !obj->side_brake_active && obj->brake_active && obj->abs_enabled &&
+         !obj->abs_fallback_latched && obj->abs_limit_nm < obj->brake_torque_nm;
+}
+
 void Drive_Enable(Drive* obj) {
   PID_Reset(&obj->speed_pid);
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
-  obj->tc_slip_excess_time_left_s = 0.0f;
-  obj->tc_slip_excess_time_right_s = 0.0f;
-  obj->tc_slip_below_time_left_s = 0.0f;
-  obj->tc_slip_below_time_right_s = 0.0f;
+  ResetTractionState(&obj->tc_left);
+  ResetTractionState(&obj->tc_right);
   obj->wheel_lift_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->wheel_lift_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   // 無効化中に古い目標車速が残っていると再有効化した瞬間に急発進するため、0から始める
@@ -549,8 +637,17 @@ float Drive_GetTcLimitRight(const Drive* obj) {
   return obj->tc_limit_right_nm;
 }
 
+// 「実際に絞っている」: 空転を検知して下げている最中か、上限が送ったトルクに効いている。
+// 上限が下がっていても送ったトルクより上なら何もしていない (回復中に 0.2Nm/s で戻る間を
+// 介入中と数えると、ほとんど常に立ってしまう)
+static bool TractionWheelLimiting(const TractionState* st, float limit_nm, float torque_nm) {
+  if (st->releasing) return true;
+  return limit_nm < DRIVE_MAX_TORQUE_NM && Abs(torque_nm) >= limit_nm - 1e-4f;
+}
+
 bool Drive_IsTractionControlActive(const Drive* obj) {
-  return obj->tc_limit_left_nm < DRIVE_MAX_TORQUE_NM || obj->tc_limit_right_nm < DRIVE_MAX_TORQUE_NM;
+  return TractionWheelLimiting(&obj->tc_left, obj->tc_limit_left_nm, obj->torque_left_nm) ||
+         TractionWheelLimiting(&obj->tc_right, obj->tc_limit_right_nm, obj->torque_right_nm);
 }
 
 bool Drive_IsWheelLiftGuardActive(const Drive* obj) {

@@ -10,7 +10,7 @@
 // ===========================================================================
 // Raspberry Pi (上位) との UART 通信。プロトコル仕様は
 // docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
-// docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.11_delta.md に対応する。
+// docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.15_delta.md に対応する。
 //
 // 物理層: USART1, 1000000bps 8N1 (分周誤差0%。2026-09-26 に 250000bps から変更)。
 //
@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x000Eu
+#define RAS_PROTOCOL_VERSION 0x000Fu
 // "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
 // 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
 // Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
@@ -145,6 +145,8 @@ typedef enum {
 // 関わらず両方立つ)。v0.14 で新設
 #define RAS_FLAG_WINKER_LEFT_ACTIVE (1u << 18)
 #define RAS_FLAG_WINKER_RIGHT_ACTIVE (1u << 19)
+// ABSが制動トルクを要求より削っている最中かどうか (フォールバック中は偽)。v0.15 で新設
+#define RAS_FLAG_ABS_ACTIVE (1u << 20)
 
 // TELEMETRY.md_status[i]
 #define RAS_MD_STATUS_RUNNING (1u << 0)
@@ -184,6 +186,7 @@ typedef enum {
   RAS_PARAM_LIDAR_FORMAT = 0x0040,  // RasLidarFormat
   RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)。v0.9 で新設
   RAS_PARAM_AUTO_STOP_MARGIN_CM = 0x0060,  // 安全マージン [cm] を直接指定。v0.12 で新設
+  RAS_PARAM_ABS_ENABLE = 0x0070,           // 0.0=無効, 非0=有効 (既定は有効)。v0.15 で新設
 } RasParamId;
 
 typedef enum {
@@ -205,6 +208,7 @@ typedef struct {
   bool wheel_lift_guard_enabled;  // v0.9 で新設。既定は有効
   uint8_t lidar_format;
   float auto_stop_margin_cm;  // v0.12 で新設。既定は RAS_AUTO_STOP_MARGIN_DEFAULT_CM
+  bool abs_enabled;           // v0.15 で新設。既定は有効
 } RasConfig;
 
 // 受信した COMMAND をデコードしたもの
