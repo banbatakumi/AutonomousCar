@@ -1,5 +1,7 @@
 #include "vehicle.h"
 
+#include <math.h>
+
 #include "mymath.h"
 
 static void SetHorn(Vehicle* obj, bool on) {
@@ -19,9 +21,30 @@ static LightingHeadlightMode HeadlightModeFromCommand(uint8_t light_mode) {
   }
 }
 
-static void ApplyBrakeLight(Vehicle* obj, bool braking, float brake_torque_nm) {
-  Lighting_SetBrakeMode(obj->lighting, braking,
-                         brake_torque_nm >= VEHICLE_EMERGENCY_BRAKE_FLASH_THRESHOLD_NM);
+// 実車の緊急制動表示 (ESS) と同じく、制動中かつ一定車速以上から強く減速したときだけ
+// 点滅させ、減速が弱まるか停止したら常灯に戻す。制動トルクの大きさで決めると、
+// 停止中にブレーキを踏み続けているだけ (フェイルセーフの停車保持を含む) でも点滅してしまう
+static void ApplyBrakeLight(Vehicle* obj, bool braking) {
+  float abs_speed = fabsf(Drive_GetVehicleSpeed(obj->drive));
+  float window_s = Timer_Read(&obj->ess_decel_timer);
+  if (window_s >= VEHICLE_ESS_DECEL_WINDOW_S) {
+    // 異常に長い窓 (初回など) の差分は信用できないため捨てる
+    obj->ess_decel_m_s2 = (window_s <= 0.1f)
+                              ? (obj->ess_prev_abs_speed_m_s - abs_speed) / window_s
+                              : 0.0f;
+    obj->ess_prev_abs_speed_m_s = abs_speed;
+    Timer_Reset(&obj->ess_decel_timer);
+  }
+
+  if (!braking || abs_speed < VEHICLE_ESS_STOP_SPEED_M_S ||
+      obj->ess_decel_m_s2 < VEHICLE_ESS_OFF_DECEL_M_S2) {
+    obj->ess_active = false;
+  } else if (abs_speed >= VEHICLE_ESS_MIN_SPEED_M_S &&
+             obj->ess_decel_m_s2 >= VEHICLE_ESS_ON_DECEL_M_S2) {
+    obj->ess_active = true;
+  }
+
+  Lighting_SetBrakeMode(obj->lighting, braking, obj->ess_active);
 }
 
 // LiDAR電源を want_on に応じて更新する。ARM中は即座に点け、ARMが外れても
@@ -198,7 +221,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
 
-  ApplyBrakeLight(obj, braking, brake_torque_nm);
+  ApplyBrakeLight(obj, braking);
   Lighting_SetHeadlight(obj->lighting, HeadlightModeFromCommand(command->light_mode));
   Lighting_SetPassing(obj->lighting, (command->flags & RAS_CMD_FLAG_PASSING) != 0);
 
@@ -253,7 +276,7 @@ static void ApplyFailsafe(Vehicle* obj) {
   Drive_SetTorque(obj->drive, false, 0.0f);
   Drive_SetSideBrake(obj->drive, false);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
-  ApplyBrakeLight(obj, true, DRIVE_MAX_BRAKE_TORQUE_NM);
+  ApplyBrakeLight(obj, true);
   Lighting_SetPassing(obj->lighting, false);
   SetHorn(obj, false);
   obj->winker_request = LIGHTING_WINKER_OFF;
@@ -282,6 +305,11 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->horn_on = false;
   obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
+
+  Timer_Init(&obj->ess_decel_timer);
+  obj->ess_prev_abs_speed_m_s = 0.0f;
+  obj->ess_decel_m_s2 = 0.0f;
+  obj->ess_active = false;
 
   // Setup() は LIDAR_POWER を意図的に投入しない (Pi 未接続/DISARM の間は LiDAR も
   // 無給電にする既定のため、実機で確認済み)。ここを true にすると UpdateLidarPower() の

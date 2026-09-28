@@ -66,8 +66,18 @@
 #define VEHICLE_AUTO_STOP_LIDAR_REAR_OFFSET_CM 14.0f        // LiDAR(x=7cm) → 後端(x=-7cm)
 #define VEHICLE_AUTO_STOP_ULTRASONIC_FRONT_OFFSET_CM 4.0f   // 前方超音波(x=26cm) → 前端(x=30cm)
 #define VEHICLE_AUTO_STOP_ULTRASONIC_REAR_OFFSET_CM 3.0f    // 後方超音波(x=-4cm) → 後端(x=-7cm)
-// この制動トルク以上なら、実車の急制動警告のようにブレーキランプを高速点滅させる [Nm/輪]
-#define VEHICLE_EMERGENCY_BRAKE_FLASH_THRESHOLD_NM 0.1f
+// 緊急制動表示 (ESS, Emergency Stop Signal)。実車 (UN-ECE R48 / 保安基準) と同じく、
+// 制動トルクの指令値ではなく「実際に一定車速以上から強く減速しているか」で点滅させる。
+// 実車の規定は 50km/h 超かつ減速度 6m/s² 超で作動、2.5m/s² 未満で解除。ミニカーの制動性能に
+// 合わせて縮小した値で、いずれも未実測プレースホルダー (実測後に更新すること)
+#define VEHICLE_ESS_MIN_SPEED_M_S 1.0f       // 作動を許す最低車速
+#define VEHICLE_ESS_ON_DECEL_M_S2 2.0f       // 作動する減速度
+#define VEHICLE_ESS_OFF_DECEL_M_S2 0.8f      // 解除する減速度 (作動と差を付けてチャタリングを防ぐ)
+#define VEHICLE_ESS_STOP_SPEED_M_S 0.1f      // これ未満になったら停止とみなして解除する
+// 減速度を求める車速差分の窓幅 [s]。制御周期 (500us) ごとに差分を取ると前輪速度の
+// 量子化ノイズ (σ≈2mm/s) が 2000倍されて数m/s² になりしきい値を跨いでしまうため、
+// 窓を広げてノイズを 1/40 に落とす (遅れは窓幅ぶんで、表示用途なら問題にならない)
+#define VEHICLE_ESS_DECEL_WINDOW_S 0.02f
 
 typedef struct {
   RasLink* ras_link;
@@ -103,6 +113,12 @@ typedef struct {
   // 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したか。
   // テレメトリの RAS_FLAG_AUTO_STOP_ACTIVE に使う
   bool auto_stop_active;
+
+  // 緊急制動表示 (ESS) の判定用。decel_timer ごとに |車速| の差分から減速度を求める
+  Timer ess_decel_timer;
+  float ess_prev_abs_speed_m_s;
+  float ess_decel_m_s2;  // 正=減速
+  bool ess_active;
 } Vehicle;
 
 /**
