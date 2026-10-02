@@ -149,17 +149,24 @@ typedef struct {
 // チップ座標系 -> 機体座標系 (X=前方 / Y=左方 / Z=上方) の変換。
 // この機体の MPU6050 は基板に 90° 回して裏向きに実装されているため、
 // 単なる軸の符号反転では表せず、X と Y の入れ替えが必要になる。
-//   機体X(前) = +chip_y,  機体Y(左) = +chip_x,  機体Z(上) = -chip_z
+//   機体X(前) = -chip_y,  機体Y(左) = -chip_x,  機体Z(上) = -chip_z
+//
+// 2026-10-01 修正: 以前は {+chip_y, +chip_x, -chip_z} で、X/Y が実際とは逆 (機体後方・右) を
+// 指していた。システム同定ログ (前進加速で accel_x<0、左旋回で accel_y<0) で発覚。
+// gyro も同じ変換を通るので gyro_z (yaw_rate) は変わらず、roll/pitch の符号だけが反転する。
+// pitch は Ahrs が右手系 (機首下げが正) で返すため、ProcessSample で符号を反転して
+// 「機首上げが正」にそろえている。
 //
 // 基板を張り替えたときの確認手順 (Imu_Init が起動時にチップ座標系の加速度を表示する):
 //   1. 水平に置いて静止 -> chip az の符号が機体Z(上)の向きを決める (+9.8 なら +chip_z)
 //   2. 機首を持ち上げる -> 大きく振れた軸が機体X(前)。機首上げで機体X の加速度が
-//      負になるように符号を選ぶ
+//      正になるように符号を選ぶ (加速度は比力: 上向きに +g が乗る)
 //   3. 残った軸が機体Y。3軸の変換行列の行列式が +1 (右手系のまま) になるよう符号を決める
+//   4. 実走で確認: 前進加速で accel_x > 0、左旋回で accel_y > 0、yaw_rate > 0
 // 行列式が -1 (鏡像) になる組み合わせを選ぶと、Mahony フィルタが鏡像姿勢に収束して
 // 「静止しているのに roll が 180° 付近」「回転させると一瞬逆に動く」といった症状が出る。
 static ImuVec3 ChipToBody(float chip_x, float chip_y, float chip_z) {
-  ImuVec3 body = {chip_y, chip_x, -chip_z};
+  ImuVec3 body = {-chip_y, -chip_x, -chip_z};
   return body;
 }
 
@@ -233,7 +240,8 @@ static void ProcessSample(Imu *obj, const Mpu6050Sample *sample, float dt) {
   Ahrs_Update(&obj->ahrs, gx, gy, gz, ax, ay, az, dt);
 
   obj->data.yaw = NormalizeDeg(obj->ahrs.yaw - obj->yaw_offset);
-  obj->data.pitch = obj->ahrs.pitch;
+  // Ahrs は右手系 (Y 左まわりで機首下げが正)。機首上げが正になるよう反転する
+  obj->data.pitch = -obj->ahrs.pitch;
   obj->data.roll = obj->ahrs.roll;
 
   obj->data.gyro_x = gx;
