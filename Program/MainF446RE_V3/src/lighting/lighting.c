@@ -2,6 +2,10 @@
 
 #define LIGHTING_DAYTIME_DUTY 0.1f
 #define LIGHTING_TAILLIGHT_DUTY 0.1f
+// 停車保持中 (フェイルセーフで止まっている間) のブレーキ灯 duty。尾灯 (0.1) より明るく
+// 「ブレーキが掛かっている」ことは分かる程度に抑える。Pi 未接続・起動中・通信途絶の間は
+// フェイルセーフで常時点灯するため、全光量のままだと待機中の消費が無駄に大きい (省電力、2026-10-04)
+#define LIGHTING_BRAKE_HOLD_DUTY 0.3f
 // ウィンカーの最低 duty (省電力用の下限。前後灯がこれより暗ければこの値まで持ち上げる)
 #define LIGHTING_WINKER_MIN_DUTY 0.5f
 
@@ -80,7 +84,7 @@ static void Lighting_ApplyRearLight(Lighting* obj) {
         duty = LIGHTING_TAILLIGHT_DUTY;
       }
     } else {
-      duty = 1.0f;
+      duty = obj->brake_dimmed ? LIGHTING_BRAKE_HOLD_DUTY : 1.0f;
     }
   } else if (obj->headlight_mode != LIGHTING_HEADLIGHT_OFF) {
     duty = LIGHTING_TAILLIGHT_DUTY;
@@ -102,6 +106,7 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
   obj->passing_on = false;
   obj->brake_on = false;
   obj->brake_flashing = false;
+  obj->brake_dimmed = false;
   obj->winker_state = LIGHTING_WINKER_OFF;
   obj->front_light_duty = 0.0f;
   obj->rear_light_duty = 0.0f;
@@ -137,6 +142,12 @@ void Lighting_SetBrakeMode(Lighting* obj, bool on, bool flashing) {
   }
   obj->brake_on = on;
   obj->brake_flashing = flashing;
+  Lighting_ApplyRearLight(obj);
+}
+
+void Lighting_SetBrakeDimmed(Lighting* obj, bool dimmed) {
+  if (obj->brake_dimmed == dimmed) return;
+  obj->brake_dimmed = dimmed;
   Lighting_ApplyRearLight(obj);
 }
 

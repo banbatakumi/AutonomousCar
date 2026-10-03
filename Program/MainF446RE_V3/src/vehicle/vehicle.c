@@ -50,6 +50,9 @@ static void ApplyBrakeLight(Vehicle* obj, bool braking) {
 // LiDAR電源を want_on に応じて更新する。ARM中は即座に点け、ARMが外れても
 // VEHICLE_LIDAR_IDLE_OFF_DELAY_S が経つまでは点けたままにする (短い停止での
 // 頻繁な電源入り切りと、それによる再ARM直後のセンサ空白を避けるため)
+//
+// 回転モータの PWM も電源と一緒に止める/戻す (2026-10-04)。以前は電源を切った後も
+// PA8 から duty 40% が出続け、無給電の LD06 へ入力保護ダイオード経由で流れ込む恐れがあった
 static void UpdateLidarPower(Vehicle* obj, bool want_on) {
   if (want_on) {
     Timer_Reset(&obj->lidar_idle_timer);
@@ -57,11 +60,17 @@ static void UpdateLidarPower(Vehicle* obj, bool want_on) {
       Power_SetLidarPower(obj->power, 1);
       obj->lidar_on = true;
     }
-    return;
-  }
-  if (obj->lidar_on && Timer_Read(&obj->lidar_idle_timer) >= VEHICLE_LIDAR_IDLE_OFF_DELAY_S) {
+  } else if (obj->lidar_on && Timer_Read(&obj->lidar_idle_timer) >= VEHICLE_LIDAR_IDLE_OFF_DELAY_S) {
     Power_SetLidarPower(obj->power, 0);
     obj->lidar_on = false;
+  }
+
+  // PWM は実際に給電されている間だけ出す。シグナル系過電流では Power 側が給電を拒否・
+  // 遮断する (Power_SetLidarPower / Power_Update) ので、lidar_on だけでは判断しない
+  bool pwm_on = obj->lidar_on && !(Power_GetFaults(obj->power) & POWER_FAULT_SIGNAL_OVERCURRENT);
+  if (pwm_on != obj->lidar_pwm_on) {
+    Lidar_SetMotorDuty(obj->lidar, pwm_on ? LIDAR_PWM_DUTY : 0.0f);
+    obj->lidar_pwm_on = pwm_on;
   }
 }
 
@@ -151,6 +160,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 中心点が未較正だと舵角の絶対値が信用できないため走行させない
   bool armed = arm_requested && Steering_IsCenterValid(obj->steering) &&
                (obj->mode == RAS_MODE_MANUAL || obj->mode == RAS_MODE_AUTO);
+  obj->armed = armed;
   bool cmd_braking = (command->flags & RAS_CMD_FLAG_BRAKE) != 0;
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
   bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
@@ -222,6 +232,9 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
   Drive_SetAbsEnabled(obj->drive, config->abs_enabled);
 
+  // 上位が生きている間の制動は常に全光量 (減光はフェイルセーフの停車保持だけ)
+  Timer_Reset(&obj->brake_dim_timer);
+  Lighting_SetBrakeDimmed(obj->lighting, false);
   ApplyBrakeLight(obj, braking);
   Lighting_SetHeadlight(obj->lighting, HeadlightModeFromCommand(command->light_mode));
   Lighting_SetPassing(obj->lighting, (command->flags & RAS_CMD_FLAG_PASSING) != 0);
@@ -277,6 +290,16 @@ static void ApplyFailsafe(Vehicle* obj) {
   Drive_SetTorque(obj->drive, false, 0.0f);
   Drive_SetSideBrake(obj->drive, false);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
+  obj->armed = false;
+  // 止まって (ESS の停止判定と同じ車速未満が) VEHICLE_FAILSAFE_BRAKE_DIM_DELAY_S 続いてから
+  // だけ減光する。通信途絶直後の最大制動で減速・クリープしている間は全光量のまま (後続への
+  // 表示を弱めない)。Pi 未接続・起動中はずっとここを通るので、全光量で点けっぱなしにしない
+  // (省電力、2026-10-04)
+  if (fabsf(Drive_GetVehicleSpeed(obj->drive)) >= VEHICLE_ESS_STOP_SPEED_M_S) {
+    Timer_Reset(&obj->brake_dim_timer);
+  }
+  Lighting_SetBrakeDimmed(obj->lighting,
+                          Timer_Read(&obj->brake_dim_timer) >= VEHICLE_FAILSAFE_BRAKE_DIM_DELAY_S);
   ApplyBrakeLight(obj, true);
   Lighting_SetPassing(obj->lighting, false);
   SetHorn(obj, false);
@@ -319,6 +342,13 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   // 合わせておく
   Timer_Init(&obj->lidar_idle_timer);
   obj->lidar_on = false;
+  // Lidar_Init() は回転 PWM を duty 40% で出し始めるが、給電は ARM まで入らないので止めておく
+  // (UpdateLidarPower() が給電と一緒に戻す)
+  Lidar_SetMotorDuty(obj->lidar, 0.0f);
+  obj->lidar_pwm_on = false;
+
+  obj->armed = false;
+  Timer_Init(&obj->brake_dim_timer);
 }
 
 void Vehicle_Update(Vehicle* obj) {
@@ -342,6 +372,8 @@ void Vehicle_Update(Vehicle* obj) {
 }
 
 bool Vehicle_IsEstopLatched(const Vehicle* obj) { return obj->estop_latched; }
+
+bool Vehicle_IsArmed(const Vehicle* obj) { return obj->armed; }
 
 uint8_t Vehicle_GetMode(const Vehicle* obj) { return obj->mode; }
 

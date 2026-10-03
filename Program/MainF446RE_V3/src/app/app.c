@@ -242,10 +242,13 @@ static void UpdateSensors() {
   Encoder_Update(&encoder);
   Imu_Update(&imu);
   // DISARM中は自動停止判定 (vehicle.c) が超音波値を参照しないため、トリガ送出自体を
-  // 止めて消費電力を抑える。Drive_IsEnabled は直前周期の armed 状態 (Vehicle_Update が
-  // このあとで更新する) なので 1周期 (500us) 遅れるが、判定を止めるだけで安全側には
-  // ならない要件ではないため許容する
-  if (Drive_IsEnabled(&drive)) RangeSensor_Update(&range_sensor);
+  // 止めて消費電力を抑える。自動停止が超音波を見るのは上位指令を ARM として適用している
+  // 周期だけなので、それと同じ Vehicle_IsArmed で判定する。以前の Drive_IsEnabled は
+  // MainApp() 冒頭の Drive_Enable で真から始まり、ApplyFailsafe() が Drive_Disable を
+  // 呼ばないため、Pi 未接続・起動中・通信途絶・緊急停止の間はトリガが出続けていた
+  // (2026-10-04 修正)。直前周期の Vehicle_Update が決めた値なので 1周期 (500us) 遅れるが、
+  // 判定を止めるだけなので許容する
+  if (Vehicle_IsArmed(&vehicle)) RangeSensor_Update(&range_sensor);
   Lidar_Update(&lidar);
 
   // IMU の I2C 復旧処理 (imu.c の Recover()) は ~190ms メインループをブロッキングする

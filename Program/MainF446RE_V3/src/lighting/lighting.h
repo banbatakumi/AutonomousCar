@@ -31,6 +31,7 @@ typedef struct {
   bool passing_on;
   bool brake_on;
   bool brake_flashing;
+  bool brake_dimmed;  // 停車保持中の減光 (Lighting_SetBrakeDimmed)
   Timer brake_flash_timer;
   float front_light_duty;  // front_light に直近書き込んだ duty (ウィンカー減光判定に使う)
   float rear_light_duty;   // rear_light に直近書き込んだ duty (ウィンカー減光判定に使う)
@@ -68,6 +69,12 @@ void Lighting_SetBrake(Lighting* obj, bool on);
  * @brief ブレーキランプを点灯/消灯し、必要なら高速点滅させる。
  */
 void Lighting_SetBrakeMode(Lighting* obj, bool on, bool flashing);
+
+/**
+ * @brief 点灯中のブレーキランプ (常灯) を停車保持用の明るさへ落とす/戻す。
+ * 高速点滅 (緊急制動表示) と尾灯には影響しない。走行中の制動では必ず false にすること。
+ */
+void Lighting_SetBrakeDimmed(Lighting* obj, bool dimmed);
 
 /**
  * @brief ブレーキランプの高速点滅を on/off する。点滅中はブレーキランプも点灯状態になる。

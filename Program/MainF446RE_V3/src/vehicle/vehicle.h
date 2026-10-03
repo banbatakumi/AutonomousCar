@@ -35,6 +35,9 @@
 // すると、LD06は起動から安定したスキャンが出るまで数秒かかるため、再ARM直後にセンサが
 // 使えない空白ができてしまう。この遅延の間はARM解除中もLiDARを点けたままにする
 #define VEHICLE_LIDAR_IDLE_OFF_DELAY_S 5.0f
+// フェイルセーフの停車保持でブレーキ灯を減光するまでの、停止 (|車速| < VEHICLE_ESS_STOP_SPEED_M_S)
+// の継続時間 [s]。止まりかけのクリープ中に減光しないための余裕 (省電力、2026-10-04)
+#define VEHICLE_FAILSAFE_BRAKE_DIM_DELAY_S 1.0f
 // 自動停止 (RAS_CMD_FLAG_AUTO_STOP) の動的停止距離
 // d_stop = v・VEHICLE_AUTO_STOP_DELAY_S + v²/(2・DRIVE_MAX_ACCEL_M_S2) + マージン
 // のうち、通信・処理・制動応答の遅延見積り [s] (未実測プレースホルダー。実測後に更新すること)
@@ -109,6 +112,15 @@ typedef struct {
   // ARMが外れている(=走らせる予定がない)時間を計り、LiDAR電源の遅延OFFに使う
   Timer lidar_idle_timer;
   bool lidar_on;
+  // 回転 PWM を出しているか。給電が過電流で拒否・遮断されている間は lidar_on でも止める
+  bool lidar_pwm_on;
+
+  // 直近の周期で上位指令が ARM として適用されたか (フェイルセーフ・緊急停止中は false)。
+  // 超音波のトリガ送出を止める判定に使う (Vehicle_IsArmed)
+  bool armed;
+
+  // フェイルセーフ中に停止が続いている時間。ブレーキ灯の減光に使う
+  Timer brake_dim_timer;
 
   // 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したか。
   // テレメトリの RAS_FLAG_AUTO_STOP_ACTIVE に使う
@@ -140,6 +152,12 @@ void Vehicle_Update(Vehicle* obj);
  * @brief 緊急停止がラッチ中かを取得する。
  */
 bool Vehicle_IsEstopLatched(const Vehicle* obj);
+
+/**
+ * @brief 直近の周期で上位指令が ARM として適用されたかを取得する。
+ * COMMAND 途絶・緊急停止のフェイルセーフ中、Pi 未接続・起動中は false。
+ */
+bool Vehicle_IsArmed(const Vehicle* obj);
 
 /**
  * @brief 現在の走行モード (RasMode) を取得する。
