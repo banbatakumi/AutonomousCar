@@ -1,5 +1,6 @@
 #include "lidar.h"
 
+#include <math.h>
 #include <string.h>
 
 // ビン中心からのずれの初期値。実際のずれは必ず 0.5度以下なので、最初の点は必ず採用される
@@ -68,6 +69,51 @@ static void PlacePoint(Lidar* obj, float angle_deg, uint16_t distance_mm, uint8_
   obj->building_has_point = true;
 }
 
+// 新しい1点 (cur) を受け取り、直前の点との間にあるビン中心 (整数度) の値を補間して置く
+static void PlaceInterpolated(Lidar* obj, float angle_deg, uint16_t distance_mm, uint8_t intensity,
+                              uint32_t t_us) {
+  float gap = angle_deg - obj->prev_angle_deg;
+  if (gap < -180.0f) gap += 360.0f;  // 360度の折り返し
+
+  if (!obj->has_prev_point || gap <= 0.0f || gap > LIDAR_INTERP_MAX_GAP_DEG) {
+    // 補間できない (起動直後・欠落・逆行) ので従来どおり最も近いビンへ置く
+    PlacePoint(obj, angle_deg, distance_mm, intensity, t_us);
+  } else {
+    float a0 = obj->prev_angle_deg;
+    float a1 = a0 + gap;  // 折り返しを展開した終点 (最大 362度)
+    int diff = (int)distance_mm - (int)obj->prev_distance_mm;
+    if (diff < 0) diff = -diff;
+    bool smooth = distance_mm != 0 && obj->prev_distance_mm != 0 && diff <= LIDAR_INTERP_MAX_DIFF_MM;
+    uint32_t dt_us = (uint32_t)(t_us - obj->prev_t_us);
+
+    // a0 < c <= a1 を満たす整数度 c。a0 ちょうどの c は前の区間で処理済み
+    for (float c = floorf(a0) + 1.0f; c <= a1; c += 1.0f) {
+      float frac = (c - a0) / gap;
+      uint16_t d;
+      uint8_t in;
+      if (smooth) {
+        d = (uint16_t)((float)obj->prev_distance_mm +
+                       ((float)distance_mm - (float)obj->prev_distance_mm) * frac + 0.5f);
+        in = (frac < 0.5f) ? obj->prev_intensity : intensity;
+      } else if (frac < 0.5f) {
+        d = obj->prev_distance_mm;
+        in = obj->prev_intensity;
+      } else {
+        d = distance_mm;
+        in = intensity;
+      }
+      float c_wrapped = (c >= 360.0f) ? c - 360.0f : c;
+      PlacePoint(obj, c_wrapped, d, in, obj->prev_t_us + (uint32_t)((float)dt_us * frac));
+    }
+  }
+
+  obj->has_prev_point = true;
+  obj->prev_angle_deg = angle_deg;
+  obj->prev_distance_mm = distance_mm;
+  obj->prev_intensity = intensity;
+  obj->prev_t_us = t_us;
+}
+
 void Lidar_Init(Lidar* obj, Serial* serial, TIM_HandleTypeDef* htim, uint32_t channel) {
   memset(obj, 0, sizeof(*obj));
 
@@ -113,7 +159,7 @@ void Lidar_Update(Lidar* obj) {
       // 角度は LD06 側で 0.0-360.0 に正規化済み、センサ基準のまま渡す。実際にはセンサを
       // 裏向きに取り付けているため左右が鏡像になっているが、その補正はここでは行わない
       // (詳細は lidar.h のモジュール解説コメントを参照。上位側で座標変換すること)
-      PlacePoint(obj, point->angle, point->distance, point->confidence, t_us);
+      PlaceInterpolated(obj, point->angle, point->distance, point->confidence, t_us);
     }
   }
 }
