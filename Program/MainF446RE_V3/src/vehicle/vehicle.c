@@ -231,6 +231,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
   Drive_SetAbsEnabled(obj->drive, config->abs_enabled);
+  Drive_SetParams(obj->drive, &config->control);
 
   // 上位が生きている間の制動は常に全光量 (減光はフェイルセーフの停車保持だけ)
   Timer_Reset(&obj->brake_dim_timer);

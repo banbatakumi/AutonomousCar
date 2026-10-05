@@ -74,6 +74,7 @@ static uint32_t BuildFlags(Telemetry* obj) {
   if (Vehicle_IsAutoStopActive(obj->vehicle)) flags |= RAS_FLAG_AUTO_STOP_ACTIVE;
   if (Drive_IsSideBrakeEngaged(obj->drive)) flags |= RAS_FLAG_SIDE_BRAKE_ACTIVE;
   if (Drive_IsAbsActive(obj->drive)) flags |= RAS_FLAG_ABS_ACTIVE;
+  if (Drive_IsWheelLiftGuardActive(obj->drive)) flags |= RAS_FLAG_WHEEL_LIFT_ACTIVE;
   if (Vehicle_IsWinkerLeftActive(obj->vehicle)) flags |= RAS_FLAG_WINKER_LEFT_ACTIVE;
   if (Vehicle_IsWinkerRightActive(obj->vehicle)) flags |= RAS_FLAG_WINKER_RIGHT_ACTIVE;
 
@@ -173,6 +174,11 @@ void Telemetry_Update(Telemetry* obj) {
   telemetry.slip[1] = Drive_GetSlipRight(obj->drive);
   telemetry.tc_limit_nm[0] = Drive_GetTcLimitLeft(obj->drive);
   telemetry.tc_limit_nm[1] = Drive_GetTcLimitRight(obj->drive);
+  telemetry.torque_req_nm[0] = Drive_GetTorqueRequestLeft(obj->drive);
+  telemetry.torque_req_nm[1] = Drive_GetTorqueRequestRight(obj->drive);
+  telemetry.abs_limit_nm = Drive_GetAbsLimit(obj->drive);
+  telemetry.yaw_rate_target_rad_s = Drive_GetTargetYawRate(obj->drive);
+  telemetry.tv_moment_nm = Drive_GetTvYawMoment(obj->drive);
 
   telemetry.batt_voltage_v[0] = Power_GetVoltageDriveFiltered(obj->power);
   telemetry.batt_voltage_v[1] = Power_GetVoltageSignalFiltered(obj->power);

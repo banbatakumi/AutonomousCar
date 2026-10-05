@@ -17,7 +17,7 @@
 #define RAS_PONG_TX_TIME_OFFSET 8
 
 // 各パケットのペイロード長
-#define RAS_LEN_TELEMETRY 74
+#define RAS_LEN_TELEMETRY 84
 #define RAS_LEN_PONG 12
 #define RAS_LEN_VERSION 10
 #define RAS_LEN_LIMITS 16
@@ -263,6 +263,10 @@ static void SendTelemetry(RasLink* obj) {
   for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->torque_cmd_nm[i], 0.0001f));
   for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->slip[i], 0.0001f));
   for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->tc_limit_nm[i], 0.0001f));
+  for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->torque_req_nm[i], 0.0001f));
+  PutI16(p, &pos, QuantizeI16(t->abs_limit_nm, 0.0001f));
+  PutI16(p, &pos, QuantizeI16(t->yaw_rate_target_rad_s, 0.001f));
+  PutI16(p, &pos, QuantizeI16(t->tv_moment_nm, 0.0001f));
   for (int i = 0; i < 4; i++) PutU8(p, &pos, t->temp_c[i]);
   PutU8(p, &pos, QuantizeU8(t->batt_voltage_v[0], 0.05f));
   PutU8(p, &pos, QuantizeU8(t->batt_voltage_v[1], 0.05f));
@@ -462,8 +466,8 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
       clamped = obj->config.abs_enabled ? 1.0f : 0.0f;
       break;
     default:
-      *applied = 0.0f;
-      return RAS_CONFIG_UNKNOWN_PARAM;
+      // 足回りの制御の調整パラメータ (結果コードは RasConfigResult と同じ値)
+      return (uint8_t)ControlParams_Set(&obj->config.control, param_id, value, applied);
   }
   *applied = clamped;
   return (clamped == value) ? RAS_CONFIG_OK : RAS_CONFIG_OUT_OF_RANGE;
@@ -487,8 +491,9 @@ static float ReadConfig(const RasLink* obj, uint16_t param_id, bool* known) {
     default:
       break;
   }
-  *known = false;
-  return 0.0f;
+  float value = 0.0f;
+  *known = ControlParams_Get(&obj->config.control, param_id, &value);
+  return value;
 }
 
 static void DispatchPacket(RasLink* obj, uint32_t frame_end_us) {
@@ -660,6 +665,7 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
   obj->config.lidar_format = RAS_LIDAR_FORMAT_STANDARD;
   obj->config.auto_stop_margin_cm = RAS_AUTO_STOP_MARGIN_DEFAULT_CM;
   obj->config.abs_enabled = true;
+  ControlParams_SetDefaults(&obj->config.control);
 
   uint32_t now = Micros();
   obj->telemetry_ready = false;

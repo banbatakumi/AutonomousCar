@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "control_params.h"
 #include "serial.h"
 #include "timer.h"
 
@@ -24,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x000Fu
+#define RAS_PROTOCOL_VERSION 0x0010u
 // "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
 // 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
 // Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
@@ -147,6 +148,9 @@ typedef enum {
 #define RAS_FLAG_WINKER_RIGHT_ACTIVE (1u << 19)
 // ABSが制動トルクを要求より削っている最中かどうか (フォールバック中は偽)。v0.15 で新設
 #define RAS_FLAG_ABS_ACTIVE (1u << 20)
+// 片輪浮き対策 (後輪左右の速度差・後輪周速の絶対上限) がトルクを削っている最中かどうか。
+// このとき RAS_FLAG_TC_ACTIVE は立たない (どちらの偏差が効いたかを分ける)。v0.16 で新設
+#define RAS_FLAG_WHEEL_LIFT_ACTIVE (1u << 21)
 
 // TELEMETRY.md_status[i]
 #define RAS_MD_STATUS_RUNNING (1u << 0)
@@ -172,8 +176,10 @@ typedef enum {
 } RasConfigResult;
 
 // 実装済みのパラメータのみを定義する。
-// TC/TV/速度PIの各ゲイン自体の実行時変更 (0x0011,0x0021,0x0030,0x0031) は
-// Drive 側が定数で持っているため未対応で、受信すると RAS_CONFIG_UNKNOWN_PARAM を返す。
+// 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータは v0.16 で対応した。param_id と
+// 範囲・既定値は src/control/control_params.h の表が唯一の定義で、ここには並べない
+// (0x0011-0x0015, 0x0021-0x002A, 0x0051, 0x0071-0x0073)。Flash へは保存しない。
+// 速度PIのゲイン (0x0030,0x0031) は未対応で、受信すると RAS_CONFIG_UNKNOWN_PARAM を返す。
 // 「OK を返すが何も変わらない」より、対応していないことを Pi 側に伝える方が安全。
 // TC/TV の ON/OFF (0x0010/0x0020) はゲインではなく機能そのものの有効/無効なので v0.8 で対応した。
 // 片輪浮き対策 (0x0050) の ON/OFF は v0.9 で新設。TC本体 (0x0010) とは独立に切替できる。
@@ -209,6 +215,7 @@ typedef struct {
   uint8_t lidar_format;
   float auto_stop_margin_cm;  // v0.12 で新設。既定は RAS_AUTO_STOP_MARGIN_DEFAULT_CM
   bool abs_enabled;           // v0.15 で新設。既定は有効
+  ControlParams control;      // v0.16 で新設。足回りの制御の調整パラメータ
 } RasConfig;
 
 // 受信した COMMAND をデコードしたもの
@@ -262,6 +269,11 @@ typedef struct {
   // DRIVE_MAX_TORQUE_NM が「制限なし」、それより小さければ介入中を意味する
   float slip[2];         // 後輪スリップ率 [RL, RR] (無次元)
   float tc_limit_nm[2];  // TCが動的に決めたトルク上限 [RL, RR]
+  // --- v0.16 で追加 (制御の介入を上位で見るため。src/comm/telemetry.c) ---
+  float torque_req_nm[2];        // スリップ制限が絞る前に掛けたかったトルク [RL, RR] (制動は負)
+  float abs_limit_nm;            // ABS が決めた制動トルクの上限
+  float yaw_rate_target_rad_s;   // TV の規範ヨーレート
+  float tv_moment_nm;            // TV の PI が要求したヨーモーメント (左旋回が正)
 
   uint8_t temp_c[4];       // [MD後左, MD後右, MDステア, STM32内蔵]
   float batt_voltage_v[2];  // [駆動系, シグナル系]

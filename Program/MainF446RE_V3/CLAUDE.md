@@ -39,6 +39,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 制御系バッテリーの省電力化を 2026-10-04 に入れた (プロトコル変更なし、Pi側 `docs/power_audit_2026-10.md`)。①フェイルセーフの停車保持で、停止 (`VEHICLE_ESS_STOP_SPEED_M_S` 未満) が `VEHICLE_FAILSAFE_BRAKE_DIM_DELAY_S` (1s) 続いたらブレーキ灯を duty `LIGHTING_BRAKE_HOLD_DUTY` (0.3) に減光 (`Lighting_SetBrakeDimmed`。上位が生きている間の制動・通信途絶直後の減速中は全光量のまま)。②超音波のトリガ送出を `Vehicle_IsArmed()` (上位指令を ARM として適用した周期だけ真) で止める。以前の `Drive_IsEnabled` は `MainApp()` 冒頭の `Drive_Enable` で真から始まり `ApplyFailsafe()` が落とさないため、Pi 未接続・起動中・通信途絶・緊急停止の間はトリガが出続けていた。③LiDAR の回転 PWM を実際に給電している間だけ出す (`UpdateLidarPower`。以前は電源 OFF 後も PA8 から duty 40% が出続け、無給電の LD06 への逆給電の恐れがあった)。④ADC1/ADC2 の DMA 半分/満了割り込み (約9k回/s、コールバックは空) を無効化 (`AdcDma_Init`。値はポーリングで読む)。**ビルドのみで実機未書き込み・未確認**。MD 向け UART の TX 線 (駆動電源 OFF 中も High) の逆給電は回路確認待ちで未対処。LiDAR の PWM が設計 30kHz に対し実際は 15kHz (`LIDAR_PWM_PERIOD` が TIM1 クロックを 180MHz と仮定、実際は APB2 ÷4 で 90MHz) なのも未修正 (duty 0.4 はこの周波数で詰めた値のため)
 
+- 足回りの制御 (TC・ABS・片輪浮き対策・TV) を 2026-10-05 に見直し、調整パラメータを上位から実行時に読み書きできるようにした (v0.16、`docs/pi_uart_protocol_v0.16_delta.md`、`protocol_version` 0x000F→0x0010。`TELEMETRY` の LEN は 74→84: 制御の介入量 `torque_req[2]`・`abs_limit_nm`・`yaw_rate_target`・`tv_moment_nm` と `flags` bit21=`RAS_FLAG_WHEEL_LIFT_ACTIVE` を追加)。**上の箇条書きの TC・ABS・片輪浮き対策・TV の説明のうち、ルール (0.7倍・25ms・0.9倍・0.2Nm/s)・0.25m/s 未満で無効・`DRIVE_TC_*`/`DRIVE_ABS_*`/`TV_*` の定数名は v0.15 までのもの。** ①調整パラメータの表は `src/control/control_params.h` (`CONTROL_PARAM_TABLE`。名前・`param_id`・既定値・範囲の唯一の定義)。`RasConfig.control` が持ち、`ApplyRasCommand()` が毎周期 `Drive_SetParams()` へ写す。Flash には保存しない (値の唯一の定義は上位側 `config/vehicle.toml` の `[control]`、上位が接続のたびに送って `CONFIG_ACK.applied` と突き合わせる)。②TC・ABS はスリップ率を目標に保つ連続の PI (`SlipLimiter`/`UpdateSlipLimiter()`、`src/control/drive.c`。説明は `drive.h` の「スリップ制限」)。スリップ率の分母に下限 (`slip_speed_floor_m_s`) を置いて低速でも働き、TC は「トルクを掛けている向きのスリップ速度」を見るので車速PIの減速にも掛かる (以前はユーザー判断で対象外だった。ランプ 3.0m/s² が後輪だけの制動の限界を超えること・駆動と減速を1つの式で扱えることから、連続 PI への作り直しに伴って対象にした。★この点はユーザーへ報告済みだが、個別の了承は得ていない。戻すなら `SlipSpeedAlongTorque()` で負トルクのとき 0 を返す★)。③片輪を絞った分を反対の輪へ載せない (以前の `LimitDiffTorque` は総和を保つために押し増していた)。片輪浮き対策は TC と同じ上限を共有する偏差の1つになった (ON/OFF は独立)。④TV は左右差を保つ配分 (`AllocateTorque()`)、「実際に効いた差」での積分の巻き戻し、規範の1次遅れ (`tv_ref_lag_s`)、同定用のヨーモーメント注入 (`tv_test_moment_nm`。0 以外の間は PI を止める)。⑤既定値は上位側の机上の車両モデル (`tools/ctrl_tune/plant.py` の `NOMINAL`) で最適化した初期値で、同モデルでの比較は上位側 `PROGRESS.md` の 2026-10-05 節。**ビルドのみで実機未書き込み。実機での同定 (上位側の「制御の同定」3試験) と動作確認は未了。**
+
 ---
 
 ## ビルド・書き込みコマンド
@@ -51,7 +53,7 @@ make run      # make -j12 でビルド後、SWDFlash.sh で ST-Link 経由書き
 
 - `Makefile` は STM32CubeMX の projectgenerator が自動生成したもの。ソースファイルの追加時は `.ioc` を CubeMX で再生成するか、`C_SOURCES` / `C_INCLUDES` を手動編集する。
 - `SWDFlash.sh` は `STM32_Programmer_CLI` (STM32CubeProgrammer 付属) を使い `build/MainF446RE_V3.bin` を `0x08000000` に書き込む。ST-Link 接続と `STM32_Programmer_CLI` の PATH 登録が前提。
-- 単体テストの仕組みは現状ない。
+- 実機向けの単体テストの仕組みは無い。ただし `src/control` (Drive・TorqueVectoring・ControlParams) は `host/` でホスト (Mac) 向けにコンパイルでき、上位側リポジトリの `tools/ctrl_tune` が車両モデルと閉ループにして回帰テスト・比較・最適化に使う (`host/README.md`)。**`src/control` のロジックを変えたら、変える前後で上位側の `python -m tools.ctrl_tune.bench` と `python -m pytest tools/ctrl_tune/tests` を回すこと。**
 
 ---
 
@@ -109,6 +111,8 @@ src/power/      電源の計測 (電圧・電流・温度) と電源スイッチ
                 自動でクリアされる (ヒステリシス付き、復帰は 1.1V/cell = 8.8V)。
                 DRIVE_POWER は起動直後ではなく Setup() の最後 (起動演出の後) で投入する。
                 フォールトの表示は app.c の UpdateFaultIndication() でハザード点滅として行う
+host/           `src/control` をホスト (Mac) でコンパイルして車両モデルと閉ループにするための
+                差し替えヘッダ (`shim/`) と本体 (`host_sim.c`)。実機のファームには含まれない (`host/README.md`)
 src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ステアリング/左後輪/右後輪)のBLDC MD通信まとめ、
                 Steering_* : ステアリング中心点キャリブレーションと相対角度指令、
                 Drive_* : 車速のトルクベース閉ループ制御。後輪MDはトルク(Nm)モードで駆動し、

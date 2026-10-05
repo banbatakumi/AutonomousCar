@@ -6,6 +6,7 @@
 #include "encoder.h"
 #include "imu.h"
 #include "lpf.h"
+#include "control_params.h"
 #include "motors.h"
 #include "pid.h"
 #include "steering.h"
@@ -82,94 +83,64 @@
 #define DRIVE_MAX_BRAKE_TORQUE_NM DRIVE_MAX_TORQUE_NM
 
 // ===========================================================================
-// トラクションコントロール (TC) パラメータ
-// 各輪独立。ABS (下) と同じ「滑り始めたときのトルクを覚えて、そこを基準に上下させる」型:
-//   ①空転し始めを検知したら、その輪に掛けていたトルク (tc_*.lock_nm) を覚え、上限を
-//     DRIVE_TC_CUT_RATIO 倍へ一度だけ下げる
-//   ②DRIVE_TC_RELEASE_TIMEOUT_S 経ってもグリップが戻らなければもう一段下げる
-//   ③戻ったら覚えたトルクの DRIVE_TC_REAPPLY_RATIO 倍へすぐ戻し、DRIVE_TC_RECOVER_RATE で上げる
-// 2026-09-27 までは超過スリップに比例して 0.3Nm/s で削る型で、実機の全開加速で右後輪が
-// 滑り率0.3〜0.8を約0.4s続けても上限は 0.15→0.118Nm しか下がらず (実トルク約0.10Nm に
-// 届かない)、一度も絞っていなかった。上限を 0.15 から削り始める (掛けているトルクから削らない)
-// ことも効かない理由だった。実機記録で較正した後輪+タイヤのモデルで、空転している時間が
-// 77%→13% に減ることを確認 (Pi側リポジトリの PROGRESS.md)。
-// ★しきい値 0.2 は横グリップ優先の選択。この路面は滑らせても駆動力がほぼ落ちない可能性があり
-// (モデルの較正結果)、その場合の直線の加速は約0.4m/s²下がる。直線を優先するなら0.3へ★
-// ===========================================================================
-#define DRIVE_TC_SLIP_THRESHOLD 0.2f   // スリップ率がこれを超えたら空転し始めとみなす
-#define DRIVE_TC_RECOVER_SLIP 0.1f     // スリップ率がこれより小さくなったらグリップが戻ったとみなす
-#define DRIVE_TC_SLIP_DEBOUNCE_S 0.005f  // ABS と同じ。本物の空転は数十msで深くなるので応答を優先
-#define DRIVE_TC_CUT_RATIO 0.7f          // 空転し始めで上限を掛けていたトルクの何倍へ下げるか
-#define DRIVE_TC_RELEASE_TIMEOUT_S 0.025f  // 下げてもこの時間グリップが戻らなければもう一段下げる
-#define DRIVE_TC_REAPPLY_RATIO 0.9f      // グリップが戻ったら覚えたトルクの何倍へすぐ戻すか
-#define DRIVE_TC_RECOVER_RATE 0.2f       // そこから上限を上げる速度 [Nm/s]
-#define DRIVE_TC_MIN_TORQUE_NM 0.005f  // 削り切っても完全には0にしない (再加速できなくなるため)
-#define DRIVE_TC_MIN_SPEED_M_S 0.25f   // これ以下の車速ではスリップ率が発散するのでTCを効かせない
-
-// ===========================================================================
-// 片輪浮き対策 (Wheel Lift Guard) パラメータ
-// 上のTC (DRIVE_TC_*) は前輪基準速度に対する後輪個々のスリップ率で判定するため、
-// 基準速度が DRIVE_TC_MIN_SPEED_M_S 未満の低速域では機能しない。停止/低速からの
-// 片輪浮き急発進を捉えるため、前輪基準速度に依存しない「後輪左右速度差」で判定する
-// 経路を独立に追加する。実車のeLSD (電子制御LSD) と同じ役割分担:
-// 基準車速比較 (=上のTC) は両輪同時空転を、左右輪速度差 (=本機構) は片輪だけの
-// 異常を、それぞれ担当する。TC本体とは独立に上位からON/OFFできる (RasConfig 参照)。
-// ===========================================================================
-
-// 後輪左右の速度差 (ヨーレートで期待される差を差し引いた異常成分) がこれを超えたら、
-// 速い方 (浮いていると推定される輪) のトルク上限を削り始める [m/s]。
-// ★未実測: 正常なコーナリング・段差通過時に生じる残差 (ヨーレート補正の誤差・センサ
-// ノイズ) の最大値を実測し、それを上回る値に設定すること。当面は「確実に止める」側の
-// 低めの値から始める★
-#define DRIVE_WHEEL_LIFT_DIFF_THRESHOLD_M_S 0.35f
-
-#define DRIVE_WHEEL_LIFT_CUT_GAIN 1.2f                       // 超過差分あたりのトルク削減速度 [Nm/s / (m/s)]
-#define DRIVE_WHEEL_LIFT_RECOVER_RATE DRIVE_TC_RECOVER_RATE  // 上のTCと同じ回復速度
-
-// 後輪周速がこれを超えたら、基準速度・左右差に関係なく即座にトルク上限を0にする
-// (最終防波堤)。SlipRatio() は DRIVE_TC_MIN_SPEED_M_S 未満で無効化されるため、これは
-// 左右速度差検知と違うレイヤーの保護として持たせてある。
-// ★未実測: 最大舵角・最高速旋回時の外輪速度を実機で確認し、誤介入しない下限まで詰めること★
-#define DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S (DRIVE_MAX_SPEED_M_S * 1.5f)  // 4.5 m/s
-
-// ===========================================================================
-// ABS (アンチロックブレーキ) パラメータ
-// 制動モード (Drive_SetBrake) の間だけ働く。制動トルクの上限を左右共通の1つだけ持つ
-// (select-low: ロックしかけている側に合わせる)。左右独立にすると左右で路面μが違うときに
-// 後輪側でヨーモーメントが出てスピン方向に振れるため、実車の後輪ABSと同じく安定性を優先する。
-// 車速PIの減速・torque_mode の逆向きトルクは対象外 (ユーザー判断)。
+// スリップ制限 (TC・ABS・片輪浮き対策)
 //
-// 実車のABSの定石どおり「滑り始めたときのトルクを覚えて、そこを基準に上下させる」:
-//   ①滑り始めを検知したら、そのとき掛けていたトルク (abs_lock_nm) を覚え、上限を
-//     DRIVE_ABS_CUT_RATIO 倍へ一度だけ下げる (削り続けない)
-//   ②DRIVE_ABS_RELEASE_TIMEOUT_S 経ってもグリップが戻らなければ、もう一段同じ比で下げる
-//     (低μ路。覚えるトルクも下げた値に更新する)
-//   ③グリップが戻ったら (スリップが DRIVE_ABS_RECOVER_SLIP より浅い) 覚えたトルクの
-//     DRIVE_ABS_REAPPLY_RATIO 倍へすぐ戻し、そこから DRIVE_ABS_RECOVER_RATE でゆっくり上げる
-//     (グリップの限界の少し手前に長く留まる)
-// 2026-09-27 の初版は超過スリップに比例して削り続ける TC と同じ型だったが、実機では検知の遅れの
-// 間に上限がほぼ0まで削られ、1.0Nm/s でゆっくり戻すので平均の制動トルクが約0.06Nm (限界は約
-// 0.09Nm) に留まり、要求0.12・0.15Nm の方が0.08Nm より減速が弱かった (2.3〜2.5m/s²、ロックなし
-// だと3.67m/s²)。実機の記録で較正した後輪+タイヤのモデルで比べ、この方式で平均の減速度が約25%
-// 上がり (ロックなしの約97%)、後輪がロック気味の時間も減ることを確認した (低μ・ノイズ・遅れでも同様)。
-// ★ゲインはモデルでの机上値。実機で制動中の torque_cmd と slip を見て詰めること★
+// 調整パラメータは control_params.h (ControlParams)。上位が CONFIG_SET で入れる。
+//
+// ■ スリップの測り方
+// 後輪の周速と「その輪が滑っていなければ出るはずの速度」(前輪の車速 ± ヨーレート×半トレッド)
+// の差をスリップ速度、それを max(|基準速度|, slip_speed_floor_m_s) で割ったものをスリップ率と
+// する。分母に下限を置くのは、車速が0に近いと率が発散するため (2026-10-05 までは 0.25m/s 未満で
+// TC・ABS ごと無効にしていて、発進時の空転を誰も見ていなかった)。下限より遅い間は「スリップ
+// 速度が 下限×目標スリップ率 を超えたか」を見ていることになる。
+// 制御が見るのは**トルクを掛けている向きのスリップ速度**: 駆動なら空転、車速PIの減速・制動なら
+// ロック傾向が正になる。前進・後退・加速・減速を1つの式で扱える。
+//
+// ■ 制限のしかた (TC・ABS 共通、SlipLimiter)
+// スリップ率を目標 (tc_slip_target / abs_slip_target) に保つ連続の PI。出力はトルクの上限。
+//   偏差 e = 目標スリップ率×分母 − スリップ速度 [m/s] (正 = 余裕がある)
+//   ①e が負になったら働き始める。積分の初期値はそのとき実際に掛けていたトルク
+//     (上限を最大値から削り始めると、掛けているトルクへ届くまで何もしないのと同じになる)
+//   ②働いている間、上限 = 積分 + kp×e。積分は ki×e で進む
+//   ③上限が要求トルク以上に戻ったら (= 要求どおり掛けても滑らない) 止める
+// 2026-10-05 までは実車の油圧 ABS の「減→保持→増」を写したルールベース (滑り始めのトルクを
+// 覚えて0.7倍へ下げ、25ms 戻らなければもう一段、戻ったら0.9倍へ戻して0.2Nm/s で上げる) だった。
+// 油圧の弁は開閉しかできないのでこの形になるが、モータはトルクを連続に出せるので段を刻む理由が
+// 無い。実機でも ABS は最初の一撃で深くロックし、25ms ごとの再カットで必要以上に抜いていた
+// (ロックなしの約85%)。比較は Pi 側リポジトリの tools/ctrl_tune/bench.py と PROGRESS.md。
+//
+// ■ TC (各輪独立)
+// 駆動 (車速PI・torque_mode) と車速PIの減速の両方に掛かる。後者は以前 ABS の対象外だったが、
+// 目標車速のランプ (3.0m/s^2) は後輪だけの制動で出せる減速度を超えるので、旋回しながら減速すると
+// 後輪がロックしてスピンし得た。
+// 片輪を絞っても、その分を反対の輪へ載せない (総駆動力が減る)。2026-10-05 までは総和を保つために
+// 反対の輪を押し増していて、TV の上限と同じ大きさの要求していないヨーモーメントが出ていた。
+// 絞ったことで出るヨーは TV が反対の輪を下げて打ち消す (駆動力よりヨーを優先する)。
+//
+// ■ 片輪浮き対策
+// TC の基準は前輪なので、前輪エンコーダが壊れると働かない (または絞り続ける)。前輪に依らない
+// 見張りとして「後輪左右の速度差からヨーレートで説明できる分を引いた残り」が
+// wheel_lift_diff_threshold_m_s を超えたら、トルクの向きへ先走っている輪を同じ SlipLimiter で絞る
+// (偏差は TC と小さい方を使う)。TC とは独立に ON/OFF できる。
+//
+// ■ ABS
+// 制動モード (Drive_SetBrake) の間だけ働く。上限は左右共通で、ロックしかけている側に合わせる
+// (select-low)。左右独立にすると左右で路面μが違うときに後輪側でヨーモーメントが出てスピン方向に
+// 振れるため、実車の後輪 ABS と同じく安定性を優先する。
 // ===========================================================================
-#define DRIVE_ABS_SLIP_THRESHOLD 0.2f  // スリップ率がこれより負になったら滑り始めとみなす
-#define DRIVE_ABS_RECOVER_SLIP 0.1f    // スリップ率がこれより浅くなったらグリップが戻ったとみなす (ヒステリシス)
-#define DRIVE_ABS_SLIP_DEBOUNCE_S 0.005f  // TCより短い。制動中はノイズ耐性より応答を優先する
-#define DRIVE_ABS_CUT_RATIO 0.7f          // 滑り始めで上限を掛けていたトルクの何倍へ下げるか
-#define DRIVE_ABS_RELEASE_TIMEOUT_S 0.025f  // 下げてもこの時間グリップが戻らなければもう一段下げる
-#define DRIVE_ABS_REAPPLY_RATIO 0.9f      // グリップが戻ったら覚えたトルクの何倍へすぐ戻すか
-#define DRIVE_ABS_RECOVER_RATE 0.2f       // そこから上限を上げる速度 [Nm/s] (限界の手前に長く留まる)
-// フォールバック: 上限が要求の DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いたまま
-// DRIVE_ABS_FALLBACK_TIME_S 続いたら、ブレーキを離すまでABSを止めて要求どおりに制動する。
-// 前輪エンコーダの故障・符号ミスで基準車速が高く出るとスリップが負に張り付き、緊急停止中も
-// 制動を抜き続けてしまうため。本来のABSは上限を上下させるので下限付近に長く張り付くことは
-// 少ない、という前提に立つ (非常に滑る路面で本当に抜き続ける場面ではロック側に倒れる)。
-// 上限は DRIVE_ABS_RELEASE_TIMEOUT_S ごとに CUT_RATIO 倍ずつ下がるので、最大制動から20%以下へ
-// 届くまで約0.125s掛かる。そこから0.1sで、初版 (ほぼ即座に0へ削って0.2s) と同じ約0.2sで戻る
+
+// 後輪周速がこれを超えたら、基準速度・左右差に関係なく即座にトルクを0にする (最終防波堤。
+// 片輪浮き対策の一部として ON/OFF される)。7.5m/s
+#define DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S (DRIVE_MAX_SPEED_M_S * 1.5f)
+
+// ABS のフォールバック: 上限が要求の DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いたまま
+// DRIVE_ABS_FALLBACK_TIME_S 続いたら、ブレーキを離すまで ABS を止めて要求どおりに制動する。
+// 前輪エンコーダの故障・符号ミスで基準車速が高く出るとスリップがロック側に張り付き、緊急停止中も
+// 制動を抜き続けてしまうため。本来の ABS はグリップの限界付近 (この車は最大制動の約6割) に
+// 留まるので、2割以下に長く張り付くことは少ない、という前提に立つ (非常に滑る路面で本当に
+// 抜き続ける場面ではロック側に倒れる)
 #define DRIVE_ABS_FALLBACK_LIMIT_RATIO 0.2f
-#define DRIVE_ABS_FALLBACK_TIME_S 0.1f
+#define DRIVE_ABS_FALLBACK_TIME_S 0.2f
 
 // ===========================================================================
 // フィルタ係数 (Drive_Update の呼び出し周期 500us = 2kHz に依存する。τ=-dt/ln(k))
@@ -186,22 +157,22 @@
 // 実速度より系統的に遅れ、後輪 (τ≈4.75ms、ほぼ遅れ無し) との差が「常時空転している」という
 // 誤ったスリップ率を生む (低速ほど基準速度に対する遅れの比率が大きく致命的)。この遅れバイアスを
 // 縮めるため、PID用より軽い τ≈5ms のフィルタをスリップ判定専用に別途持つ
-// (ノイズは残りやすくなるが、DRIVE_TC_SLIP_DEBOUNCE_S 側で吸収する)
+// (ノイズは残りやすくなるが、スリップ制限は偏差に比例して絞るだけなので小さなノイズは効かない)
 #define DRIVE_LPF_K_FRONT_TC 0.905f
 
-// TC の1輪ぶんの状態 (ABS の abs_* と同じ役割)
+// スリップ制限1つぶんの状態 (TC は各輪、ABS は左右共通で1つ)
 typedef struct {
-  float lock_nm;         // 直近に空転し始めたときに掛けていたトルク (戻す基準)
-  bool releasing;        // 空転を検知して上限を下げ、グリップが戻るのを待っている間
-  float release_time_s;  // releasing の継続時間 (DRIVE_TC_RELEASE_TIMEOUT_S ごとに下げ直す)
-  float excess_time_s;   // スリップ率がしきい値を超えてからの継続時間 (デバウンス用)
-} TractionState;
+  bool active;        // スリップが目標を超えて働き始めてから、上限が要求以上へ戻るまで
+  float integral_nm;  // PI の積分 = 「このトルクなら滑らない」という見積もり
+} SlipLimiter;
 
 typedef struct {
   Motors* motors;
   Encoder* encoder;
   Steering* steering;
   Imu* imu;  // ヨーレート取得用 (NULL可。その場合は自転車モデルで代用する)
+
+  ControlParams params;  // 調整パラメータ (Drive_SetParams で上位の設定を写す)
 
   PID speed_pid;
   TorqueVectoring tv;
@@ -214,7 +185,7 @@ typedef struct {
   Timer timer;
 
   bool enabled;
-  bool tc_enabled;                // 既定は有効。無効時は tc_limit_left/right_nm を上限固定にする
+  bool tc_enabled;                // 既定は有効
   bool wheel_lift_guard_enabled;  // 既定は有効。TC本体とは独立にON/OFF可能
   bool abs_enabled;               // 既定は有効
   // 上位から指令された生の目標車速 (レート制限前)。Drive_SetTargetSpeed が更新する
@@ -249,23 +220,20 @@ typedef struct {
   float front_speed_right_m_s;  // 右前輪の周速
   float rear_speed_left_m_s;    // 左後輪の周速
   float rear_speed_right_m_s;   // 右後輪の周速
-  float slip_left;              // 左後輪のスリップ率 (正 = 空転, 負 = ロック傾向)
-  float slip_right;             // 右後輪のスリップ率
-  // TC の各輪の状態 (TractionState 参照)
-  TractionState tc_left;
-  TractionState tc_right;
-  float tc_limit_left_nm;   // TCが動的に決めた左輪のトルク上限
-  float tc_limit_right_nm;  // TCが動的に決めた右輪のトルク上限
-  // 片輪浮き対策が動的に決めた各輪のトルク上限 (tc_limit_*とは独立、最終的にminを取る)
-  float wheel_lift_limit_left_nm;
-  float wheel_lift_limit_right_nm;
-  // ABSが動的に決めた制動トルク上限 (左右共通、select-low)。制動していない間は
-  // DRIVE_MAX_BRAKE_TORQUE_NM に戻しておき、次の制動を全量から始める
-  float abs_limit_nm;
-  float abs_lock_nm;        // 直近に滑り始めたときに掛けていた制動トルク (戻す基準)
-  bool abs_releasing;       // 滑り始めを検知して上限を下げ、グリップが戻るのを待っている間
-  float abs_release_time_s; // abs_releasing の継続時間 (DRIVE_ABS_RELEASE_TIMEOUT_S ごとに下げ直す)
-  float abs_excess_time_s;  // TractionState.excess_time_s と同じデバウンス用
+  // スリップ率は進行方向が基準 (正 = 空転, 負 = ロック傾向)。上位への報告用で、制御は
+  // トルクの向きを基準にしたスリップ速度 (drive.c の SlipSpeedAlongTorque) を見る
+  float slip_left;
+  float slip_right;
+  float slip_ref_left_m_s;   // 左後輪が滑っていなければ出るはずの周速 (スリップの基準)
+  float slip_ref_right_m_s;
+  SlipLimiter tc_left;
+  SlipLimiter tc_right;
+  float tc_limit_left_nm;   // 左輪のトルク上限 (働いていなければ DRIVE_MAX_TORQUE_NM)
+  float tc_limit_right_nm;
+  bool tc_limiting;          // 前周期、いずれかの輪で上限が実際にトルクを削った
+  bool wheel_lift_limiting;  // 同 片輪浮き対策の偏差の方が効いていた (または絶対上限で切った)
+  SlipLimiter abs;
+  float abs_limit_nm;       // 制動トルクの上限 (左右共通。働いていなければ DRIVE_MAX_BRAKE_TORQUE_NM)
   float abs_floor_time_s;   // 上限が DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いている継続時間
   bool abs_fallback_latched;  // 真の間はABSを止めて要求どおりに制動する (ブレーキ解除で戻る)
   // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
@@ -273,6 +241,10 @@ typedef struct {
   // 押さえているのかが上位から区別できる
   float torque_left_nm;
   float torque_right_nm;
+  // スリップ制限 (TC・片輪浮き対策・ABS) が絞る前に各輪へ掛けたかったトルク。torque_*_nm との差が
+  // 「どれだけ絞ったか」。駆動は TV の左右差を載せた後の値、制動は要求の制動トルク (負値)
+  float torque_request_left_nm;
+  float torque_request_right_nm;
 } Drive;
 
 /**
@@ -287,6 +259,11 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
  * フィルタ係数が周期に依存するため、一定周期 (500us = 2kHz 想定) で呼ぶこと。
  */
 void Drive_Update(Drive* obj);
+
+/**
+ * @brief 調整パラメータを差し替える (上位の CONFIG_SET を毎周期ここへ写す)。
+ */
+void Drive_SetParams(Drive* obj, const ControlParams* params);
 
 /**
  * @brief 目標車速 [m/s] を設定する (負値で後退)。急な指令変化でタイヤを滑らせないよう、
@@ -337,10 +314,9 @@ bool Drive_IsSideBrakeEngaged(const Drive* obj);
 void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled);
 
 /**
- * @brief トラクションコントロール (TC本体、前輪基準スリップ率ベース) の有効/無効を
- * 切り替える (既定は有効)。無効にすると各輪のトルク上限を常に DRIVE_MAX_TORQUE_NM に
- * 固定し、スリップ率による削り込みを一切行わない。片輪浮き対策 (Drive_SetWheelLiftGuardEnabled)
- * とは独立に切り替わる。
+ * @brief トラクションコントロール (TC本体、前輪基準のスリップ) の有効/無効を切り替える
+ * (既定は有効)。片輪浮き対策 (Drive_SetWheelLiftGuardEnabled) とは独立に切り替わり、両方を
+ * 無効にすると各輪のトルク上限は常に DRIVE_MAX_TORQUE_NM になる。
  */
 void Drive_SetTractionControlEnabled(Drive* obj, bool enabled);
 
@@ -377,6 +353,27 @@ float Drive_GetTargetYawRate(const Drive* obj);
  * @brief 適用中の左右トルク差 [Nm] (右輪 − 左輪) を取得する。正 = 左旋回方向。
  */
 float Drive_GetYawMomentTorque(const Drive* obj);
+
+/**
+ * @brief トルクベクタリングの PI が要求したヨーモーメント [Nm] (左旋回方向が正。上限で丸めた後)。
+ * 実際に付いた左右差は Drive_GetYawMomentTorque() / 各輪のトルクから分かる。
+ */
+float Drive_GetTvYawMoment(const Drive* obj);
+
+/**
+ * @brief ABS が決めた制動トルクの上限 [Nm] (働いていなければ DRIVE_MAX_BRAKE_TORQUE_NM)。
+ */
+float Drive_GetAbsLimit(const Drive* obj);
+
+/**
+ * @brief スリップ制限が絞る前に左輪へ掛けたかったトルク [Nm] (Drive.torque_request_left_nm 参照)。
+ */
+float Drive_GetTorqueRequestLeft(const Drive* obj);
+
+/**
+ * @brief 同 右輪。
+ */
+float Drive_GetTorqueRequestRight(const Drive* obj);
 
 /**
  * @brief 駆動制御を有効化する。積分項とTCのトルク上限をリセットしてから開始する。
