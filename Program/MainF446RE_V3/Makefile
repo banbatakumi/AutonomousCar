@@ -22,7 +22,7 @@ TARGET = MainF446RE_V3
 # debug build?
 DEBUG = 1
 # optimization
-OPT = -Og
+OPT = -O2
 
 
 #######################################
@@ -143,6 +143,10 @@ C_INCLUDES += $(shell find src -type d | sed 's/^/-I/')
 ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
 
 CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+
+# errno を捨てて sqrtf 等を FPU 命令へ直接展開させる。double への暗黙昇格は
+# 単精度 FPU ではソフトウェア演算になるため警告で検出する
+CFLAGS += -fno-math-errno -Wdouble-promotion
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
