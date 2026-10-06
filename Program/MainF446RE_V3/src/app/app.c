@@ -135,7 +135,7 @@ void Setup() {
              DRIVE_POWER_GPIO_Port, DRIVE_POWER_Pin,
              LIDAR_POWER_GPIO_Port, LIDAR_POWER_Pin);
   Encoder_Init(&encoder, &adc2);
-  Indicator_Init(&indicator, &power, &lighting, &led3, &led4);
+  Indicator_Init(&indicator, &power, &lighting, &led3, &led4, &buzzer, &button1);
 
   RangeSensor_Init(&range_sensor, TRIG_FRONT_GPIO_Port, TRIG_FRONT_Pin, ECHO_FRONT_GPIO_Port, ECHO_FRONT_Pin,
                    TRIG_REAR_GPIO_Port, TRIG_REAR_Pin, ECHO_REAR_GPIO_Port, ECHO_REAR_Pin);

@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 
+#include "buzzer.h"
+#include "digitalinout.h"
 #include "lighting.h"
 #include "power.h"
 #include "pwm_out.h"
@@ -32,9 +34,23 @@ typedef struct {
   Timer timer;
 } BreathLed;
 
+// --- 電圧低下の警告音 ---
+// 制御電源 (シグナル系) の低下は常に、駆動系の低下は駆動電源が ON の間だけ鳴らす
+// (OFF 中は駆動側の電圧が意味を持たず、充電・待機中の誤警報になる)。
+// ボタン1で消音でき、電圧が復帰するか駆動電源が切れるまで再び鳴らない (そのたびに鳴り直すと
+// 走行中にうるさいため)。クラクション (Vehicle) とブザーを共有しており、クラクションが
+// 警告音を打ち切った場合は次の電圧低下まで再開しない。
+#define INDICATOR_UNDERVOLTAGE_BEEP_FREQ_HZ 2500
+#define INDICATOR_UNDERVOLTAGE_BEEP_ON_MS 150
+#define INDICATOR_UNDERVOLTAGE_BEEP_OFF_MS 850
+
 typedef struct {
   Power* power;
   Lighting* lighting;
+  Buzzer* buzzer;
+  DigitalIn* mute_button;
+  bool undervoltage_warning_started;  // 警告音を鳴らし始めた (ブザーへ指示済み)
+  bool undervoltage_muted;            // ボタン1で消音済み
   BreathLed breath_signal;
   BreathLed breath_drive;
 } Indicator;
@@ -44,7 +60,8 @@ typedef struct {
  * LED3 / LED4 を渡すこと。
  */
 void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
-                    PwmOut* signal_led, PwmOut* drive_led);
+                    PwmOut* signal_led, PwmOut* drive_led,
+                    Buzzer* buzzer, DigitalIn* mute_button);
 
 /**
  * @brief 電源表示と異常表示を1周期分更新する。制御周期ごとに呼ぶこと。

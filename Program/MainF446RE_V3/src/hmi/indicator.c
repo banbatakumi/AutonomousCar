@@ -50,10 +50,41 @@ static void UpdateFaultIndication(Indicator* obj, bool estop_active,
   Lighting_SetWinker(obj->lighting, fault ? LIGHTING_WINKER_HAZARD : winker_request);
 }
 
+static void UpdateUndervoltageWarning(Indicator* obj) {
+  uint32_t faults = Power_GetFaults(obj->power);
+  // 制御電源 (シグナル系) は常時警告する。駆動系は駆動電源 OFF 中は意味を持たないので除外
+  bool warn = (faults & POWER_FAULT_SIGNAL_UNDERVOLTAGE) != 0 ||
+              ((faults & POWER_FAULT_DRIVE_UNDERVOLTAGE) != 0 && Power_IsDriveOn(obj->power));
+
+  if (!warn) {
+    // 条件が解消したら消音状態も解除し、次の電圧低下でまた鳴らす
+    if (obj->undervoltage_warning_started) Buzzer_Stop(obj->buzzer);
+    obj->undervoltage_warning_started = false;
+    obj->undervoltage_muted = false;
+    return;
+  }
+
+  if (DigitalIn_Read(obj->mute_button)) obj->undervoltage_muted = true;
+
+  if (obj->undervoltage_muted) {
+    if (obj->undervoltage_warning_started) Buzzer_Stop(obj->buzzer);
+    obj->undervoltage_warning_started = false;
+  } else if (!obj->undervoltage_warning_started) {
+    Buzzer_BeepPattern(obj->buzzer, INDICATOR_UNDERVOLTAGE_BEEP_FREQ_HZ,
+                       INDICATOR_UNDERVOLTAGE_BEEP_ON_MS, INDICATOR_UNDERVOLTAGE_BEEP_OFF_MS, -1);
+    obj->undervoltage_warning_started = true;
+  }
+}
+
 void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
-                    PwmOut* signal_led, PwmOut* drive_led) {
+                    PwmOut* signal_led, PwmOut* drive_led,
+                    Buzzer* buzzer, DigitalIn* mute_button) {
   obj->power = power;
   obj->lighting = lighting;
+  obj->buzzer = buzzer;
+  obj->mute_button = mute_button;
+  obj->undervoltage_warning_started = false;
+  obj->undervoltage_muted = false;
   BreathLed_Init(&obj->breath_signal, signal_led);
   BreathLed_Init(&obj->breath_drive, drive_led);
 }
@@ -61,4 +92,5 @@ void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
 void Indicator_Update(Indicator* obj, bool estop_active, LightingWinkerState winker_request) {
   UpdateFaultIndication(obj, estop_active, winker_request);
   UpdatePowerIndication(obj);
+  UpdateUndervoltageWarning(obj);
 }
