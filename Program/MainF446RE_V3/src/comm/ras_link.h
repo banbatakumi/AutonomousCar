@@ -25,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0010u
+#define RAS_PROTOCOL_VERSION 0x0012u
 // "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
 // 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
 // Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
@@ -186,6 +186,7 @@ typedef enum {
 // 最大速度・最大加速度・最大舵角 (旧 0x0001-0x0003) は v0.10 で廃止した。上位から変更する
 // 実用上の必要が無かったため、Drive/Steering 側の固定定数 (DRIVE_MAX_SPEED_M_S /
 // DRIVE_MAX_ACCEL_M_S2 / Steering_GetMaxRoadWheelAngleRad()) に一本化してある
+// (最大舵角だけは v0.18 からリンクの換算 steer_link_* で変わる。変わるたびに LIMITS を送り直す)
 typedef enum {
   RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
   RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
@@ -193,6 +194,10 @@ typedef enum {
   RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)。v0.9 で新設
   RAS_PARAM_AUTO_STOP_MARGIN_CM = 0x0060,  // 安全マージン [cm] を直接指定。v0.12 で新設
   RAS_PARAM_ABS_ENABLE = 0x0070,           // 0.0=無効, 非0=有効 (既定は有効)。v0.15 で新設
+  // ステアのリンクの換算 (v0.18)。値・範囲は control_params.h の表。入れた瞬間に Steering へ反映し
+  // LIMITS を送り直すので、ID だけここにも置く
+  RAS_PARAM_STEER_LINK_GAIN = 0x0081,
+  RAS_PARAM_STEER_LINK_CUBIC = 0x0082,
 } RasParamId;
 
 typedef enum {
@@ -272,8 +277,8 @@ typedef struct {
   // --- v0.16 で追加 (制御の介入を上位で見るため。src/comm/telemetry.c) ---
   float torque_req_nm[2];        // スリップ制限が絞る前に掛けたかったトルク [RL, RR] (制動は負)
   float abs_limit_nm;            // ABS が決めた制動トルクの上限
-  float yaw_rate_target_rad_s;   // TV の規範ヨーレート
-  float tv_moment_nm;            // TV の PI が要求したヨーモーメント (左旋回が正)
+  float tv_ratio;                // TV の配分の比率 (左旋回で正 = 右輪が多い)。v0.17 (v0.16 は規範ヨーレート)
+  float tv_moment_nm;            // TV が要求した左右差のヨーモーメント換算 (左旋回が正)
 
   uint8_t temp_c[4];       // [MD後左, MD後右, MDステア, STM32内蔵]
   float batt_voltage_v[2];  // [駆動系, シグナル系]

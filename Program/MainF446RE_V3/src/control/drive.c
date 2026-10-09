@@ -116,8 +116,7 @@ static void Coast(Drive* obj) {
 static void SendBrake(Drive* obj, float nm) {
   PID_Reset(&obj->speed_pid);
   ResetTraction(obj);
-  // MD の制動モードは左右へ同じトルクしか出せないので、TV はこの間ヨーモーメントを作れない。
-  // 積分を持ち越すとブレーキを離した瞬間に溜まった分が一気に出る
+  // MD の制動モードは左右へ同じトルクしか出せないので、TV はこの間左右差を付けられない
   TorqueVectoring_Reset(&obj->tv);
   obj->torque_left_nm = -nm;
   obj->torque_right_nm = -nm;
@@ -159,7 +158,7 @@ static void SendSideBrake(Drive* obj) {
 
 // 目標車速も実車速もほぼ0の間は指令を止めて自由回転させる (惰行)。上位が明示的に
 // ブレーキ (RAS_CMD_FLAG_BRAKE) を指定しない限り、停車中も車両を押さえ込まない。
-// 積分・TV を持ち越すと再発進時に停止中に溜まった分が一気に出るのでリセットする
+// 積分を持ち越すと再発進時に停止中に溜まった分が一気に出るのでリセットする
 static void CoastStandstill(Drive* obj) {
   PID_Reset(&obj->speed_pid);
   TorqueVectoring_Reset(&obj->tv);
@@ -308,22 +307,13 @@ static float UpdateWheelLimit(Drive* obj, SlipLimiter* st, float request_nm, flo
                            p->tc_ki_nm_per_m, p->tc_min_torque_nm, DRIVE_MAX_TORQUE_NM, dt_s);
 }
 
-// 総駆動トルクと左右差を各輪へ配り、トルクの絶対上限 (DRIVE_MAX_TORQUE_NM) に収める。
+// 総駆動トルクと左右差を各輪へ配り、トルクの絶対上限 (DRIVE_MAX_TORQUE_NM) に各輪ごとに収める。
 //
-// 片方が上限に当たったら、**左右差を保ったまま**もう片方を同じだけ下げる (総駆動トルクが減る)。
-// 個別にクランプするだけだと差が半分以下に削られ、全開 (両輪とも上限) では差がまったく付かない
-// = 一番滑りやすい場面で TV が効かない。2026-10-05 までは総和を保つ方を優先して差を丸めていた
+// 全開で外輪が上限に当たっても、内輪は荷重の比どおりのトルクのままにする (外輪が出せない分を
+// 内輪へ載せない。内輪は荷重が抜けていて、載せれば空転する)。そのぶん総駆動トルクは減る
 static void AllocateTorque(float total_nm, float diff_nm, float* left_nm, float* right_nm) {
-  float left = (total_nm - diff_nm) * 0.5f;
-  float right = (total_nm + diff_nm) * 0.5f;
-  float left_clamped = Constrain(left, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
-  float right_clamped = Constrain(right, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
-  // 片方を削った分だけもう片方も同じ向きへ動かす (差は変わらない)。両方が削られるのは
-  // 総駆動トルクだけで上限を超えているときで、そのときは両方とも上限に張り付く
-  float left_cut = left_clamped - left;
-  float right_cut = right_clamped - right;
-  *left_nm = Constrain(left_clamped + right_cut, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
-  *right_nm = Constrain(right_clamped + left_cut, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
+  *left_nm = Constrain((total_nm - diff_nm) * 0.5f, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
+  *right_nm = Constrain((total_nm + diff_nm) * 0.5f, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
 }
 
 // 車速フィードバックが壊れて積分が振り切れても、実速度が上限を超えたら加速させない
@@ -356,8 +346,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   ControlParams_SetDefaults(&obj->params);
   PID_Init(&obj->speed_pid, DRIVE_SPEED_KP, DRIVE_SPEED_KI, DRIVE_SPEED_KD,
            -DRIVE_MAX_TOTAL_TORQUE_NM, DRIVE_MAX_TOTAL_TORQUE_NM);
-  TorqueVectoring_Init(&obj->tv, &obj->params, DRIVE_WHEELBASE_M, DRIVE_REAR_TRACK_M,
-                       DRIVE_REAR_WHEEL_RADIUS_M);
+  TorqueVectoring_Init(&obj->tv, &obj->params, DRIVE_REAR_TRACK_M, DRIVE_REAR_WHEEL_RADIUS_M);
   LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0f);
   LPF_Init(&obj->lpf_front_right, DRIVE_LPF_K_FRONT, 0.0f);
   LPF_Init(&obj->lpf_front_left_tc, DRIVE_LPF_K_FRONT_TC, 0.0f);
@@ -457,13 +446,11 @@ void Drive_Update(Drive* obj) {
   }
 
   // トルクベクタリングには実測ヨーレートが要る。IMU が使えないときの代用値 (舵角からの
-  // 幾何計算) は規範モデルとほぼ同じ式なので、偏差が常に0付近になり制御として成立しない
-  bool tv_active = obj->yaw_rate_measured;
+  // 幾何計算) は、車体が滑って曲がれていなくても横加速度が出ていることにしてしまう
   float diff_nm = 0.0f;
-  if (tv_active) {
-    diff_nm = TorqueVectoring_Update(&obj->tv, obj->vehicle_speed_m_s,
-                                     Steering_GetRoadWheelAngleRad(obj->steering),
-                                     obj->yaw_rate_rad_s, dt_s);
+  if (obj->yaw_rate_measured) {
+    diff_nm = TorqueVectoring_Update(&obj->tv, requested_total_nm, obj->vehicle_speed_m_s,
+                                     obj->yaw_rate_rad_s);
   } else {
     TorqueVectoring_Reset(&obj->tv);
   }
@@ -516,18 +503,6 @@ void Drive_Update(Drive* obj) {
 
   left_nm = ApplyOverspeedLimit(obj, left_nm);
   right_nm = ApplyOverspeedLimit(obj, right_nm);
-
-  // TV へは「要求した差のうち実際に効いた分」を返す (積分の巻き戻し用)。TV の要求が 0 でも
-  // TC の絞りで付いていたはずの左右差は、TV の出力ではないので引く
-  if (tv_active) {
-    float half_nm = Constrain(requested_total_nm * 0.5f, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
-    float base_left_nm = ApplyOverspeedLimit(obj, Constrain(half_nm, -obj->tc_limit_left_nm, obj->tc_limit_left_nm));
-    float base_right_nm =
-        ApplyOverspeedLimit(obj, Constrain(half_nm, -obj->tc_limit_right_nm, obj->tc_limit_right_nm));
-    float applied_diff_nm = right_nm - left_nm;
-    TorqueVectoring_ReportApplied(&obj->tv, applied_diff_nm - (base_right_nm - base_left_nm), applied_diff_nm,
-                                  dt_s);
-  }
 
   // torque_mode 中は PID を使っていない (毎周期リセット済み) ので巻き戻しは無意味
   if (!obj->torque_mode_active) UnwindIntegral(obj, requested_total_nm, left_nm + right_nm, dt_s);
@@ -646,16 +621,12 @@ bool Drive_IsTorqueVectoringActive(const Drive* obj) {
   return obj->enabled && TorqueVectoring_IsActive(&obj->tv);
 }
 
-float Drive_GetTargetYawRate(const Drive* obj) {
-  return TorqueVectoring_GetTargetYawRate(&obj->tv);
-}
-
-float Drive_GetYawMomentTorque(const Drive* obj) {
-  return TorqueVectoring_GetDiffTorque(&obj->tv);
+float Drive_GetTvRatio(const Drive* obj) {
+  return TorqueVectoring_GetRatio(&obj->tv);
 }
 
 float Drive_GetTvYawMoment(const Drive* obj) {
-  return obj->tv.yaw_moment_nm;
+  return TorqueVectoring_GetYawMoment(&obj->tv);
 }
 
 float Drive_GetAbsLimit(const Drive* obj) {

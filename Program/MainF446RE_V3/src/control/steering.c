@@ -15,6 +15,35 @@ typedef struct {
   float center_rad;
 } SteeringCalibData;
 
+// リンクの換算 (steering.h)。x = モータ角 × STEERING_LINKAGE_RATIO の可動範囲は ±kMaxLinearRad
+static const float kMaxLinearRad = STEERING_MAX_ANGLE_RAD * STEERING_LINKAGE_RATIO;
+static float link_gain = 1.0f;
+static float link_cubic = 0.0f;
+
+static float LinearToRoad(float x_rad) {
+  return link_gain * x_rad + link_cubic * x_rad * x_rad * x_rad;
+}
+
+// 路面舵角 → x。可動範囲で単調 (Steering_SetLinkage が保証) なのでニュートン法で解ける。
+// 初期値 x = 路面舵角 から 4回で float の精度に収まる
+static float RoadToLinear(float road_rad) {
+  float x = road_rad;
+  for (int i = 0; i < 4; i++) {
+    float slope = link_gain + 3.0f * link_cubic * x * x;
+    if (slope < STEERING_LINKAGE_MIN_SLOPE) slope = STEERING_LINKAGE_MIN_SLOPE;
+    x -= (LinearToRoad(x) - road_rad) / slope;
+    x = Constrain(x, -kMaxLinearRad, kMaxLinearRad);
+  }
+  return x;
+}
+
+void Steering_SetLinkage(float gain, float cubic) {
+  // 傾き gain + 3*cubic*x^2 が可動範囲の端でも下限を割らないようにする
+  float cubic_min = (STEERING_LINKAGE_MIN_SLOPE - gain) / (3.0f * kMaxLinearRad * kMaxLinearRad);
+  link_gain = gain;
+  link_cubic = cubic < cubic_min ? cubic_min : cubic;
+}
+
 static void LoadFromFlash(Steering* obj) {
   SteeringCalibData calib;
   Flash_ReadData(FLASH_USER_START_ADDR, &calib, sizeof(calib));
@@ -81,15 +110,17 @@ float Steering_GetAngleRad(const Steering* obj) {
 }
 
 void Steering_SetRoadWheelAngleRad(Steering* obj, float angle_rad) {
-  Steering_SetAngleRad(obj, angle_rad / STEERING_LINKAGE_RATIO);
+  float max_road_rad = Steering_GetMaxRoadWheelAngleRad();
+  angle_rad = Constrain(angle_rad, -max_road_rad, max_road_rad);
+  Steering_SetAngleRad(obj, RoadToLinear(angle_rad) / STEERING_LINKAGE_RATIO);
 }
 
 float Steering_GetRoadWheelAngleRad(const Steering* obj) {
-  return Steering_GetAngleRad(obj) * STEERING_LINKAGE_RATIO;
+  return LinearToRoad(Steering_GetAngleRad(obj) * STEERING_LINKAGE_RATIO);
 }
 
 float Steering_GetMaxRoadWheelAngleRad(void) {
-  return STEERING_MAX_ANGLE_RAD * STEERING_LINKAGE_RATIO;
+  return LinearToRoad(kMaxLinearRad);
 }
 
 bool Steering_IsCenterValid(const Steering* obj) {

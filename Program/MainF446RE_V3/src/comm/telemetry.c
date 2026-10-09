@@ -177,7 +177,7 @@ void Telemetry_Update(Telemetry* obj) {
   telemetry.torque_req_nm[0] = Drive_GetTorqueRequestLeft(obj->drive);
   telemetry.torque_req_nm[1] = Drive_GetTorqueRequestRight(obj->drive);
   telemetry.abs_limit_nm = Drive_GetAbsLimit(obj->drive);
-  telemetry.yaw_rate_target_rad_s = Drive_GetTargetYawRate(obj->drive);
+  telemetry.tv_ratio = Drive_GetTvRatio(obj->drive);
   telemetry.tv_moment_nm = Drive_GetTvYawMoment(obj->drive);
 
   telemetry.batt_voltage_v[0] = Power_GetVoltageDriveFiltered(obj->power);

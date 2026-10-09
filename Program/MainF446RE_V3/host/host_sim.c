@@ -42,7 +42,7 @@ enum {
   OUT_TC_LIMIT_LEFT,
   OUT_TC_LIMIT_RIGHT,
   OUT_ABS_LIMIT,
-  OUT_YAW_TARGET,   // TV の規範ヨーレート
+  OUT_YAW_TARGET,   // 車両モデルの「舵で決まる定常のヨーレート」(左右の力の差が無いときの値)
   OUT_FW_SPEED,     // ファームが推定した車速
   OUT_FW_SLIP_LEFT,
   OUT_FW_SLIP_RIGHT,
@@ -304,6 +304,7 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   double mu_scale[2] = {u[IN_MU_LEFT], u[IN_MU_RIGHT]};
   double force[2] = {0.0, 0.0};
   double kappa[2] = {0.0, 0.0};
+  double yaw_ss = 0.0;
   for (int k = 0; k < cfg->substeps; k++) {
     double a_y = s->v * s->yaw;
     double fy = p->mass_kg * a_y * p->rear_lateral_share * 0.5;
@@ -340,7 +341,7 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
 
     // ヨー: 舵で決まる定常のヨーレートへ戻ろうとする減衰 + 左右の駆動力差のモーメント
     double eff = p->steer_gain * steer + p->steer_gain_cubic * steer * steer * steer;
-    double yaw_ss = s->v * tan(eff) / DRIVE_WHEELBASE_M;
+    yaw_ss = s->v * tan(eff) / DRIVE_WHEELBASE_M;
     double speed_abs = Max(fabs(s->v), 0.3);
     double yaw_cap = p->lateral_accel_max_m_s2 / speed_abs;
     if (yaw_ss > yaw_cap) yaw_ss = yaw_cap;
@@ -367,7 +368,7 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   o[OUT_TC_LIMIT_LEFT] = Drive_GetTcLimitLeft(d);
   o[OUT_TC_LIMIT_RIGHT] = Drive_GetTcLimitRight(d);
   o[OUT_ABS_LIMIT] = d->abs_limit_nm;
-  o[OUT_YAW_TARGET] = Drive_GetTargetYawRate(d);
+  o[OUT_YAW_TARGET] = yaw_ss;
   o[OUT_FW_SPEED] = Drive_GetVehicleSpeed(d);
   o[OUT_FW_SLIP_LEFT] = Drive_GetSlipLeft(d);
   o[OUT_FW_SLIP_RIGHT] = Drive_GetSlipRight(d);

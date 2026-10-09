@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // ===========================================================================
-// 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータ
+// 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータと、ステアのリンクの換算
 //
 // 上位 (Raspberry Pi) が CONFIG_SET / CONFIG_GET (param_id は下の表の2列目) で実行時に
 // 読み書きする。Flash へは保存しないので、電源を入れ直すと下の既定値へ戻る — 上位は
@@ -36,21 +36,18 @@
   X(abs_slip_target, 0x0071, 0.15f, 0.02f, 1.0f)                                                \
   X(abs_kp_nm_per_m_s, 0x0072, 0.14f, 0.0f, 1.0f)                                              \
   X(abs_ki_nm_per_m, 0x0073, 5.0f, 0.0f, 50.0f)                                                 \
-  /* --- TV (ヨーレートPI) --- */                                                               \
-  X(tv_kp_nm_per_rad_s, 0x0021, 0.08f, 0.0f, 2.0f)                                              \
-  X(tv_ki_nm_per_rad, 0x0022, 0.16f, 0.0f, 20.0f)                                               \
-  X(tv_deadband_rad_s, 0x0023, 0.05f, 0.0f, 1.0f)                                               \
-  X(tv_max_yaw_moment_nm, 0x0024, 0.15f, 0.0f, 0.4f)                                            \
-  /* 規範ヨーレートの頭打ち |r| <= これ / |v| [m/s^2] (実測の限界の約0.92倍) */                 \
-  X(tv_max_lateral_accel_m_s2, 0x0025, 4.1f, 0.5f, 20.0f)                                       \
-  /* 規範の実効舵角 δ_eff = gain*δ + cubic*δ^3 (Pi 側の同定 steer_gain / steer_gain_cubic) */   \
-  X(tv_steer_gain, 0x0026, 0.993f, 0.5f, 1.5f)                                                  \
-  X(tv_steer_gain_cubic, 0x0027, -0.39f, -3.0f, 3.0f)                                           \
-  X(tv_stability_factor, 0x0028, 0.0f, -0.5f, 0.5f) /* [s^2/m^2]。0 = 幾何どおり */             \
-  /* 規範ヨーレートに掛ける1次遅れ [s] (車のヨー応答ぶん)。0 = 遅れなし */                      \
-  X(tv_ref_lag_s, 0x0029, 0.0f, 0.0f, 0.5f)                                                     \
-  /* 同定用: 0 以外の間は PI を止めてこのヨーモーメント [Nm] だけを出す (左旋回が正) */                 \
-  X(tv_test_moment_nm, 0x002A, 0.0f, -0.2f, 0.2f)
+  /* --- TV (後輪左右の荷重に比例した配分。v0.17 でヨーレートPI から置き換えた。 */              \
+  /*     PI の頃の 0x0021〜0x0029 は欠番で、送られてきたら UNKNOWN を返す) --- */                 \
+  /* 同定用: 0 以外の間は配分を止めてこのヨーモーメント [Nm] だけを出す (左旋回が正) */          \
+  X(tv_test_moment_nm, 0x002A, 0.0f, -0.2f, 0.2f)                                               \
+  /* 配分の比率 = これ × 横加速度 (車速×ヨーレート) [1/(m/s^2)]。0 で TV なし */                 \
+  X(tv_load_gain_s2_per_m, 0x002B, 0.045f, 0.0f, 0.5f)                                          \
+  X(tv_max_ratio, 0x002C, 0.5f, 0.0f, 1.0f) /* 比率の上限。1 で内輪のトルクが 0 */                  \
+  /* --- ステアのリンク (v0.18。モータ角 → 路面舵角の換算。src/control/steering.h) --- */       \
+  /* 路面舵角 = gain*x + cubic*x^3、x = モータ角 × STEERING_LINKAGE_RATIO [rad]。 */              \
+  /* 既定は 1 と 0 (= 換算比が一定)。上位がシステム同定の結果を送る */                           \
+  X(steer_link_gain, 0x0081, 1.0f, 0.5f, 1.5f)                                                  \
+  X(steer_link_cubic, 0x0082, 0.0f, -1.5f, 1.5f)
 
 typedef struct {
 #define CONTROL_PARAM_FIELD(name, id, def, lo, hi) float name;

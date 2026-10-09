@@ -265,7 +265,7 @@ static void SendTelemetry(RasLink* obj) {
   for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->tc_limit_nm[i], 0.0001f));
   for (int i = 0; i < 2; i++) PutI16(p, &pos, QuantizeI16(t->torque_req_nm[i], 0.0001f));
   PutI16(p, &pos, QuantizeI16(t->abs_limit_nm, 0.0001f));
-  PutI16(p, &pos, QuantizeI16(t->yaw_rate_target_rad_s, 0.001f));
+  PutI16(p, &pos, QuantizeI16(t->tv_ratio, 0.0001f));
   PutI16(p, &pos, QuantizeI16(t->tv_moment_nm, 0.0001f));
   for (int i = 0; i < 4; i++) PutU8(p, &pos, t->temp_c[i]);
   PutU8(p, &pos, QuantizeU8(t->batt_voltage_v[0], 0.05f));
@@ -465,9 +465,17 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
       obj->config.abs_enabled = (value != 0.0f);
       clamped = obj->config.abs_enabled ? 1.0f : 0.0f;
       break;
-    default:
+    default: {
       // 足回りの制御の調整パラメータ (結果コードは RasConfigResult と同じ値)
-      return (uint8_t)ControlParams_Set(&obj->config.control, param_id, value, applied);
+      uint8_t result = (uint8_t)ControlParams_Set(&obj->config.control, param_id, value, applied);
+      // ステアのリンクの換算はすぐ入れる。路面舵角の可動範囲 (LIMITS.max_steer_rad) が変わるので、
+      // 上位が古い上限で指令を丸め続けないよう LIMITS を送り直す
+      if (param_id == RAS_PARAM_STEER_LINK_GAIN || param_id == RAS_PARAM_STEER_LINK_CUBIC) {
+        Steering_SetLinkage(obj->config.control.steer_link_gain, obj->config.control.steer_link_cubic);
+        SendLimits(obj);
+      }
+      return result;
+    }
   }
   *applied = clamped;
   return (clamped == value) ? RAS_CONFIG_OK : RAS_CONFIG_OUT_OF_RANGE;

@@ -19,7 +19,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `DRIVE_POWER` は既定で OFF。ボタン1を押しながら起動してステアリング原点較正をする場合のみ、MD 通信が要るため `Setup()` 中に一時的に ON にして較正後 OFF に戻す (較正しない起動では一度も投入しない)。以降は `ApplyRasCommand()` (`src/vehicle/vehicle.c`) が上位の arm 要求 (`RAS_CMD_FLAG_ARM`) に従って ON/OFF する。つまり **Pi が未接続または DISARM の間は駆動電源が入らないのが既定**。
 - LD06 (LiDAR) は `LIDAR_POWER` も既定で OFF。`Setup()` では MCU側ペリフェラル (PWM/シリアル) の初期化だけを行い給電はしない。`DRIVE_POWER` と同様、上位の ARM 要求に応じて `UpdateLidarPower()` (`src/vehicle/vehicle.c`) が給電する (実機確認済み)。ARM 後は 120Hz でセクタを上位へ送る。
 - 安全層は 4段: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 → ④`COMMAND` 途絶 100ms で自動ブレーキ。緊急停止はラッチし、**ハートビートが戻っている状態でボタン2を押すまで解除しない**。緊急停止で駆動電源を切らないのは、切るとMDが制動をかけられず惰行して停止距離が伸びるため。
-- トルクベクタリング (`src/control/torque_vectoring.c`) は実装済みで既定は有効。ただしゲイン・安定係数・横加速度上限はいずれも机上値のままで、**実機での符号確認とチューニングが未了**。
+- ステアのリンクの換算を 2026-10-08 に追加した (v0.18、`docs/pi_uart_protocol_v0.18_delta.md`、`protocol_version` 0x0011→0x0012)。リンクは線形ではなく (モータ角×0.5 が 29.1° のとき前輪は約 26.5°)、`src/control/steering.c` が `路面舵角 = steer_link_gain·x + steer_link_cubic·x³` (x = モータ角×0.5) で指令・報告・可動範囲を換算する。値は上位のシステム同定が `CONFIG_SET` (`param_id` 0x0081/0x0082) で送り、入れた瞬間に反映して `LIMITS` を送り直す。既定は 1 と 0 (換算なし)。**上位と必ず一緒に入れ替える** (片方だけだと舵角の意味が食い違う)。未書き込み・実機未検証。
+- トルクベクタリング (`src/control/torque_vectoring.c`) は実装済みで既定は有効。2026-10-08 にヨーレートの PI から荷重比例の配分へ置き換えた (v0.17、`docs/pi_uart_protocol_v0.17_delta.md`、`protocol_version` 0x0010→0x0011。`param_id` 0x0021〜0x0029 廃止・0x002B/0x002C 新設、`TELEMETRY` のオフセット 66 が `tv_ratio`)。ゲイン (`tv_load_gain_s2_per_m`) は机上値で、**未書き込み・実機での符号確認とチューニングが未了**。
 - 前後超音波 (`RangeSensor`) を使った自動停止が v0.7 で追加された。上位が `COMMAND.flags` bit7 (`RAS_CMD_FLAG_AUTO_STOP`) を立てている間だけ有効になる。`brake` (bit1) が同時に立っていればそちらが優先。ラッチせず、しきい値を上回れば自動解除 (ヒステリシス無し)。判定ロジックは v0.12 で下記の通り全面刷新した。
 - TC/TV の実行時 ON/OFF が v0.8 で追加された。`COMMAND.flags` は8bit全部埋まっているため `CONFIG_SET`/`CONFIG_GET` (`param_id = 0x0010` = TC, `0x0020` = TV) 経由。`RasConfig.tc_enabled`/`tv_enabled` (既定 true) を `ApplyRasCommand()` が毎周期 `Drive_SetTractionControlEnabled()`/`Drive_SetTorqueVectoringEnabled()` へ橋渡しする。**実機での動作検証は未了**。
 - 片輪浮き対策 (Wheel Lift Guard) が v0.9 で追加された (`src/control/drive.c`)。既存TC (前輪基準のスリップ率) は基準速度が `DRIVE_TC_MIN_SPEED_M_S` (0.25 m/s) 未満だと無効化されるため、停止/低速からの片輪浮き急発進を捉えられない。この機構は前輪基準速度を使わず「後輪左右の速度差 (ヨーレートで期待される差を差し引いた異常成分)」で判定するため低速域でも機能する。速い方 (浮いていると推定される輪) だけトルク上限を絞り、加えて後輪周速の絶対上限による最終防波堤を持つ。TC本体とは独立したリミッタ状態を持ち、両者の小さい方を実効上限として使う。上位からの ON/OFF は TC本体と独立に `CONFIG_SET`/`CONFIG_GET` (`param_id = 0x0050`) 経由、`RasConfig.wheel_lift_guard_enabled` (既定 true) を `ApplyRasCommand()` が毎周期 `Drive_SetWheelLiftGuardEnabled()` へ橋渡しする。しきい値 (`DRIVE_WHEEL_LIFT_DIFF_THRESHOLD_M_S`, `DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S`) は実測前の机上値で、**実機での動作検証・しきい値のチューニングは未了**。
@@ -34,6 +35,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ウィンカー (右左折・車線変更の意思表示) がv0.14で追加された。`Lighting_SetWinker()` (`src/lighting/lighting.c`) 自体はv0.13以前から存在しハザード表示 (`src/hmi/indicator.c`) が使っていたが、`ApplyRasCommand()` から一度も呼ばれていない実装漏れだった。`flags2` (v0.13で新設済み、ワイヤ形式・LENの変更は無い) のbit1/bit2 (`RAS_CMD_FLAG2_WINKER_LEFT`/`_RIGHT`) で伝え、両方立てるとハザードとして扱う (専用のハザードビットは無い)。`Vehicle` は上位の要求を `winker_request` (Vehicle_GetWinkerRequest()) として保持するだけで `Lighting_SetWinker()` を直接呼ばない — フォールト時のハザード表示 (`indicator.c`) の方が優先すべきで、両モジュールが同じ `Lighting_SetWinker()` を無条件に呼び合うと呼び出し順で優先度が決まってしまうため、調停を `Indicator_Update()` (`src/hmi/indicator.c`、フォールト中はwinker_requestを無視してHAZARD固定) の一箇所に集約した。`TELEMETRY.flags` のbit18/19 (`RAS_FLAG_WINKER_LEFT/RIGHT_ACTIVE`) は要求ではなく `Lighting_GetWinkerState()` (新設) が返す実際の点灯状態を反映するため、フォールト中は要求と食い違いうる。`COMMAND` 途絶・緊急停止では horn/passing と同様に `winker_request` を強制OFFする。`protocol_version` 0x000D→0x000E。プロトコルは `docs/pi_uart_protocol_v0.14_delta.md` 参照。**実機での動作検証は未了**。
 - MD (BLDC, `../../../BLDC/ProgramV4`) との通信遅延を 2026-09-27 に見直した。MD側: ①受信位置を DMA の半分/満了割り込みでしか進めておらず、128バイト (指令約21ms分) 溜まるまで受信が見えなかったのを CNDTR 読みに変更、②送信DMAが Circular で同じバッファを延々再送しつつ上書きしていた (送信途中で中身が入れ替わったフレームがCRC不一致で捨てられる) のを Normal に変更、③トルク・制動モードのIq指令を1kHzの外側ループではなく20kHzで反映、④状態フレームを1kHz→2kHz。メイン側: 指令を1kHz間引き→毎周期 (2kHz) 送信、MD状態の受信を Vehicle/Drive の前へ移動。両側のボーレートを 250000→1000000bps に上げた (配線は約20cm。インパルス性のノイズに対してはフレームが短い方がむしろ化けにくく、化けてもCRCで破棄され前回値保持になる)。加えてMD側で状態フレームの角速度が ±3.28rad/s (後輪周速約0.1m/s) で頭打ちになるバグ (2026-09-12 の 8983d7f で混入、クランプ範囲を100倍前の値で書いていた) を修正した。このバグ入りのMDファームで取ったTC・片輪浮き対策・後輪速度のデータは信用できない。**MD・メイン両方の書き込みと、`md_rx_error` (テレメトリ) の増加有無の実機確認は未了**。
 - ブレーキランプの高速点滅 (緊急制動表示) を 2026-09-27 に実車の ESS (UN-ECE R48) と同じ判定へ変更した (`ApplyBrakeLight()`、`src/vehicle/vehicle.c`)。以前は制動トルク 0.1Nm 以上 (最大0.15Nm) で点滅させていたため、停止中のブレーキ保持やフェイルセーフの停車保持でも点滅し続けていた。現在は「制動中・車速 `VEHICLE_ESS_MIN_SPEED_M_S` 以上・減速度 `VEHICLE_ESS_ON_DECEL_M_S2` 以上」で作動し、減速度が `VEHICLE_ESS_OFF_DECEL_M_S2` 未満・`VEHICLE_ESS_STOP_SPEED_M_S` 未満・ブレーキ解除のいずれかで常灯へ戻る。減速度は前輪車速の20ms窓差分。しきい値はすべて未実測プレースホルダーで、**実機での動作確認は未了**。停止後のハザード自動点灯 (一部実車の挙動) は未実装。
+- ブレーキ灯を 2026-10-06 から「制動モード、または実際の減速度が一定以上」で点けるようにした (`ApplyBrakeLight()`、`VEHICLE_BRAKE_LIGHT_*`)。車速指令を下げたときの減速 (車速PIの負トルク) でも点く。車速の 20ms 窓差分を時定数 0.1s でならし、1.5m/s² で点灯・0.5m/s² で消灯・最短 0.3s 点灯。値は実機の周回の記録を当てて決めた (生の差分は σ≈2.3m/s² 揺れるのでならしが要る)。高速点滅 (ESS) は従来どおり制動モードのときだけ。プロトコル変更なし
 - ABS (制動時の後輪ロック防止) を v0.15 で追加した (`ApplyAbs()`, `src/control/drive.c`)。制動モード (`Drive_SetBrake`: 上位の brake・自動停止・`ApplyFailsafe` の最大制動のすべて) の間だけ働き、車速PIの減速・torque_mode の負トルクは対象外 (ユーザー判断)。既存のスリップ率 (負=ロック傾向) の悪い方で判定する select-low で、左右共通の制動トルク上限 `abs_limit_nm` を動かす。2026-09-27 の実機試験で初版 (TC と同じ「超過スリップに比例して削り続け、1.0Nm/s で戻す」型) は検知の遅れの間に上限をほぼ0まで削ってしまい、平均の制動トルクが限界 (約0.09Nm) の2/3、減速度2.3〜2.5m/s² (ロックなら3.67) に留まったため、同日「滑り始めのトルク `abs_lock_nm` を覚えて0.7倍へ一度だけ下げ、25ms戻らなければもう一段、戻ったらその0.9倍へすぐ戻して0.2Nm/sで上げる」実車の定石の型へ作り直した (実機記録で較正した後輪+タイヤのモデルで減速度が約25%上がることを確認、Pi側リポジトリの PROGRESS.md 参照) (左右独立にしないのは左右μ差で後輪側にヨーモーメントが出てスピン方向に振れるため、実車の後輪ABSと同じ判断)。MD の制動は `-tanh(ω/20rad/s)` で車輪が止まる手前で抜けるため ω=0 の完全ロックにはならないが、深いスリップは起こり得る。前輪エンコーダ異常で基準車速が高く出ると制動を抜き続けるため、上限が要求の20%以下に0.1s張り付いたら (最大制動からだと検知まで約0.2s) ブレーキ解除までABSを止めるフォールバック (`abs_fallback_latched`) を持つ。ON/OFF は `CONFIG_SET`/`CONFIG_GET` (`param_id = 0x0070`, `RasConfig.abs_enabled` 既定 true)、介入中は `TELEMETRY.flags` bit20 (`RAS_FLAG_ABS_ACTIVE`)。`DRIVE_ABS_*` はすべて机上値で、**実機での動作検証・チューニングは未了**。`protocol_version` 0x000E→0x000F。プロトコルは `docs/pi_uart_protocol_v0.15_delta.md` 参照。
 - TC・TV を 2026-09-27 の実機試験 (Pi側のシステム同定の記録) を受けて直した (プロトコル変更なし)。**TC** (`UpdateTractionLimit`, `src/control/drive.c`): 超過スリップに比例して 0.3Nm/s で削る型は、全開加速で右後輪が滑り率0.3〜0.8を約0.4s続けても上限が 0.15→0.118Nm しか下がらず (実トルク約0.10Nm に届かない) 一度も絞っていなかったため、ABS と同じ「空転し始めのトルク (`TractionState.lock_nm`) を覚えて0.7倍へ下げ、25ms戻らなければもう一段、戻ったら0.9倍へ戻して0.2Nm/sで上げる」型へ作り直した (各輪独立のまま)。`Drive_IsTractionControlActive` は「下げている最中か上限が送ったトルクに効いている」に変更。しきい値0.2は横グリップ優先の選択 (drive.h の★)。**TV** (`TargetYawRate`, `src/control/torque_vectoring.c`): 規範の幾何ヨーレートが28°の舵で実測より約1割大きく、定常円で上限に張り付き続けていたため、同定した舵の非線形 (`TV_STEER_GAIN`/`TV_STEER_GAIN_CUBIC`、2026-09-28 の再同定で 0.993/-0.39) を入れ、横加速度の上限を実測の限界の約0.92倍へ (2026-09-28 の限界4.48 → 4.1。以前は暫定6.0)。いずれも実機記録で較正したモデル・記録の再計算で確認済み、**実機での動作確認は未了**。
 
@@ -127,17 +129,16 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
                 TC/TVは掛けたままにする (空転抑制のため、通常駆動時と同じ配分経路を通す)。
                 brake と torque_mode が同時に指定されたら Drive_Update 内の優先順位で
                 brake が勝つ、
-                TorqueVectoring_* : 直接ヨーモーメント制御 (DYC)。規範モデル (自転車モデル +
-                安定係数 + 横加速度の頭打ち) が出す目標ヨーレートと IMU の実測値の偏差を
-                PI で埋め、左右後輪のトルク差として Drive へ返す。左右の総和は変えないので
-                車速制御とは干渉しない。IMU が使えないとき Drive 側のヨーレートは舵角からの
-                幾何計算に化けて規範モデルとほぼ同じ式になるため、その間 Drive は TV を
-                呼ばない (偏差が常に0付近になり制御が成立しないため)。TC が削っている最中は
-                トルク差を付ける余力が無いので、Drive の LimitDiffTorque() で丸めてから
-                TorqueVectoring_ReportApplied() に返し、出せなかった分の積分を巻き戻す)
+                TorqueVectoring_* : 後輪左右の荷重に比例したトルク配分 (フィードフォワードのみ、
+                v0.17)。左右差 = 総駆動トルク × clamp(tv_load_gain × 車速 × 実測ヨーレート,
+                ±tv_max_ratio)。旋回で荷重の乗る外輪へ多く配り、内輪を空転させない。状態 (積分) を
+                持たず、TC は後段で各輪を絞るだけ。IMU が使えないとき Drive 側のヨーレートは舵角
+                からの幾何計算に化け、滑っていても横加速度が出ていることになるため、その間 Drive は
+                TV を呼ばない。2026-10-08 まではヨーレートの PI だった (やめた理由は
+                torque_vectoring.h 冒頭と docs/pi_uart_protocol_v0.17_delta.md)
 src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、1000000bps (2026-09-26 に 250000bps から変更)。
                 仕様は docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
-                docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.15_delta.md。
+                docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.18_delta.md。
                 フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と
                 パケットの解釈・組み立てだけを担い、走行制御には関与しない。受信した COMMAND は
                 RasLink_GetCommand()、送るテレメトリは RasLink_SetTelemetry() に物理量のまま渡す
