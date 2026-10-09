@@ -206,6 +206,9 @@ typedef enum {
   RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)。v0.9 で新設
   RAS_PARAM_AUTO_STOP_MARGIN_CM = 0x0060,  // 安全マージン [cm] を直接指定。v0.12 で新設
   RAS_PARAM_ABS_ENABLE = 0x0070,           // 0.0=無効, 非0=有効 (既定は有効)。v0.15 で新設
+  // ブレーキホールド (制動して止まったら後輪の位置保持へ移る)。0.0=無効, 非0=有効 (既定は有効)。
+  // v0.19 で新設
+  RAS_PARAM_BRAKE_HOLD_ENABLE = 0x0090,
   // ステアのリンクの換算 (v0.18)。値・範囲は control_params.h の表。入れた瞬間に Steering へ反映し
   // LIMITS を送り直すので、ID だけここにも置く
   RAS_PARAM_STEER_LINK_GAIN = 0x0081,
@@ -232,6 +235,7 @@ typedef struct {
   uint8_t lidar_format;
   float auto_stop_margin_cm;  // v0.12 で新設。既定は RAS_AUTO_STOP_MARGIN_DEFAULT_CM
   bool abs_enabled;           // v0.15 で新設。既定は有効
+  bool brake_hold_enabled;    // v0.19 で新設。既定は有効
   ControlParams control;      // v0.16 で新設。足回りの制御の調整パラメータ
 } RasConfig;
 

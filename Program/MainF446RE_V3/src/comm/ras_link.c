@@ -465,6 +465,10 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
       obj->config.abs_enabled = (value != 0.0f);
       clamped = obj->config.abs_enabled ? 1.0f : 0.0f;
       break;
+    case RAS_PARAM_BRAKE_HOLD_ENABLE:
+      obj->config.brake_hold_enabled = (value != 0.0f);
+      clamped = obj->config.brake_hold_enabled ? 1.0f : 0.0f;
+      break;
     default: {
       // 足回りの制御の調整パラメータ (結果コードは RasConfigResult と同じ値)
       uint8_t result = (uint8_t)ControlParams_Set(&obj->config.control, param_id, value, applied);
@@ -496,6 +500,8 @@ static float ReadConfig(const RasLink* obj, uint16_t param_id, bool* known) {
       return obj->config.auto_stop_margin_cm;
     case RAS_PARAM_ABS_ENABLE:
       return obj->config.abs_enabled ? 1.0f : 0.0f;
+    case RAS_PARAM_BRAKE_HOLD_ENABLE:
+      return obj->config.brake_hold_enabled ? 1.0f : 0.0f;
     default:
       break;
   }
@@ -673,6 +679,7 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
   obj->config.lidar_format = RAS_LIDAR_FORMAT_STANDARD;
   obj->config.auto_stop_margin_cm = RAS_AUTO_STOP_MARGIN_DEFAULT_CM;
   obj->config.abs_enabled = true;
+  obj->config.brake_hold_enabled = true;
   ControlParams_SetDefaults(&obj->config.control);
 
   uint32_t now = Micros();

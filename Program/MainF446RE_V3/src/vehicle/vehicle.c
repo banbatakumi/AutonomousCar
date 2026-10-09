@@ -161,6 +161,17 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
   return lidar_hit || us_near_hit || us_fallback_hit;
 }
 
+// ブレーキホールドの条件 (制動中に停止が続いている) を更新して返す。毎周期1回だけ呼ぶこと
+static bool UpdateBrakeHold(Vehicle* obj, bool braking) {
+  if (!braking || fabsf(Drive_GetVehicleSpeed(obj->drive)) >= VEHICLE_BRAKE_HOLD_SPEED_M_S) {
+    Timer_Reset(&obj->brake_hold_timer);
+    obj->brake_hold = false;
+  } else if (!obj->brake_hold && Timer_Read(&obj->brake_hold_timer) >= VEHICLE_BRAKE_HOLD_DELAY_S) {
+    obj->brake_hold = true;
+  }
+  return obj->brake_hold;
+}
+
 // 走行中に上位の ARM が外れたら、停車するまで駆動電源を入れたまま最大制動を続ける。
 // ARM ビットでそのまま駆動電源を切ると MD ごと落ちて制動できず、惰行で止まるのを待つことになる
 // (上位は通信途絶・デッドマンで「安全側」として DISARM を送ってくる)
@@ -321,9 +332,13 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTargetSpeed(obj->drive, target_speed_m_s, command->accel_limit_m_s2);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
+  // 後輪の位置保持に入るのは、上位のサイドブレーキ要求か、ブレーキホールド (制動して止まった)。
   // 未アーム中は無効化する (アームが外れた瞬間に位置保持へ入り込まないようにするため)。
-  // 強制の制動中も入れない (Drive は位置保持を制動より優先する)
-  Drive_SetSideBrake(obj->drive, armed && side_brake_requested && !forced_braking);
+  // 強制の制動中は上位のサイドブレーキ要求を聞かない (Drive は位置保持を制動より優先するので、
+  // 走行中に入ると最大制動が効かなくなる)。ブレーキホールドは止まってからなので構わない
+  bool brake_hold = UpdateBrakeHold(obj, armed && braking) && config->brake_hold_enabled;
+  Drive_SetSideBrake(obj->drive,
+                     armed && ((side_brake_requested && !forced_braking) || brake_hold));
   Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
   Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
@@ -331,8 +346,6 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetParams(obj->drive, &config->control);
 
   // 上位が生きている間の制動は常に全光量 (減光はフェイルセーフの停車保持だけ)
-  Timer_Reset(&obj->failsafe_stop_timer);
-  obj->failsafe_hold = false;
   Lighting_SetBrakeDimmed(obj->lighting, false);
   ApplyBrakeLight(obj, braking);
   Lighting_SetHeadlight(obj->lighting, HeadlightModeFromCommand(command->light_mode));
@@ -384,15 +397,8 @@ static void ApplyFailsafe(Vehicle* obj) {
   // 下の制動が出ない。駆動電源が入ったまま途絶しても必ず制動が掛かるようにする
   if (!Drive_IsEnabled(obj->drive)) Drive_Enable(obj->drive);
 
-  // 止まって (ESS の停止判定と同じ車速未満が) VEHICLE_FAILSAFE_HOLD_DELAY_S 続いたら停車保持へ
-  // 移る。動き出したら (押された・坂で保持し切れない) 最大制動からやり直す
-  if (fabsf(Drive_GetVehicleSpeed(obj->drive)) >= VEHICLE_ESS_STOP_SPEED_M_S) {
-    Timer_Reset(&obj->failsafe_stop_timer);
-    obj->failsafe_hold = false;
-  } else if (!obj->failsafe_hold &&
-             Timer_Read(&obj->failsafe_stop_timer) >= VEHICLE_FAILSAFE_HOLD_DELAY_S) {
-    obj->failsafe_hold = true;
-  }
+  // 止まったら停車保持へ移る。動き出したら (押された・坂で保持し切れない) 最大制動からやり直す
+  bool stopped = UpdateBrakeHold(obj, true);
 
   Drive_SetTargetSpeed(obj->drive, 0.0f, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
@@ -401,12 +407,13 @@ static void ApplyFailsafe(Vehicle* obj) {
   // 制動より優先するので、走行中に入ったままだと最大制動が効かなくなる。止まるまでは必ず
   // 制動トルクで減速し、止まってからだけ位置保持へ切り替える。MD の制動は回転と逆向きの
   // トルクで、車輪が止まる手前で抜ける (2rad/s 未満で 0)。それだけでは坂で動き出す
-  Drive_SetSideBrake(obj->drive, obj->failsafe_hold);
+  Drive_SetSideBrake(obj->drive,
+                     stopped && RasLink_GetConfig(obj->ras_link)->brake_hold_enabled);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
   obj->armed = false;
   // 減速・クリープしている間は全光量のまま (後続への表示を弱めない)。Pi 未接続・起動中は
-  // ずっとここを通るので、停車保持に入ったら減光する (省電力、2026-10-04)
-  Lighting_SetBrakeDimmed(obj->lighting, obj->failsafe_hold);
+  // ずっとここを通るので、止まったら減光する (省電力、2026-10-04。ブレーキホールドが無効でも)
+  Lighting_SetBrakeDimmed(obj->lighting, stopped);
   ApplyBrakeLight(obj, true);
   Lighting_SetPassing(obj->lighting, false);
   SetHorn(obj, false);
@@ -460,8 +467,8 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors,
 
   obj->armed = false;
   obj->prev_armed = false;
-  Timer_Init(&obj->failsafe_stop_timer);
-  obj->failsafe_hold = false;
+  Timer_Init(&obj->brake_hold_timer);
+  obj->brake_hold = false;
 
   obj->arm_requested_prev = false;
   obj->disarm_braking = false;
