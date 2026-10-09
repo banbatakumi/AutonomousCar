@@ -21,7 +21,11 @@ static LightingHeadlightMode HeadlightModeFromCommand(uint8_t light_mode) {
   }
 }
 
-// 実車の緊急制動表示 (ESS) と同じく、制動中かつ一定車速以上から強く減速したときだけ
+// ブレーキ灯は「制動モード (braking)」か「一定以上の減速度」で点ける。後者は車速指令を
+// 下げたときの減速 (車速PIの負トルク)・トルク指令の負トルクなど、制動モードを使わない減速でも
+// 点けるためのもので、指令の種類ではなく実際の減速度だけで決める (VEHICLE_BRAKE_LIGHT_* 参照)。
+//
+// 緊急制動表示 (ESS) は実車と同じく、制動中かつ一定車速以上から強く減速したときだけ
 // 点滅させ、減速が弱まるか停止したら常灯に戻す。制動トルクの大きさで決めると、
 // 停止中にブレーキを踏み続けているだけ (フェイルセーフの停車保持を含む) でも点滅してしまう
 static void ApplyBrakeLight(Vehicle* obj, bool braking) {
@@ -34,6 +38,25 @@ static void ApplyBrakeLight(Vehicle* obj, bool braking) {
                               : 0.0f;
     obj->ess_prev_abs_speed_m_s = abs_speed;
     Timer_Reset(&obj->ess_decel_timer);
+    // ブレーキ灯用の減速度は窓ごとの差分をさらに1次遅れでならす (窓が異常なら 0 へ戻す)
+    obj->brake_light_decel_m_s2 =
+        (window_s <= 0.1f)
+            ? obj->brake_light_decel_m_s2 +
+                  (obj->ess_decel_m_s2 - obj->brake_light_decel_m_s2) * window_s /
+                      (VEHICLE_BRAKE_LIGHT_DECEL_TAU_S + window_s)
+            : 0.0f;
+  }
+
+  if (!obj->brake_light_decel_on) {
+    if (abs_speed >= VEHICLE_ESS_STOP_SPEED_M_S &&
+        obj->brake_light_decel_m_s2 >= VEHICLE_BRAKE_LIGHT_ON_DECEL_M_S2) {
+      obj->brake_light_decel_on = true;
+      Timer_Reset(&obj->brake_light_hold_timer);
+    }
+  } else if ((abs_speed < VEHICLE_ESS_STOP_SPEED_M_S ||
+              obj->brake_light_decel_m_s2 < VEHICLE_BRAKE_LIGHT_OFF_DECEL_M_S2) &&
+             Timer_Read(&obj->brake_light_hold_timer) >= VEHICLE_BRAKE_LIGHT_MIN_ON_S) {
+    obj->brake_light_decel_on = false;
   }
 
   if (!braking || abs_speed < VEHICLE_ESS_STOP_SPEED_M_S ||
@@ -44,7 +67,7 @@ static void ApplyBrakeLight(Vehicle* obj, bool braking) {
     obj->ess_active = true;
   }
 
-  Lighting_SetBrakeMode(obj->lighting, braking, obj->ess_active);
+  Lighting_SetBrakeMode(obj->lighting, braking || obj->brake_light_decel_on, obj->ess_active);
 }
 
 // LiDAR電源を want_on に応じて更新する。ARM中は即座に点け、ARMが外れても
@@ -335,6 +358,9 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->ess_prev_abs_speed_m_s = 0.0f;
   obj->ess_decel_m_s2 = 0.0f;
   obj->ess_active = false;
+  Timer_Init(&obj->brake_light_hold_timer);
+  obj->brake_light_decel_m_s2 = 0.0f;
+  obj->brake_light_decel_on = false;
 
   // Setup() は LIDAR_POWER を意図的に投入しない (Pi 未接続/DISARM の間は LiDAR も
   // 無給電にする既定のため、実機で確認済み)。ここを true にすると UpdateLidarPower() の
@@ -349,10 +375,25 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
   obj->lidar_pwm_on = false;
 
   obj->armed = false;
+  obj->prev_armed = false;
   Timer_Init(&obj->brake_dim_timer);
 }
 
-void Vehicle_Update(Vehicle* obj) {
+// armed が変化した周期に一度だけ通知音を鳴らす。緊急停止・通信途絶で落ちた場合も
+// DISARM 音になる (異常停止も音で分かる)
+static void NotifyArmChange(Vehicle* obj) {
+  if (obj->armed == obj->prev_armed) return;
+  obj->prev_armed = obj->armed;
+  if (obj->armed) {
+    Buzzer_Sweep(obj->buzzer, VEHICLE_ARM_SWEEP_LOW_HZ, VEHICLE_ARM_SWEEP_HIGH_HZ,
+                 VEHICLE_ARM_SWEEP_DURATION_MS);
+  } else {
+    Buzzer_Sweep(obj->buzzer, VEHICLE_ARM_SWEEP_HIGH_HZ, VEHICLE_ARM_SWEEP_LOW_HZ,
+                 VEHICLE_ARM_SWEEP_DURATION_MS);
+  }
+}
+
+static void UpdateInner(Vehicle* obj) {
   UpdateEstop(obj);
 
   // 緊急停止は上位の指令より優先する
@@ -370,6 +411,11 @@ void Vehicle_Update(Vehicle* obj) {
     ApplyFailsafe(obj);
     UpdateLidarPower(obj, false);
   }
+}
+
+void Vehicle_Update(Vehicle* obj) {
+  UpdateInner(obj);
+  NotifyArmChange(obj);
 }
 
 bool Vehicle_IsEstopLatched(const Vehicle* obj) { return obj->estop_latched; }

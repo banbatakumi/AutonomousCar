@@ -12,6 +12,7 @@ typedef enum {
   BUZZER_PATTERN_NONE = 0,  // 停止中
   BUZZER_PATTERN_SINGLE,    // 単発ビープ（on_ms 後に停止）
   BUZZER_PATTERN_REPEAT,    // on/off を繰り返す（count=-1 で無限）
+  BUZZER_PATTERN_SWEEP,     // 周波数を連続的に変化させる（完了後に停止）
 } BuzzerPattern;
 
 typedef struct {
@@ -31,6 +32,10 @@ typedef struct {
   uint32_t on_ms;            // ON 持続時間 [ms]
   uint32_t off_ms;           // OFF 持続時間 [ms]（REPEAT のみ使用）
   int32_t repeat_count;      // 残り繰り返し回数（-1 で無限）
+  uint32_t sweep_start_hz;   // SWEEP の開始周波数 [Hz]
+  uint32_t sweep_end_hz;     // SWEEP の終了周波数 [Hz]
+  uint32_t sweep_ms;         // SWEEP 全体の長さ [ms]
+  uint32_t sweep_last_hz;    // 直近に設定した周波数 [Hz]（変化したときだけ書くため）
   bool buzzer_on;            // 現在 ON 状態か
   Timer timer;
 } Buzzer;
@@ -60,6 +65,13 @@ void Buzzer_Beep(Buzzer *obj, uint32_t freq_hz, uint32_t duration_ms);
  */
 void Buzzer_BeepPattern(Buzzer *obj, uint32_t freq_hz, uint32_t on_ms,
                         uint32_t off_ms, int32_t count);
+
+/**
+ * @brief start_hz から end_hz まで duration_ms [ms] かけて周波数を連続的に変え、終了後に停止する。
+ *        ノンブロッキング。Buzzer_Update で進行する。補間は対数（音程が等間隔に聞こえる）。
+ *        end_hz < start_hz で下降音になる。
+ */
+void Buzzer_Sweep(Buzzer *obj, uint32_t start_hz, uint32_t end_hz, uint32_t duration_ms);
 
 /**
  * @brief ブザーを即時停止する。

@@ -138,9 +138,13 @@ void Power_Update(Power *obj) {
                           POWER_UNDERVOLTAGE_DEBOUNCE_S),
            "signal undervoltage");
 
+  // 駆動電源 OFF 中は駆動側の電圧が立っていないので判定しない。判定すると OFF の間ずっと
+  // 低電圧がラッチされ、ARM で駆動電源を入れた瞬間 (電圧がまだ上がりきる前) に警告音が鳴る。
+  // OFF 中は検出器が解除側へ戻るので、投入後は DEBOUNCE_S の間は誤警告を出さず電圧の立ち上がりを待てる
   SetFault(obj, POWER_FAULT_DRIVE_UNDERVOLTAGE,
            UpdateDetector(&obj->drive_undervoltage,
-                          IsUndervoltage(&obj->drive_undervoltage, Power_GetVoltageDriveFiltered(obj)),
+                          Power_IsDriveOn(obj) &&
+                              IsUndervoltage(&obj->drive_undervoltage, Power_GetVoltageDriveFiltered(obj)),
                           POWER_UNDERVOLTAGE_DEBOUNCE_S),
            "drive undervoltage");
 

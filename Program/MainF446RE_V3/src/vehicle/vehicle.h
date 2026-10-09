@@ -31,6 +31,11 @@
 
 // クラクションの音程 [Hz]。押している間だけ鳴らすため、単発ビープではなく連続トーンで出す
 #define VEHICLE_HORN_FREQ_HZ 2000
+// ARM/DISARM の通知音。周波数を連続的に変える (ARM は上昇、DISARM は下降) ことで、
+// 他の固定周波数の音と区別する。いずれも未実測の机上値
+#define VEHICLE_ARM_SWEEP_LOW_HZ 300
+#define VEHICLE_ARM_SWEEP_HIGH_HZ 4000
+#define VEHICLE_ARM_SWEEP_DURATION_MS 500
 // ARM解除からLiDAR電源を落とすまでの遅延 [s]。信号待ちなど短い停止のたびに電源を入り切り
 // すると、LD06は起動から安定したスキャンが出るまで数秒かかるため、再ARM直後にセンサが
 // 使えない空白ができてしまう。この遅延の間はARM解除中もLiDARを点けたままにする
@@ -81,6 +86,15 @@
 // 量子化ノイズ (σ≈2mm/s) が 2000倍されて数m/s² になりしきい値を跨いでしまうため、
 // 窓を広げてノイズを 1/40 に落とす (遅れは窓幅ぶんで、表示用途なら問題にならない)
 #define VEHICLE_ESS_DECEL_WINDOW_S 0.02f
+// 減速度によるブレーキ灯の点灯 (制動モードでなくても、実際に減速していれば点ける)。
+// 車速の窓差分 (VEHICLE_ESS_DECEL_WINDOW_S) は実機で σ≈2.3m/s² も揺れる (前輪エンコーダの
+// 回転に同期したうねり) ので、1次遅れでならしてからしきい値に掛ける。値は実機の周回の記録
+// (2026-10-06、最高 2.8m/s・262s) を当てて決めた: これより短い時定数は減速の途中で
+// 消えてまた点き、長いと点くのが遅れて加速に移ってからも残る
+#define VEHICLE_BRAKE_LIGHT_DECEL_TAU_S 0.1f
+#define VEHICLE_BRAKE_LIGHT_ON_DECEL_M_S2 1.5f   // 点ける減速度 (下げると減速していないのに点く回数が増える)
+#define VEHICLE_BRAKE_LIGHT_OFF_DECEL_M_S2 0.5f  // 消す減速度
+#define VEHICLE_BRAKE_LIGHT_MIN_ON_S 0.3f        // 一度点けたら最低これだけ点け続ける (ちらつき防止)
 
 typedef struct {
   RasLink* ras_link;
@@ -118,6 +132,8 @@ typedef struct {
   // 直近の周期で上位指令が ARM として適用されたか (フェイルセーフ・緊急停止中は false)。
   // 超音波のトリガ送出を止める判定に使う (Vehicle_IsArmed)
   bool armed;
+  // 前周期の armed。ARM/DISARM の通知音をエッジで鳴らすのに使う
+  bool prev_armed;
 
   // フェイルセーフ中に停止が続いている時間。ブレーキ灯の減光に使う
   Timer brake_dim_timer;
@@ -131,6 +147,11 @@ typedef struct {
   float ess_prev_abs_speed_m_s;
   float ess_decel_m_s2;  // 正=減速
   bool ess_active;
+
+  // 減速度によるブレーキ灯 (VEHICLE_BRAKE_LIGHT_*)。ならした減速度 (正=減速) と点灯の状態
+  float brake_light_decel_m_s2;
+  bool brake_light_decel_on;
+  Timer brake_light_hold_timer;
 } Vehicle;
 
 /**

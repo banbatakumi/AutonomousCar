@@ -1,5 +1,6 @@
 #include "buzzer.h"
 
+#include <math.h>
 #include <stdint.h>
 
 #include "main.h"
@@ -56,6 +57,17 @@ static void SetTone(Buzzer* obj, uint32_t freq_hz) {
   __HAL_TIM_SET_COUNTER(obj->htim, 0);
 }
 
+// 周波数だけを更新する (GPIO は触らない)。SetTone は毎回 HAL_GPIO_Init を呼ぶため、
+// スイープ中の高頻度更新にはこちらを使う。呼ぶ前に DriveGpio 済みであること
+static void SetToneFreqOnly(Buzzer* obj, uint32_t freq_hz) {
+  uint32_t count = obj->timer_clock_hz / ((obj->prescaler + 1) * freq_hz);
+  if (count == 0) count = 1;
+  uint32_t arr = count - 1;
+  __HAL_TIM_SET_AUTORELOAD(obj->htim, arr);
+  __HAL_TIM_SET_COMPARE(obj->htim, obj->channel, arr / 2);
+  __HAL_TIM_SET_COUNTER(obj->htim, 0);
+}
+
 static void BuzzerOn(Buzzer* obj) {
   SetTone(obj, obj->freq_hz);
   obj->buzzer_on = true;
@@ -84,6 +96,10 @@ void Buzzer_Init(Buzzer* obj, TIM_HandleTypeDef* htim, uint32_t channel,
   obj->on_ms = 0;
   obj->off_ms = 0;
   obj->repeat_count = 0;
+  obj->sweep_start_hz = 0;
+  obj->sweep_end_hz = 0;
+  obj->sweep_ms = 0;
+  obj->sweep_last_hz = 0;
   obj->buzzer_on = false;
 
   HAL_TIM_PWM_Start(obj->htim, obj->channel);
@@ -107,6 +123,18 @@ void Buzzer_BeepPattern(Buzzer* obj, uint32_t freq_hz, uint32_t on_ms,
   obj->off_ms = off_ms;
   obj->repeat_count = count;
   BuzzerOn(obj);
+}
+
+void Buzzer_Sweep(Buzzer* obj, uint32_t start_hz, uint32_t end_hz, uint32_t duration_ms) {
+  if (start_hz == 0 || end_hz == 0 || duration_ms == 0) return;
+  obj->pattern = BUZZER_PATTERN_SWEEP;
+  obj->sweep_start_hz = start_hz;
+  obj->sweep_end_hz = end_hz;
+  obj->sweep_ms = duration_ms;
+  obj->sweep_last_hz = start_hz;
+  SetTone(obj, start_hz);
+  obj->buzzer_on = true;
+  Timer_Reset(&obj->timer);
 }
 
 void Buzzer_Stop(Buzzer* obj) {
@@ -148,6 +176,22 @@ void Buzzer_Update(Buzzer* obj) {
       if (obj->buzzer_on && elapsed >= obj->on_ms) {
         obj->pattern = BUZZER_PATTERN_NONE;
         BuzzerOff(obj);
+      }
+      break;
+
+    case BUZZER_PATTERN_SWEEP:
+      if (elapsed >= obj->sweep_ms) {
+        obj->pattern = BUZZER_PATTERN_NONE;
+        BuzzerOff(obj);
+      } else {
+        float ratio = (float)obj->sweep_end_hz / (float)obj->sweep_start_hz;
+        float t = (float)elapsed / (float)obj->sweep_ms;
+        uint32_t hz = (uint32_t)((float)obj->sweep_start_hz * powf(ratio, t));
+        if (hz == 0) hz = 1;
+        if (hz != obj->sweep_last_hz) {
+          SetToneFreqOnly(obj, hz);
+          obj->sweep_last_hz = hz;
+        }
       }
       break;
 

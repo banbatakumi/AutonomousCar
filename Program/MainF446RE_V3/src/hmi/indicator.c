@@ -69,7 +69,9 @@ static void UpdateUndervoltageWarning(Indicator* obj) {
   if (obj->undervoltage_muted) {
     if (obj->undervoltage_warning_started) Buzzer_Stop(obj->buzzer);
     obj->undervoltage_warning_started = false;
-  } else if (!obj->undervoltage_warning_started) {
+  } else if (!obj->undervoltage_warning_started ||
+             obj->buzzer->pattern == BUZZER_PATTERN_NONE) {
+    // 他の音 (ARM/DISARM のスイープ・クラクション) がパターンを上書きして止まった場合も再開する
     Buzzer_BeepPattern(obj->buzzer, INDICATOR_UNDERVOLTAGE_BEEP_FREQ_HZ,
                        INDICATOR_UNDERVOLTAGE_BEEP_ON_MS, INDICATOR_UNDERVOLTAGE_BEEP_OFF_MS, -1);
     obj->undervoltage_warning_started = true;
