@@ -96,6 +96,7 @@ void BldcMotor_Transmit(BldcMotor* obj) {
 
 static void ParseStatusFrame(BldcMotor* obj) {
   uint8_t status = obj->rx_body[0];
+  obj->is_uncalibrated = (status >> 4) & 0x01;
   obj->is_overcurrent = (status >> 3) & 0x01;
   obj->is_overheat = (status >> 2) & 0x01;
   obj->is_voltage_out_of_range = (status >> 1) & 0x01;
@@ -161,6 +162,7 @@ void BldcMotor_Init(BldcMotor* obj, Serial* serial) {
   obj->is_overcurrent = false;
   obj->is_overheat = false;
   obj->is_voltage_out_of_range = false;
+  obj->is_uncalibrated = false;
   obj->temperature_c = 0;
   obj->mech_angle_rad = 0.0f;
   obj->angular_speed_rad_s = 0.0f;
@@ -211,6 +213,7 @@ void BldcMotor_Reset(BldcMotor* obj) {
   obj->is_overcurrent = false;
   obj->is_overheat = false;
   obj->is_voltage_out_of_range = false;
+  obj->is_uncalibrated = false;
   obj->temperature_c = 0;
   obj->mech_angle_rad = 0.0f;
   obj->angular_speed_rad_s = 0.0f;
@@ -237,6 +240,10 @@ bool BldcMotor_IsOverheat(const BldcMotor* obj) {
 
 bool BldcMotor_IsVoltageOutOfRange(const BldcMotor* obj) {
   return obj->is_voltage_out_of_range;
+}
+
+bool BldcMotor_IsUncalibrated(const BldcMotor* obj) {
+  return obj->is_uncalibrated;
 }
 
 uint8_t BldcMotor_GetTemperatureC(const BldcMotor* obj) {

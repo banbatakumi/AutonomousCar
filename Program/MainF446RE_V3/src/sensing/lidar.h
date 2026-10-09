@@ -48,11 +48,15 @@
 // 角度をそのまま送る」側を維持する。左右の解釈は受信側 (Raspberry Pi) で
 // real_angle_deg = (360 - (sector_idx*30 + point_index)) % 360 として行うこと。
 //
-// 回転モータの PWM。LD06 のデータシート指定は 30kHz で、デューティで回転数が決まる。
-// TIM1 は APB2 のタイマなのでクロックは 180MHz (CubeMX の Period 65535 では 2.7kHz に
-// なってしまうため、Lidar_Init で ARR を張り替える)
-#define LIDAR_PWM_FREQ_HZ 30000U
-#define LIDAR_PWM_PERIOD (180000000U / LIDAR_PWM_FREQ_HZ - 1U)
+// 回転モータの PWM。デューティで回転数が決まる。CubeMX の Period 65535 では 1.4kHz に
+// なってしまうため、Lidar_Init で ARR を張り替える。
+// **実際に出ているのは 15kHz** (LD06 のデータシート指定は 30kHz)。TIM1 のクロックは APB2 ÷4 の
+// 2倍で 90MHz だが、以前は 180MHz と仮定して 30kHz のつもりで ARR を決めていた。デューティ 0.4 は
+// この 15kHz で実機の回転数を見て詰めた値なので、周波数は変えずに定数の表記だけを実際に
+// 合わせてある (ARR は以前と同じ 5999)。30kHz へ直すならデューティも詰め直すこと
+#define LIDAR_PWM_TIMER_CLOCK_HZ 90000000U
+#define LIDAR_PWM_FREQ_HZ 15000U
+#define LIDAR_PWM_PERIOD (LIDAR_PWM_TIMER_CLOCK_HZ / LIDAR_PWM_FREQ_HZ - 1U)
 #define LIDAR_PWM_DUTY 0.4f  // ★実機で回転数を見ながら詰めること (10Hz 回転が目標)
 
 // この時間パケットを受信できなければ異常とみなす [us]
@@ -106,7 +110,7 @@ typedef struct {
 /**
  * @brief LiDAR を初期化する。serial には LD06 が繋がった USART6 (230400bps) を、
  * htim/channel には回転モータ PWM (LIDAR_OUT = PA8, TIM1 CH1) を渡す。
- * PWM の周期を 30kHz へ張り替えてからモータを回し始める。
+ * PWM の周期を LIDAR_PWM_FREQ_HZ へ張り替えてからモータを回し始める。
  * ここではMCU側のペリフェラル (PWM/シリアル) を組み立てるだけで LD06 本体の給電は
  * 前提にしないため、LIDAR_POWER が未投入 (Setup() 時点など) のまま呼んでよい。
  * 実際の給電は上位の ARM 要求に応じて Vehicle 層が行う (UpdateLidarPower(), vehicle.c)。

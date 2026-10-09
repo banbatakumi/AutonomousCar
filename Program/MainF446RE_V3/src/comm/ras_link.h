@@ -25,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0012u
+#define RAS_PROTOCOL_VERSION 0x0013u
 // "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
 // 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
 // Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
@@ -122,6 +122,9 @@ typedef enum {
 
 // TELEMETRY.flags
 #define RAS_FLAG_MODE_MASK 0x0003u
+// 上位の指令で走れる状態 (Vehicle_IsArmed)。v0.18 までは「駆動電源が入っている」だった
+// (ステア未較正・MD の起動待ち・ARM が外れたあとの停止待ちでも立っていた)。
+// 駆動電源の状態は RAS_FLAG_DRIVE_POWER_ON (v0.19)
 #define RAS_FLAG_ARMED (1u << 2)
 #define RAS_FLAG_ESTOP_ACTIVE (1u << 3)
 #define RAS_FLAG_UART_TIMEOUT (1u << 4)
@@ -151,14 +154,23 @@ typedef enum {
 // 片輪浮き対策 (後輪左右の速度差・後輪周速の絶対上限) がトルクを削っている最中かどうか。
 // このとき RAS_FLAG_TC_ACTIVE は立たない (どちらの偏差が効いたかを分ける)。v0.16 で新設
 #define RAS_FLAG_WHEEL_LIFT_ACTIVE (1u << 21)
+// 駆動電源 (DRIVE_POWER) が入っている。ARM 要求中のほか、ARM が外れたあと停車を待って
+// 制動している間も立つ。v0.19 で新設
+#define RAS_FLAG_DRIVE_POWER_ON (1u << 22)
+// MD (3台のいずれか) が使えないため走行を止めている (Vehicle_IsMdFault)。どの MD かは
+// md_status、理由は LOG で分かる。駆動電源が切れる (ARM を外す) まで立ち続ける。v0.19 で新設
+#define RAS_FLAG_MD_FAULT (1u << 23)
 
 // TELEMETRY.md_status[i]
+// bit0 は MD が「受理済みの指令を実行中」(停止モードでない) で、回転中かどうかではない
 #define RAS_MD_STATUS_RUNNING (1u << 0)
 #define RAS_MD_STATUS_VOLTAGE_OUT_OF_RANGE (1u << 1)
 #define RAS_MD_STATUS_OVERHEAT (1u << 2)
 #define RAS_MD_STATUS_OVERCURRENT (1u << 3)
 #define RAS_MD_STATUS_COMM_OK (1u << 4)
 #define RAS_MD_STATUS_LIMIT_SYNCED (1u << 5)
+// MD のエンコーダが未校正 (MD は動かない)。v0.19 で新設
+#define RAS_MD_STATUS_UNCALIBRATED (1u << 6)
 
 typedef enum {
   RAS_LOG_DEBUG = 0,
@@ -314,7 +326,9 @@ typedef struct {
   uint8_t tx_pong_storage[64];
   uint8_t tx_telemetry_storage[256];
   uint8_t tx_lidar_storage[512];
-  uint8_t tx_info_storage[256];
+  // 上位は接続のたびに調整パラメータ (control_params.h の表) をまとめて CONFIG_SET してくる。
+  // CONFIG_ACK は1つ 14 バイトで、256 だと約 18 個で溢れていた (上位の再送で回復はする)
+  uint8_t tx_info_storage[512];
   uint8_t tx_log_storage[512];
   uint8_t tx_frame[RAS_FRAME_MAX];  // 送信中のフレーム (DMA が読むので完了まで触らない)
   uint8_t build_buf[RAS_FRAME_MAX];

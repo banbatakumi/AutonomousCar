@@ -18,6 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Raspberry Pi から `COMMAND` が来ていない/途絶している間、および緊急停止中は `ApplyFailsafe()` (`src/vehicle/vehicle.c`) が最大制動トルクでブレーキを掛け続け、停車保持する (クラクション・パッシングも解除する)。ボタン1起点の単体走行テスト (`UpdateDriveTest`) は Pi 統合に伴い削除済み (Pi 未接続時でも駆動電源が入ってしまう fail-open だったため)。
 - `DRIVE_POWER` は既定で OFF。ボタン1を押しながら起動してステアリング原点較正をする場合のみ、MD 通信が要るため `Setup()` 中に一時的に ON にして較正後 OFF に戻す (較正しない起動では一度も投入しない)。以降は `ApplyRasCommand()` (`src/vehicle/vehicle.c`) が上位の arm 要求 (`RAS_CMD_FLAG_ARM`) に従って ON/OFF する。つまり **Pi が未接続または DISARM の間は駆動電源が入らないのが既定**。
 - LD06 (LiDAR) は `LIDAR_POWER` も既定で OFF。`Setup()` では MCU側ペリフェラル (PWM/シリアル) の初期化だけを行い給電はしない。`DRIVE_POWER` と同様、上位の ARM 要求に応じて `UpdateLidarPower()` (`src/vehicle/vehicle.c`) が給電する (実機確認済み)。ARM 後は 120Hz でセクタを上位へ送る。
+- **「止める」の約束を 2026-10-09 に上位・MD と揃えた** (v0.19、`docs/pi_uart_protocol_v0.19_delta.md`、`protocol_version` 0x0012→0x0013。3リポジトリ横断の調査 = 上位側 `docs/cross_project_audit_2026-10.md` の指摘への対応)。**下の箇条書きのうち「ARM 要求に従って駆動電源を ON/OFF する」「`Coast` は送信停止」「IMU の復旧は 190ms ブロッキング」は v0.18 までの説明。** ①`Coast()` (`src/control/drive.c`) は送信を止めずトルク 0 を送り続ける (MD は無通信 0.5 秒まで直前のトルクを出し続け、停車後に負トルクが残って後退していた。`BldcMotor_Stop` を止める手段に使わないこと)。②走行中に ARM が外れたら、停車 (`DRIVE_STANDSTILL_SPEED_M_S` 未満) するまで駆動電源を切らず最大制動する (`UpdateDisarmBraking`、上限 `VEHICLE_DISARM_BRAKE_TIMEOUT_S` = 3s)。上位は通信途絶・デッドマンで DISARM を送ってくるので、以前は Wi-Fi が切れると MD ごと電源が落ちて惰行していた。③3台の MD の健全性を毎周期見る (`UpdateMdHealth`、判定は `Motors_NotReadyReason` = 100ms 無応答・異常ビット・トルク上限の不一致)。駆動電源を入れてから揃うまで `armed` にせず (MD の起動約1秒の間に車速 PI が振り切れるのを防ぐ)、走行中に崩れたら両後輪を最大制動して駆動電源が切れるまでラッチする (`md_fault`、`TELEMETRY.flags` bit23、理由は `LOG`)。MD の通信監視は `Telemetry` から `Motors` へ移した。④ステア中心が未較正の間は駆動電源を入れず、`Steering_SetAngleRad` も何も送らない (以前は ARM 要求だけでステアが位置 0 rad へ動いた)。中心点の較正は 50 フレームの平均で決める。⑤`TELEMETRY.flags` bit2 `ARMED` は「駆動電源 ON」から `Vehicle_IsArmed` へ変更、電源は bit22。`md_status` bit6 = MD のエンコーダ未校正。⑥フェイルセーフは止めたあと 1 秒で後輪の位置保持へ移る (`failsafe_hold`。MD の制動は車輪が止まると抜けるので坂で保持できなかった。ブレーキ灯の減光も同じフラグで、Timer の約24秒の一周で周期的に全光量へ戻る不具合も直った)。⑦IMU の I2C 復旧を1周期1段階のステートマシンにした (`StepRecovery`、`src/sensing/imu.c`。`lib/mpu6050` の初期化を `Mpu6050_BeginInit`/`WakeUp`/`ConfigureStep` に分割)。⑧ジャイロのレンジを ±250→±500 deg/s (約 1.75m/s 以上のフルステアで飽和していた。Flash の較正値は読み込み時に換算、`IMU_CALIB_VERSION` 2→3)。⑨超音波は ARM していない間は無効値、`steer_rate_limit`=0 の既定は `VEHICLE_DEFAULT_STEER_RATE_RAD_S`、`CONFIG_ACK` の送信キュー 256→512。`src/control` の変更は `Coast` だけで、上位側 `tools/ctrl_tune` の bench は変更前後で一致・pytest 23 件成功。**ビルドのみで実機未書き込み。MD 側 (`../../../BLDC/ProgramV4`) も同時に書き込むこと** (異常中も状態フレームを 2kHz で返す・復帰時に古い指令を捨てる・過電流ラッチの競合の修正が入っている)。実機で先に確かめること: ARM から `ARMED` が立つまでの時間、停車時に後退しないこと、位置保持が発振しないこと
 - 安全層は 4段: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 → ④`COMMAND` 途絶 100ms で自動ブレーキ。緊急停止はラッチし、**ハートビートが戻っている状態でボタン2を押すまで解除しない**。緊急停止で駆動電源を切らないのは、切るとMDが制動をかけられず惰行して停止距離が伸びるため。
 - ステアのリンクの換算を 2026-10-08 に追加した (v0.18、`docs/pi_uart_protocol_v0.18_delta.md`、`protocol_version` 0x0011→0x0012)。リンクは線形ではなく (モータ角×0.5 が 29.1° のとき前輪は約 26.5°)、`src/control/steering.c` が `路面舵角 = steer_link_gain·x + steer_link_cubic·x³` (x = モータ角×0.5) で指令・報告・可動範囲を換算する。値は上位のシステム同定が `CONFIG_SET` (`param_id` 0x0081/0x0082) で送り、入れた瞬間に反映して `LIMITS` を送り直す。既定は 1 と 0 (換算なし)。**上位と必ず一緒に入れ替える** (片方だけだと舵角の意味が食い違う)。未書き込み・実機未検証。
 - トルクベクタリング (`src/control/torque_vectoring.c`) は実装済みで既定は有効。2026-10-08 にヨーレートの PI から荷重比例の配分へ置き換えた (v0.17、`docs/pi_uart_protocol_v0.17_delta.md`、`protocol_version` 0x0010→0x0011。`param_id` 0x0021〜0x0029 廃止・0x002B/0x002C 新設、`TELEMETRY` のオフセット 66 が `tv_ratio`)。ゲイン (`tv_load_gain_s2_per_m`) は机上値で、**未書き込み・実機での符号確認とチューニングが未了**。
@@ -99,8 +100,9 @@ src/sensing/    純粋な計測のみを行うセンサモジュール (Encoder_
                 real_angle_deg = (360 - (sector_idx*30 + point_index)) % 360 として行う。
                 1度ビンに複数点が入ったときは**ビン中心に最も近い点**を採る (最短距離を採ると
                 地図生成用のデータが近距離側へ系統的に歪みスキャンマッチングの精度が落ちる)。
-                回転モータPWM (PA8/TIM1 CH1) の周期を 30kHz へ張り替えるのもこのモジュール
-                (CubeMX 既定の Period 65535 では 2.7kHz になり LD06 の仕様と合わない))
+                回転モータPWM (PA8/TIM1 CH1) の周期を張り替えるのもこのモジュール
+                (CubeMX 既定の Period 65535 では 1.4kHz になり LD06 の仕様と合わない。
+                張り替え後も実際は 15kHz で、仕様の 30kHz ではない: lidar.h の LIDAR_PWM_FREQ_HZ))
 src/power/      電源の計測 (電圧・電流・温度) と電源スイッチ (DRIVE_POWER/LIDAR_POWER) の制御を担う (Power_*)。
                 異常監視もここに実装し、結果は PowerFault のビットマスク (Power_GetFaults) で公開する。
                 駆動系過電流は DRIVE_POWER を遮断、シグナル系過電流 (マイコン自身の電源なので切れない)
@@ -115,7 +117,8 @@ src/power/      電源の計測 (電圧・電流・温度) と電源スイッチ
                 フォールトの表示は app.c の UpdateFaultIndication() でハザード点滅として行う
 host/           `src/control` をホスト (Mac) でコンパイルして車両モデルと閉ループにするための
                 差し替えヘッダ (`shim/`) と本体 (`host_sim.c`)。実機のファームには含まれない (`host/README.md`)
-src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ステアリング/左後輪/右後輪)のBLDC MD通信まとめ、
+src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ステアリング/左後輪/右後輪)のBLDC MD通信まとめと
+                各 MD の健全性 (通信監視・走行に使える状態か)、
                 Steering_* : ステアリング中心点キャリブレーションと相対角度指令、
                 Drive_* : 車速のトルクベース閉ループ制御。後輪MDはトルク(Nm)モードで駆動し、
                 車速PI → 左右配分 (等配分 + TVのトルク差) → 各輪スリップ率によるTCリミッタ、
@@ -138,7 +141,7 @@ src/control/    走行系の車両固有ロジック (Motors_* : 3モータ(ス�
                 torque_vectoring.h 冒頭と docs/pi_uart_protocol_v0.17_delta.md)
 src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。USART1、1000000bps (2026-09-26 に 250000bps から変更)。
                 仕様は docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
-                docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.18_delta.md。
+                docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.19_delta.md。
                 フレーミング (SYNC/TYPE/SEQ/LEN/CRC16) と
                 パケットの解釈・組み立てだけを担い、走行制御には関与しない。受信した COMMAND は
                 RasLink_GetCommand()、送るテレメトリは RasLink_SetTelemetry() に物理量のまま渡す
@@ -154,8 +157,8 @@ src/comm/       Raspberry Pi (上位) との UART プロトコル (RasLink_*)。
                 フィールドへ詰め替える層。RasLink がフレーミングと量子化を担うのに対し、
                 こちらは「どのモジュールの値をどのフィールドへ入れるか」だけを担い制御には
                 関与しない。MD の状態フレームが 100ms 更新されないことを検出する通信監視
-                (md_status の COMM_OK ビット) もここにある。MD が無言になっても保持値は
-                最後の正常値のまま固まるため、これが無いと上位が古い値を現在値だと信じ続ける
+                (md_status の COMM_OK ビット) は Motors (src/control/motors.c) が持ち、
+                走行を止める判定 (Vehicle の UpdateMdHealth) と同じものを報告する
 lib/            特定の車両ロジックに依存しない汎用ライブラリ群 (単一責任、Module_FunctionName 形式)
   adc_dma/      ADC を DMA (Circular+ContinuousConvMode) で連続変換させ最新値を非ブロッキングで読む薄いラッパ
   ahrs/         6軸 (ジャイロ+加速度) Mahony 相補フィルタによる姿勢推定 (HAL 非依存)

@@ -10,6 +10,7 @@
 #include "heartbeat.h"
 #include "lidar.h"
 #include "lighting.h"
+#include "motors.h"
 #include "power.h"
 #include "range_sensor.h"
 #include "ras_link.h"
@@ -27,7 +28,26 @@
 //   1. 緊急停止がラッチ中          → フェイルセーフ
 //   2. COMMAND が生きている        → 上位の指令
 //   3. それ以外 (未接続・途絶)     → フェイルセーフ
+//
+// 「止める」の約束 (2026-10。上位・MD と意味を揃えた):
+//   - 走行中に上位の ARM が外れても、すぐには駆動電源を切らない。電源を切ると MD ごと落ちて
+//     制動できず惰行するので、停車するまで最大制動を続けてから切る (VEHICLE_DISARM_BRAKE_*)
+//   - ARM されても、3台の MD が使える状態になるまでは走らせない (VEHICLE_MD_BOOT_TIMEOUT_S)。
+//     走行中にどれかが使えなくなったら最大制動で止め、ARM を外すまで再開しない
+//   - フェイルセーフは最大制動で止めたあと、後輪の位置保持へ移る (制動トルクは車輪が止まると
+//     抜けるので、それだけでは坂で保持できない)
 // ===========================================================================
+
+// 走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの時間の上限 [s]。最高速
+// (DRIVE_MAX_SPEED_M_S) からの最大制動でも止まり切れる長さにしてある (減速度 2.5m/s² で 2秒)。
+// 前輪エンコーダの異常で車速が 0 に落ちなくても、これを過ぎたら電源を切る
+#define VEHICLE_DISARM_BRAKE_TIMEOUT_S 3.0f
+// 駆動電源を入れてから、3台の MD が使える状態 (Motors_IsReady) になるのを待つ時間の上限 [s]。
+// MD の起動は約1秒 (電流ゼロ点の校正を含む。惰行中の再 ARM ではやり直しで最大約4秒)
+#define VEHICLE_MD_BOOT_TIMEOUT_S 5.0f
+// COMMAND.steer_rate_limit が 0 (指定なし) のときの舵角速度の上限 [rad/s]。
+// 以前は「最大舵角 [rad] の数値」をそのまま流用していた (ほぼ同じ値だが単位の違う量)
+#define VEHICLE_DEFAULT_STEER_RATE_RAD_S 0.5f
 
 // クラクションの音程 [Hz]。押している間だけ鳴らすため、単発ビープではなく連続トーンで出す
 #define VEHICLE_HORN_FREQ_HZ 2000
@@ -40,9 +60,9 @@
 // すると、LD06は起動から安定したスキャンが出るまで数秒かかるため、再ARM直後にセンサが
 // 使えない空白ができてしまう。この遅延の間はARM解除中もLiDARを点けたままにする
 #define VEHICLE_LIDAR_IDLE_OFF_DELAY_S 5.0f
-// フェイルセーフの停車保持でブレーキ灯を減光するまでの、停止 (|車速| < VEHICLE_ESS_STOP_SPEED_M_S)
-// の継続時間 [s]。止まりかけのクリープ中に減光しないための余裕 (省電力、2026-10-04)
-#define VEHICLE_FAILSAFE_BRAKE_DIM_DELAY_S 1.0f
+// フェイルセーフで、停止 (|車速| < VEHICLE_ESS_STOP_SPEED_M_S) がこの時間 [s] 続いたら停車保持
+// (後輪の位置保持 + ブレーキ灯の減光) へ移る。止まりかけのクリープ中に移らないための余裕
+#define VEHICLE_FAILSAFE_HOLD_DELAY_S 1.0f
 // 自動停止 (RAS_CMD_FLAG_AUTO_STOP) の動的停止距離
 // d_stop = v・VEHICLE_AUTO_STOP_DELAY_S + v²/(2・DRIVE_MAX_ACCEL_M_S2) + マージン
 // のうち、通信・処理・制動応答の遅延見積り [s] (未実測プレースホルダー。実測後に更新すること)
@@ -99,6 +119,7 @@
 typedef struct {
   RasLink* ras_link;
   Drive* drive;
+  Motors* motors;
   Steering* steering;
   Lighting* lighting;
   Power* power;
@@ -135,8 +156,22 @@ typedef struct {
   // 前周期の armed。ARM/DISARM の通知音をエッジで鳴らすのに使う
   bool prev_armed;
 
-  // フェイルセーフ中に停止が続いている時間。ブレーキ灯の減光に使う
-  Timer brake_dim_timer;
+  // フェイルセーフ中に停止が続いている時間と、停車保持へ移ったか。Timer は約24秒で一周する
+  // ので、保持に入ったことはフラグで覚える (時間で判定し続けると周期的に保持が外れる)
+  Timer failsafe_stop_timer;
+  bool failsafe_hold;
+
+  // 走行中に ARM が外れたあと、停車を待って最大制動を続けているか (この間は駆動電源を切らない)
+  bool arm_requested_prev;
+  bool disarm_braking;
+  Timer disarm_brake_timer;
+
+  // MD の起動待ちと健全性。md_started は駆動電源を入れてから3台が一度使える状態になったか、
+  // md_fault は「起動待ちが時間切れ」か「走行中に使えなくなった」(駆動電源を切るまでラッチ)
+  bool drive_power_prev;
+  bool md_started;
+  bool md_fault;
+  Timer md_boot_timer;
 
   // 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したか。
   // テレメトリの RAS_FLAG_AUTO_STOP_ACTIVE に使う
@@ -159,7 +194,7 @@ typedef struct {
  * (ボタン2) を渡すこと。range_sensor と lidar には自動停止 (RAS_CMD_FLAG_AUTO_STOP) が
  * 参照する前後超音波センサ・LiDARを渡すこと。
  */
-void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steering,
+void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors, Steering* steering,
                   Lighting* lighting, Power* power, Heartbeat* heartbeat, Buzzer* buzzer,
                   DigitalIn* estop_reset_button, RangeSensor* range_sensor, Lidar* lidar);
 
@@ -175,10 +210,18 @@ void Vehicle_Update(Vehicle* obj);
 bool Vehicle_IsEstopLatched(const Vehicle* obj);
 
 /**
- * @brief 直近の周期で上位指令が ARM として適用されたかを取得する。
- * COMMAND 途絶・緊急停止のフェイルセーフ中、Pi 未接続・起動中は false。
+ * @brief 直近の周期で上位指令が ARM として適用されたか (= 上位の指令で走れる状態か) を取得する。
+ * COMMAND 途絶・緊急停止のフェイルセーフ中、Pi 未接続・起動中、MD の起動待ち、ARM が外れた
+ * あとの停止待ちは false。駆動電源が入っているかどうかとは別 (Power_IsDriveOn)。
  */
 bool Vehicle_IsArmed(const Vehicle* obj);
+
+/**
+ * @brief MD (3台のいずれか) が使えないために走行を止めているかを取得する。
+ * 駆動電源を入れても時間内に揃わなかったか、走行中に無応答・異常になった。駆動電源が
+ * 切れる (上位が ARM を外す) まで解除しない。
+ */
+bool Vehicle_IsMdFault(const Vehicle* obj);
 
 /**
  * @brief 現在の走行モード (RasMode) を取得する。

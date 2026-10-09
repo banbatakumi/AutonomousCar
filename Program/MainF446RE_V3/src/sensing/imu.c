@@ -49,7 +49,10 @@ typedef struct {
 } ImuCalibrationRecord;
 
 #define IMU_CALIB_MAGIC 0x4D505536UL  // "MPU6"
-#define IMU_CALIB_VERSION 2UL
+// 3: ジャイロのレンジを ±250 → ±500 deg/s に広げた (オフセットは LSB 単位なので意味が変わる)
+#define IMU_CALIB_VERSION 3UL
+// ジャイロのオフセットが ±250 deg/s の LSB で保存されている版。読むときに換算する
+#define IMU_CALIB_VERSION_GYRO_250DPS 2UL
 
 // INT ピン (PC5) の EXTI 設定は CubeMX 側 (.ioc -> MX_GPIO_Init) が行う。
 // EXTI9_5 は後方超音波の ECHO ピン (PC9) と割り込みベクタを共有するため、
@@ -122,11 +125,19 @@ static uint32_t ComputeChecksum(const ImuCalibrationRecord *record) {
 static bool LoadCalibration(Mpu6050Offset *out) {
   ImuCalibrationRecord record;
   Flash_ReadData(FLASH_MPU_START_ADDR, &record, sizeof(record));
-  if (record.magic != IMU_CALIB_MAGIC || record.version != IMU_CALIB_VERSION) {
+  if (record.magic != IMU_CALIB_MAGIC) return false;
+  if (record.version != IMU_CALIB_VERSION && record.version != IMU_CALIB_VERSION_GYRO_250DPS) {
     return false;
   }
   if (record.checksum != ComputeChecksum(&record)) return false;
   *out = record.offset;
+  if (record.version == IMU_CALIB_VERSION_GYRO_250DPS) {
+    // 同じバイアス [deg/s] は ±500 deg/s のレンジでは半分の LSB になる。較正し直させずに
+    // 引き継ぐ (読み捨てるとオフセット 0 で起動し、数 deg/s のバイアスがヨーレートに乗る)
+    out->gyro_x = (int16_t)(out->gyro_x / 2);
+    out->gyro_y = (int16_t)(out->gyro_y / 2);
+    out->gyro_z = (int16_t)(out->gyro_z / 2);
+  }
   return true;
 }
 
@@ -262,41 +273,175 @@ static void ProcessSample(Imu *obj, const Mpu6050Sample *sample, float dt) {
   obj->data.temp = sample->temp;
 }
 
-// 通信が止まったときに I2C と MPU6050 を初期化し直す。RecoverI2cBus + Mpu6050_Init だけで
-// 約190msメインループをブロッキングする (docs/code_review_2026-08-21.md A-3)。この間に
-// ハートビートの矩形波エッジを取りこぼすと誤って緊急停止がラッチされうるため、
-// recovery_ran を立てて呼び出し側 (app.c) がハートビートの基準時刻をリセットできるようにする。
-// これは応急処置であり、根本対策 (Recover のステートマシン化) は別途必要
-static bool Recover(Imu *obj) {
+// ---------------------------------------------------------------------------
+// 通信が止まったときの復旧 (I2C バスの解放 → MPU6050 の初期化し直し)
+//
+// 手順は起動時 (RecoverI2cBus + Mpu6050_Init) と同じだが、待ち時間 (合計約190ms) を HAL_Delay で
+// 待たず、Imu_Update のたびに1段階ずつ進める。以前はブロッキングで実行しており、走行中に
+// IMU の配線が接触不良を起こすと 500ms ごとに 190ms 制御ループが止まっていた (MD への指令が
+// 更新されず、上位の COMMAND の途絶判定 100ms も超える)。
+// 1段階は I2C 1〜2 往復か GPIO の操作だけ。応答が無いときに止まる時間は
+// IMU_RECOVERY_IO_TIMEOUT_MS で縛る
+// ---------------------------------------------------------------------------
+typedef enum {
+  IMU_RECOVERY_IDLE = 0,
+  IMU_RECOVERY_BUS_RELEASE,    // SCL を手動で叩いて、SDA を握ったままの MPU6050 に離させる
+  IMU_RECOVERY_BUS_STOP,       // STOP コンディションを出して I2C を初期化し直す
+  IMU_RECOVERY_DEVICE_RESET,   // MPU6050 をリセット
+  IMU_RECOVERY_DEVICE_WAKE,    // スリープ解除
+  IMU_RECOVERY_DEVICE_CONFIG,  // レジスタを1つずつ設定
+  IMU_RECOVERY_FINISH,
+} ImuRecoveryState;
+
+#define IMU_RECOVERY_IO_TIMEOUT_MS 2U
+// 1段階がこれ以上メインループを止めたら recovery_blocked を立てる
+#define IMU_RECOVERY_BLOCK_NOTIFY_MS 5U
+#define IMU_RECOVERY_SCL_PULSES 9
+
+// 次の段階へ進むのを ms 以上待つ (HAL_GetTick は 1ms 刻みなので 1 余分に待つ)
+static void RecoveryWait(Imu *obj, uint32_t ms) {
+  obj->recovery_wait_tick = HAL_GetTick() + ms + 1U;
+}
+
+static void StartRecovery(Imu *obj) {
   EnableDataReadyInterrupt(false);
-
-  I2C_HandleTypeDef *i2c = obj->mpu.i2c;
-  uint8_t addr = obj->mpu.i2c_addr;
-  Mpu6050Offset offset = obj->mpu.offset;
-
   obj->data_valid = false;
-  obj->recovery_ran = true;
-  HAL_I2C_Master_Abort_IT(i2c, (uint16_t)(addr << 1));
-  RecoverI2cBus(i2c);
+  HAL_I2C_Master_Abort_IT(obj->i2c, (uint16_t)(obj->i2c_addr << 1));
+  HAL_I2C_DeInit(obj->i2c);
+  obj->recovery_state = IMU_RECOVERY_BUS_RELEASE;
+  obj->recovery_step = 0;
+  RecoveryWait(obj, 5);
+}
 
-  if (!Mpu6050_Init(&obj->mpu, i2c, addr, IMU_SAMPLE_RATE_HZ, IMU_DLPF)) {
-    printf("[IMU] Recovery failed\n");
-    obj->last_recovery_tick = HAL_GetTick();
-    return false;
+static void FailRecovery(Imu *obj) {
+  printf("[IMU] Recovery failed\n");
+  obj->recovery_state = IMU_RECOVERY_IDLE;
+  obj->last_recovery_tick = HAL_GetTick();
+}
+
+static void StepRecovery(Imu *obj) {
+  if ((int32_t)(HAL_GetTick() - obj->recovery_wait_tick) < 0) return;
+
+  uint32_t step_start_tick = HAL_GetTick();
+  GPIO_InitTypeDef gpio = {0};
+
+  switch (obj->recovery_state) {
+    case IMU_RECOVERY_BUS_RELEASE:
+      if (obj->recovery_step == 0) {
+        gpio.Pin = IMU_I2C_SCL_PIN;
+        gpio.Mode = GPIO_MODE_OUTPUT_OD;
+        gpio.Pull = GPIO_NOPULL;
+        gpio.Speed = GPIO_SPEED_FREQ_LOW;
+        HAL_GPIO_Init(IMU_I2C_SCL_PORT, &gpio);
+        HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_SET);
+
+        gpio.Pin = IMU_I2C_SDA_PIN;
+        gpio.Mode = GPIO_MODE_INPUT;
+        gpio.Pull = GPIO_PULLUP;
+        HAL_GPIO_Init(IMU_I2C_SDA_PORT, &gpio);
+      } else if (obj->recovery_step % 2 == 1) {
+        // 奇数段は SCL が High になって 1ms 経ったところ。1回以上叩いて SDA が離されたか、
+        // 叩き切ったら STOP へ進む
+        bool sda_released = HAL_GPIO_ReadPin(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN) == GPIO_PIN_SET;
+        if (obj->recovery_step > 1 &&
+            (sda_released || obj->recovery_step > 2 * IMU_RECOVERY_SCL_PULSES)) {
+          obj->recovery_state = IMU_RECOVERY_BUS_STOP;
+          obj->recovery_step = 0;
+          return;
+        }
+        HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_RESET);
+      } else {
+        HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_SET);
+      }
+      obj->recovery_step++;
+      RecoveryWait(obj, 1);
+      break;
+
+    case IMU_RECOVERY_BUS_STOP:
+      // STOP コンディション: SCL が High の間に SDA を Low -> High
+      switch (obj->recovery_step) {
+        case 0:
+          gpio.Pin = IMU_I2C_SDA_PIN;
+          gpio.Mode = GPIO_MODE_OUTPUT_OD;
+          gpio.Pull = GPIO_NOPULL;
+          gpio.Speed = GPIO_SPEED_FREQ_LOW;
+          HAL_GPIO_Init(IMU_I2C_SDA_PORT, &gpio);
+          HAL_GPIO_WritePin(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN, GPIO_PIN_RESET);
+          break;
+        case 1:
+          HAL_GPIO_WritePin(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN, GPIO_PIN_SET);
+          break;
+        case 2:
+          HAL_GPIO_WritePin(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN, GPIO_PIN_SET);
+          break;
+        default:
+          // MspInit がピンを AF に設定し直せるよう GPIO を戻してから再初期化する
+          HAL_GPIO_DeInit(IMU_I2C_SCL_PORT, IMU_I2C_SCL_PIN);
+          HAL_GPIO_DeInit(IMU_I2C_SDA_PORT, IMU_I2C_SDA_PIN);
+          HAL_I2C_Init(obj->i2c);
+          obj->recovery_state = IMU_RECOVERY_DEVICE_RESET;
+          RecoveryWait(obj, 10);
+          return;
+      }
+      obj->recovery_step++;
+      RecoveryWait(obj, 1);
+      break;
+
+    case IMU_RECOVERY_DEVICE_RESET:
+      if (!Mpu6050_BeginInit(&obj->mpu, obj->i2c, obj->i2c_addr, IMU_SAMPLE_RATE_HZ, IMU_DLPF,
+                             IMU_RECOVERY_IO_TIMEOUT_MS, 1)) {
+        FailRecovery(obj);
+        break;
+      }
+      obj->recovery_state = IMU_RECOVERY_DEVICE_WAKE;
+      RecoveryWait(obj, MPU6050_RESET_WAIT_MS);
+      break;
+
+    case IMU_RECOVERY_DEVICE_WAKE:
+      if (!Mpu6050_WakeUp(&obj->mpu)) {
+        FailRecovery(obj);
+        break;
+      }
+      obj->recovery_state = IMU_RECOVERY_DEVICE_CONFIG;
+      obj->recovery_step = 0;
+      RecoveryWait(obj, MPU6050_WAKE_WAIT_MS);  // PLL のロック待ち
+      break;
+
+    case IMU_RECOVERY_DEVICE_CONFIG: {
+      bool ok = true;
+      if (!Mpu6050_ConfigureStep(&obj->mpu, &obj->recovery_step, &ok)) break;
+      if (!ok) {
+        FailRecovery(obj);
+        break;
+      }
+      obj->recovery_state = IMU_RECOVERY_FINISH;
+      break;
+    }
+
+    case IMU_RECOVERY_FINISH:
+    default:
+      // Mpu6050_BeginInit が作り直したので、オフセットを戻す
+      Mpu6050_SetOffset(&obj->mpu, &obj->calib_offset);
+      PrimeOrientation(obj);
+      Mpu6050_SetIoTimeout(&obj->mpu, MPU6050_IO_TIMEOUT_MS, MPU6050_IO_RETRY_COUNT);
+      obj->i2c_addr = obj->mpu.i2c_addr;
+      obj->recovery_state = IMU_RECOVERY_IDLE;
+      obj->last_sample_tick = HAL_GetTick();
+      obj->last_recovery_tick = obj->last_sample_tick;
+      EnableDataReadyInterrupt(true);
+      printf("[IMU] Recovered\n");
+      break;
   }
-  Mpu6050_SetOffset(&obj->mpu, &offset);
-  PrimeOrientation(obj);
 
-  obj->last_sample_tick = HAL_GetTick();
-  obj->last_recovery_tick = obj->last_sample_tick;
-  EnableDataReadyInterrupt(true);
-  printf("[IMU] Recovered\n");
-  return true;
+  if ((uint32_t)(HAL_GetTick() - step_start_tick) >= IMU_RECOVERY_BLOCK_NOTIFY_MS) {
+    obj->recovery_blocked = true;
+  }
 }
 
 void Imu_Init(Imu *obj, I2C_HandleTypeDef *i2c, bool calibrate_on_boot) {
   if (obj == NULL || i2c == NULL) return;
   memset(obj, 0, sizeof(*obj));
+  obj->i2c = i2c;
 
   EnableDataReadyInterrupt(false);  // 初期化中はブロッキング I2C を使うので割り込みを止めておく
 
@@ -331,6 +476,9 @@ void Imu_Init(Imu *obj, I2C_HandleTypeDef *i2c, bool calibrate_on_boot) {
     }
   }
 
+  obj->i2c_addr = obj->mpu.i2c_addr;
+  obj->calib_offset = *Mpu6050_GetOffset(&obj->mpu);
+
   // 取付方向 (ChipToBody) を確認するための実測値。この機体は裏向き実装なので水平静止で chip az ≒ -9.8
   Mpu6050Sample sample;
   if (Mpu6050_ReadBlocking(&obj->mpu, &sample)) {
@@ -350,6 +498,12 @@ void Imu_Init(Imu *obj, I2C_HandleTypeDef *i2c, bool calibrate_on_boot) {
 bool Imu_Update(Imu *obj) {
   if (obj == NULL || !obj->initialized) return false;
 
+  // 復旧の途中は MPU6050 を作り直している最中なので、サンプルは読まない
+  if (obj->recovery_state != IMU_RECOVERY_IDLE) {
+    StepRecovery(obj);
+    return false;
+  }
+
   const float dt = 1.0f / (float)obj->mpu.sample_rate_hz;
   Mpu6050Sample sample;
   bool updated = false;
@@ -366,16 +520,15 @@ bool Imu_Update(Imu *obj) {
     return true;
   }
 
-  // Recover() の成否を待たず、サンプルが途絶した時点で即座に無効化する。以前はここを
-  // Recover() 呼び出しの中でしか false にしておらず、IMU_RECOVERY_INTERVAL_MS の間隔で
-  // しか Recover() を試みないため、その間 Imu_IsReady() が固まった値のまま true を
-  // 返し続けていた (TV がヨーレートの固まった実測値で動き続ける、TCの基準速度も
-  // 固まったヨーレートで計算されるなど、無効なデータを有効として使ってしまう)
+  // 復旧の成否を待たず、サンプルが途絶した時点で即座に無効化する。復旧は
+  // IMU_RECOVERY_INTERVAL_MS の間隔でしか試みないので、その間 Imu_IsReady() が固まった値の
+  // まま true を返し続けると、TV がヨーレートの固まった実測値で動き続け、TCの基準速度も
+  // 固まったヨーレートで計算される (無効なデータを有効として使ってしまう)
   if ((uint32_t)(now - obj->last_sample_tick) >= IMU_SAMPLE_TIMEOUT_MS) {
     obj->data_valid = false;
     if ((uint32_t)(now - obj->last_recovery_tick) >= IMU_RECOVERY_INTERVAL_MS) {
       printf("[IMU] Sample timeout; recovering\n");
-      Recover(obj);
+      StartRecovery(obj);
     }
   }
   return false;
@@ -385,10 +538,10 @@ const ImuData *Imu_GetData(const Imu *obj) { return &obj->data; }
 
 bool Imu_IsReady(const Imu *obj) { return obj->initialized && obj->data_valid; }
 
-bool Imu_ConsumeRecoveryRan(Imu *obj) {
-  bool ran = obj->recovery_ran;
-  obj->recovery_ran = false;
-  return ran;
+bool Imu_ConsumeRecoveryBlocked(Imu *obj) {
+  bool blocked = obj->recovery_blocked;
+  obj->recovery_blocked = false;
+  return blocked;
 }
 
 void Imu_ResetYaw(Imu *obj) {
@@ -399,10 +552,12 @@ void Imu_ResetYaw(Imu *obj) {
 
 bool Imu_RecalibrateAndSave(Imu *obj) {
   if (obj == NULL || !obj->initialized) return false;
+  if (obj->recovery_state != IMU_RECOVERY_IDLE) return false;  // 通信の復旧中は測れない
 
   EnableDataReadyInterrupt(false);
   bool ok = Mpu6050_CalibrateOffset(&obj->mpu, IMU_CALIB_SAMPLE_COUNT);
   if (ok) ok = SaveCalibration(Mpu6050_GetOffset(&obj->mpu));
+  obj->calib_offset = *Mpu6050_GetOffset(&obj->mpu);
 
   obj->gyro_bias_x = 0.0f;
   obj->gyro_bias_y = 0.0f;

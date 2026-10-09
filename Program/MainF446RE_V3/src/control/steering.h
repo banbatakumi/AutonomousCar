@@ -52,6 +52,7 @@ void Steering_Init(Steering* obj, BldcMotor* motor, bool do_calibrate);
 
 /**
  * @brief 中心点からの相対角度 [rad] (-60度~+60度の範囲にクランプ) を指令する。
+ * 有効な中心点が無い間 (Steering_IsCenterValid が偽) は何も指令しない。
  */
 void Steering_SetAngleRad(Steering* obj, float angle_rad);
 

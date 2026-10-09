@@ -41,6 +41,13 @@ void RangeSensor_Init(RangeSensor* obj, GPIO_TypeDef* front_trig_port, uint16_t 
 void RangeSensor_Update(RangeSensor* obj);
 
 /**
+ * @brief フィルタ後の距離を無効値 (ULTRASONIC_NO_ECHO) にする。RangeSensor_Update を呼ばない間
+ * (トリガを止めている間) は毎周期こちらを呼ぶこと。呼ばないと、止める前の距離が有効値として
+ * 残り続ける。再開後は、新しい計測が1回終わるまで無効値を返す。
+ */
+void RangeSensor_Invalidate(RangeSensor* obj);
+
+/**
  * @brief 前方 ECHO ピンの変化割り込みから呼ぶこと (HAL_GPIO_EXTI_Callback 内で振り分ける)。
  */
 void RangeSensor_OnFrontEchoEdge(RangeSensor* obj);

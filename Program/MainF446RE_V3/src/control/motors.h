@@ -3,12 +3,36 @@
 
 #include "bldc_motor.h"
 #include "serial.h"
+#include "timer.h"
+
+// MD の状態フレームがこの時間 [ms] 来なければ通信断とみなす (MD は 500us ごとに返すので 200 フレームぶん)
+#define MOTORS_COMM_TIMEOUT_MS 100
+// 通信断の判定に、上の時間に加えて要求する「受信を試みたが1フレームも来なかった」連続回数。
+// メインループ自体が止まっていた (受信を試みていない) 時間を MD の無応答と数えないため
+#define MOTORS_COMM_MIN_IDLE_POLLS 20
+
+typedef enum {
+  MOTORS_INDEX_REAR_LEFT = 0,
+  MOTORS_INDEX_REAR_RIGHT = 1,
+  MOTORS_INDEX_STEERING = 2,
+  MOTORS_COUNT = 3,
+} MotorsIndex;  // TELEMETRY の motor_current / md_status と同じ並び [RL, RR, ST]
+
+// MD 1台ぶんの通信監視。MD が無言になっても保持値は最後の正常値のまま固まるため、
+// これが無いと古い値を現在値だと信じ続ける
+typedef struct {
+  uint32_t last_rx_count;
+  uint16_t idle_polls;
+  Timer timer;
+  bool ok;
+} MotorsCommWatch;
 
 // 走行系3モータ (ステアリング/左後輪/右後輪) のBLDCモータドライバ通信をまとめて保持する
 typedef struct {
   BldcMotor steering;
   BldcMotor rear_left;
   BldcMotor rear_right;
+  MotorsCommWatch comm_watch[MOTORS_COUNT];
 } Motors;
 
 /**
@@ -33,5 +57,29 @@ void Motors_Receive(Motors* obj, bool powered);
  * powered が偽の間 (MDに給電されていない) は送信しない。
  */
 void Motors_Transmit(Motors* obj, bool powered);
+
+/**
+ * @brief index (MotorsIndex) の BldcMotor を取得する。
+ */
+BldcMotor* Motors_Get(Motors* obj, int index);
+
+/**
+ * @brief index (MotorsIndex) の MD から状態フレームが届き続けているかを取得する。
+ * 給電していない間、および MOTORS_COMM_TIMEOUT_MS 届いていなければ偽。
+ */
+bool Motors_IsCommOk(const Motors* obj, int index);
+
+/**
+ * @brief index (MotorsIndex) の MD が走行に使える状態でない理由を返す (使えるなら NULL)。
+ * 「使える」= 状態フレームが届いていて、異常ビット (過電流・過熱・電源電圧・エンコーダ未校正) が
+ * 立っておらず、こちらが指令したトルク上限を MD が適用している。
+ * 給電直後は MD の起動 (約1秒) が終わるまで "no response" か "torque limit not applied" を返す。
+ */
+const char* Motors_NotReadyReason(const Motors* obj, int index);
+
+/**
+ * @brief 3台の MD がすべて走行に使える状態か (Motors_NotReadyReason がすべて NULL か)。
+ */
+bool Motors_IsReady(const Motors* obj);
 
 #endif  // MOTORS_H_

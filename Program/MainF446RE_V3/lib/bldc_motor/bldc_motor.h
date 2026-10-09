@@ -29,7 +29,7 @@
 // CRC-8/AUTOSAR、フッタは無し。
 //
 //   [0]  0xAA          ヘッダ
-//   [1]  status        bit3:過電流 bit2:過熱 bit1:電源電圧異常 bit0:動作中
+//   [1]  status        bit4:エンコーダ未校正 bit3:過電流 bit2:過熱 bit1:電源電圧異常 bit0:指令あり
 //   [2]  temperature   uint8 [degC]
 //   [3-4]  theta       uint16 BE × 0.1mrad
 //   [5-6]  speed       int16 BE × 0.01rad/s
@@ -75,10 +75,11 @@ typedef struct {
   uint32_t rx_count;        // 正常パースできた状態フレームの累積数 (受信できているかの確認用)
   uint32_t rx_error_count;  // CRC不一致で破棄したフレーム数 (配線・ノイズ環境の確認用)
 
-  bool is_running;               // MDが停止モードでない (指令を送信していれば真)
+  bool is_running;               // MDが受理済みの指令を実行中 (停止モードでない)。回転中かどうかではない
   bool is_overcurrent;           // MD側で過電流を検知
   bool is_overheat;              // MD側で過熱を検知
   bool is_voltage_out_of_range;  // MD側で電源電圧異常を検知
+  bool is_uncalibrated;          // MDのエンコーダが未校正 (MDは制限値を受け付けず動かない)
   uint8_t temperature_c;         // MDの基板温度 [degC]
   float mech_angle_rad;          // モータ機械角 [rad]
   float angular_speed_rad_s;     // モータ角速度 [rad/s]
@@ -103,8 +104,8 @@ void BldcMotor_Init(BldcMotor* obj, Serial* serial);
 void BldcMotor_Receive(BldcMotor* obj);
 
 /**
- * @brief 現在の指令を送信する。MDが無通信0.5秒で停止モードに移行するため、制御周期ごとに
- * 呼び続けること。指令を決めるモジュール (Drive/Steering 等) の更新の直後に呼ぶと、
+ * @brief 現在の指令を送信する。MDは無通信0.5秒で停止モードに移行する (通信断の保険) ため、
+ * 制御周期ごとに呼び続けること。指令を決めるモジュール (Drive/Steering 等) の更新の直後に呼ぶと、
  * 決めた指令がそのまま送られる (間引くと、その分だけ古い指令がMDに届く)。
  * 前のフレームを送り切っていない (1フレームの送信時間 + BLDC_MOTOR_TX_GUARD_US 未満) 間は
  * 送信をスキップする。
@@ -158,8 +159,9 @@ void BldcMotor_SetBrakeNm(BldcMotor* obj, float nm);
 void BldcMotor_SetTorqueLimitNm(BldcMotor* obj, float nm);
 
 /**
- * @brief 指令の送信を停止する。MD側は無通信0.5秒後に停止モードへ自動的に移行する
- * (MDのプロトコルに明示的な停止コマンドが無いため)。設定値の再送も併せて止まる。
+ * @brief 指令の送信を停止する。設定値の再送も併せて止まる。
+ * **モータを止める手段として使わないこと。** MD は無通信0.5秒で停止モードに入るまで直前の
+ * 指令 (トルク) を出し続ける。止めたいときは BldcMotor_SetTorqueNm(0) か制動を送り続ける。
  */
 void BldcMotor_Stop(BldcMotor* obj);
 
@@ -183,7 +185,8 @@ void BldcMotor_Reset(BldcMotor* obj);
 bool BldcMotor_IsDataValid(const BldcMotor* obj);
 
 /**
- * @brief MDが停止モードでないか (直近の状態フレームより) を取得する。
+ * @brief MDが受理済みの指令を実行中か (停止モードでないか) を取得する (直近の状態フレームより)。
+ * 「回転中」ではない。無通信タイムアウト・MDの異常中は偽。
  */
 bool BldcMotor_IsRunning(const BldcMotor* obj);
 
@@ -201,6 +204,12 @@ bool BldcMotor_IsOverheat(const BldcMotor* obj);
  * @brief MD側で電源電圧異常が検知されているかを取得する。
  */
 bool BldcMotor_IsVoltageOutOfRange(const BldcMotor* obj);
+
+/**
+ * @brief MDのエンコーダが未校正かを取得する。真の間、MDは制限値を受け付けず動かない
+ * (BldcMotor_IsLimitSynced も偽のままになる)。MD側でスイッチを押しながら起動して校正する。
+ */
+bool BldcMotor_IsUncalibrated(const BldcMotor* obj);
 
 /**
  * @brief MDの基板温度 [degC] を取得する。

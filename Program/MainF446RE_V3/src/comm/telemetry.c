@@ -2,28 +2,9 @@
 
 #include "mymath.h"
 
+// index は [左後輪, 右後輪, ステアリング] の順 (プロトコルの配列の並び = MotorsIndex)
 static BldcMotor* MotorByIndex(Telemetry* obj, int index) {
-  switch (index) {
-    case 0:
-      return &obj->motors->rear_left;
-    case 1:
-      return &obj->motors->rear_right;
-    default:
-      return &obj->motors->steering;
-  }
-}
-
-static void UpdateMdCommWatch(Telemetry* obj) {
-  for (int i = 0; i < 3; i++) {
-    uint32_t count = BldcMotor_GetRxCount(MotorByIndex(obj, i));
-    if (count != obj->md_comm_watch[i].last_rx_count) {
-      obj->md_comm_watch[i].last_rx_count = count;
-      Timer_Reset(&obj->md_comm_watch[i].timer);
-      obj->md_comm_watch[i].ok = true;
-    } else if (Timer_ReadMs(&obj->md_comm_watch[i].timer) > TELEMETRY_MD_COMM_TIMEOUT_MS) {
-      obj->md_comm_watch[i].ok = false;
-    }
-  }
+  return Motors_Get(obj->motors, index);
 }
 
 static uint8_t BuildMdStatus(Telemetry* obj, int index) {
@@ -33,8 +14,10 @@ static uint8_t BuildMdStatus(Telemetry* obj, int index) {
   if (BldcMotor_IsVoltageOutOfRange(motor)) status |= RAS_MD_STATUS_VOLTAGE_OUT_OF_RANGE;
   if (BldcMotor_IsOverheat(motor)) status |= RAS_MD_STATUS_OVERHEAT;
   if (BldcMotor_IsOvercurrent(motor)) status |= RAS_MD_STATUS_OVERCURRENT;
-  if (obj->md_comm_watch[index].ok) status |= RAS_MD_STATUS_COMM_OK;
+  // 通信監視は Motors が持つ (走行を止める判定と同じものを報告する)
+  if (Motors_IsCommOk(obj->motors, index)) status |= RAS_MD_STATUS_COMM_OK;
   if (BldcMotor_IsLimitSynced(motor)) status |= RAS_MD_STATUS_LIMIT_SYNCED;
+  if (BldcMotor_IsUncalibrated(motor)) status |= RAS_MD_STATUS_UNCALIBRATED;
   return status;
 }
 
@@ -61,7 +44,9 @@ static uint32_t BuildFlags(Telemetry* obj) {
   uint32_t faults = Power_GetFaults(obj->power);
   uint32_t flags = (uint32_t)Vehicle_GetMode(obj->vehicle) & RAS_FLAG_MODE_MASK;
 
-  if (Power_IsDriveOn(obj->power)) flags |= RAS_FLAG_ARMED;
+  if (Vehicle_IsArmed(obj->vehicle)) flags |= RAS_FLAG_ARMED;
+  if (Power_IsDriveOn(obj->power)) flags |= RAS_FLAG_DRIVE_POWER_ON;
+  if (Vehicle_IsMdFault(obj->vehicle)) flags |= RAS_FLAG_MD_FAULT;
   if (Vehicle_IsEstopLatched(obj->vehicle)) flags |= RAS_FLAG_ESTOP_ACTIVE;
   if (RasLink_HasCommand(obj->ras_link) && !RasLink_IsCommandAlive(obj->ras_link)) {
     flags |= RAS_FLAG_UART_TIMEOUT;
@@ -83,7 +68,7 @@ static uint32_t BuildFlags(Telemetry* obj) {
   if (faults & POWER_FAULT_DRIVE_UNDERVOLTAGE) flags |= RAS_FLAG_FAULT_DRIVE_UNDERVOLTAGE;
   if (faults & POWER_FAULT_SIGNAL_UNDERVOLTAGE) flags |= RAS_FLAG_FAULT_SIGNAL_UNDERVOLTAGE;
   // 過電流はラッチするため、以降は arm を要求されても駆動電源が入らない。
-  // 上位が「arm したのに armed が立たない」を異常と誤認しないよう明示する
+  // 上位が「arm したのに駆動電源が入らない」理由を区別できるよう明示する
   if (faults & (POWER_FAULT_DRIVE_OVERCURRENT | POWER_FAULT_SIGNAL_OVERCURRENT)) {
     flags |= RAS_FLAG_DRIVE_POWER_LOCKED;
   }
@@ -110,11 +95,6 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
   obj->drive = drive;
   obj->range_sensor = range_sensor;
 
-  for (int i = 0; i < 3; i++) {
-    obj->md_comm_watch[i].last_rx_count = 0;
-    obj->md_comm_watch[i].ok = false;
-    Timer_Init(&obj->md_comm_watch[i].timer);
-  }
   obj->logged_faults = POWER_FAULT_NONE;
   Timer_Init(&obj->update_timer);
 }
@@ -125,7 +105,6 @@ void Telemetry_Update(Telemetry* obj) {
   if (Timer_ReadUs(&obj->update_timer) < RAS_TELEMETRY_INTERVAL_US) return;
   Timer_Reset(&obj->update_timer);
 
-  UpdateMdCommWatch(obj);
   LogNewFaults(obj, Power_GetFaults(obj->power));
 
   const ImuData* imu_data = Imu_GetData(obj->imu);

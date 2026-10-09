@@ -67,10 +67,16 @@ typedef struct {
   bool data_valid;
   uint32_t last_sample_tick;
   uint32_t last_recovery_tick;
-  // I2C復旧 (Recover()) が走ったら立つ。復旧処理自体が~190msメインループを
-  // ブロッキングするため、Imu_ConsumeRecoveryRan() で消費してハートビートの
-  // 誤タイムアウト対策に使うことを想定している (docs/code_review_2026-08-21.md A-3)
-  bool recovery_ran;
+
+  // 通信が止まったときの復旧 (imu.c の StepRecovery)。制御周期ごとに1段階ずつ進める
+  I2C_HandleTypeDef *i2c;
+  uint8_t i2c_addr;              // 応答のあった 7bit アドレス
+  Mpu6050Offset calib_offset;    // 復旧で MPU6050 を作り直したあとに戻すオフセット
+  uint8_t recovery_state;        // ImuRecoveryState。0 = 復旧していない
+  uint8_t recovery_step;         // 段階の中の進み具合
+  uint32_t recovery_wait_tick;   // この時刻 (HAL_GetTick) になるまで次へ進まない
+  // 復旧の1段階がメインループを長く止めたら立つ (Imu_ConsumeRecoveryBlocked)
+  bool recovery_blocked;
 } Imu;
 
 /**
@@ -84,6 +90,7 @@ void Imu_Init(Imu *obj, I2C_HandleTypeDef *i2c, bool calibrate_on_boot);
 
 /**
  * @brief 溜まっているサンプルをすべて処理して姿勢・加速度を更新する。制御周期ごとに呼ぶこと。
+ * サンプルが途絶えたら I2C と MPU6050 の復旧も進める (ブロッキングしない。1回の呼び出しで1段階)。
  * @return 1 サンプル以上処理したら true。
  */
 bool Imu_Update(Imu *obj);
@@ -99,12 +106,13 @@ const ImuData *Imu_GetData(const Imu *obj);
 bool Imu_IsReady(const Imu *obj);
 
 /**
- * @brief I2C復旧 (Recover()) が前回の呼び出し以降に走ったかを取得し、フラグをクリアする。
- * Recover() は ~190ms メインループをブロッキングするため (docs/code_review_2026-08-21.md A-3)、
+ * @brief 前回の呼び出し以降に、復旧処理がメインループを長く (数ms以上) 止めたかを取得し、
+ * フラグをクリアする。復旧は待ち時間を制御周期をまたいで待つので通常は止めないが、
+ * I2C バスが電気的に張り付いている (BUSY が解けない) と HAL が1往復あたり 25ms 待つ。
  * 呼び出し側はこれを見てハートビート監視の基準時刻をリセットするなど、ブロッキングを
  * 前提としていない他モジュールの誤動作を避ける用途に使うこと。
  */
-bool Imu_ConsumeRecoveryRan(Imu *obj);
+bool Imu_ConsumeRecoveryBlocked(Imu *obj);
 
 /**
  * @brief 現在の向きを yaw = 0 とし直す。

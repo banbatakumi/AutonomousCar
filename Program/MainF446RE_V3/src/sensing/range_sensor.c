@@ -18,7 +18,7 @@ static void UpdateOne(Ultrasonic* sensor, LPF* lpf, bool* seeded, uint32_t* last
     return;
   }
   uint32_t seq = Ultrasonic_GetSeq(sensor);
-  if (*seeded && seq == *last_seq) return;  // まだ新しい計測が来ていない
+  if (seq == *last_seq) return;  // まだ新しい計測が来ていない (無効化の前の値を拾い直さない)
   *last_seq = seq;
   if (!*seeded) {
     LPF_Init(lpf, RANGE_SENSOR_LPF_K, raw);
@@ -45,6 +45,13 @@ void RangeSensor_Init(RangeSensor* obj, GPIO_TypeDef* front_trig_port, uint16_t 
 void RangeSensor_Update(RangeSensor* obj) {
   UpdateOne(&obj->front, &obj->front_lpf, &obj->front_lpf_seeded, &obj->front_lpf_seq);
   UpdateOne(&obj->rear, &obj->rear_lpf, &obj->rear_lpf_seeded, &obj->rear_lpf_seq);
+}
+
+void RangeSensor_Invalidate(RangeSensor* obj) {
+  obj->front_lpf_seeded = false;
+  obj->rear_lpf_seeded = false;
+  obj->front_lpf_seq = Ultrasonic_GetSeq(&obj->front);
+  obj->rear_lpf_seq = Ultrasonic_GetSeq(&obj->rear);
 }
 
 void RangeSensor_OnFrontEchoEdge(RangeSensor* obj) {

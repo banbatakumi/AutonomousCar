@@ -207,7 +207,7 @@ typedef struct {
 
   // --- 以下は Drive_Update が更新する観測量 (デバッグ・上位への報告用) ---
   // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
-  // 1LSB = 2pi/4096 = 1.53mrad で、これを 500us で微分すると 1LSB あたり 3.07rad/s
+  // 1LSB = 2pi/4095 = 1.53mrad で、これを 500us で微分すると 1LSB あたり 3.07rad/s
   // (= 0.09m/s) に化ける。実測ではノイズが ±100mV 程度あり、静止中でも生値は ±12m/s 振れる
   float vehicle_speed_m_s;  // 前輪から推定した車体前後方向の速度 (舵角で射影済み)
   // 前後方向判定用の応答が速い車速 (EstimateVehicleSpeedForSlip 由来、τ≈5ms)。

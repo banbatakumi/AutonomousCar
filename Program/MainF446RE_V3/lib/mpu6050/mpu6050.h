@@ -25,10 +25,15 @@
 // ISR が取り込んだサンプルを溜めるリングバッファ段数
 #define MPU6050_RING_DEPTH 8
 
-// 出力レンジ (精度優先のため最も分解能の高いレンジに固定)
-//   ジャイロ ±250 deg/s -> 131 LSB/(deg/s)
-//   加速度   ±2 g       -> 16384 LSB/g
-#define MPU6050_GYRO_LSB_PER_DPS 131.0f
+// 出力レンジ
+//   ジャイロ ±500 deg/s -> 65.5 LSB/(deg/s)
+//   加速度   ±2 g       -> 16384 LSB/g (最も分解能の高いレンジ)
+// ジャイロは 2026-10 に ±250 deg/s (4.36 rad/s) から広げた。この車は約 1.75m/s 以上の
+// フルステアでヨーレートが 4.36 rad/s を超え、飽和した値が TC の基準速度と TV に入っていた。
+// 分解能は 0.015 deg/s/LSB でノイズ (約 0.05 deg/s rms) より細かいので失うものは無い。
+// **レンジを変えたらオフセット (LSB 単位で Flash に保存) の換算も要る** (imu.c の LoadCalibration)
+#define MPU6050_GYRO_FS_SEL 1  // GYRO_CONFIG の FS_SEL (0:±250 1:±500 2:±1000 3:±2000 deg/s)
+#define MPU6050_GYRO_LSB_PER_DPS 65.5f
 #define MPU6050_ACCEL_LSB_PER_G 16384.0f
 #define MPU6050_GRAVITY_MPS2 9.80665f
 
@@ -81,6 +86,11 @@ typedef struct {
   volatile uint32_t sample_count;   // 取り込みに成功したサンプル総数
 
   bool initialized;
+
+  // ブロッキング I2C のタイムアウト [ms] と試行回数 (Mpu6050_BeginInit で決める)
+  uint16_t io_timeout_ms;
+  uint8_t io_retry_count;
+  Mpu6050DlpfBandwidth dlpf;  // 段階的な初期化の間、設定値を持ち回る
 } Mpu6050;
 
 /**
@@ -93,6 +103,45 @@ typedef struct {
  */
 bool Mpu6050_Init(Mpu6050 *obj, I2C_HandleTypeDef *i2c, uint8_t i2c_addr,
                   uint16_t sample_rate_hz, Mpu6050DlpfBandwidth dlpf);
+
+// --- 待ち時間を呼び出し側が持つ、段階的な初期化 ---
+// Mpu6050_Init は途中の待ち (リセット 100ms・PLL のロック 50ms) を HAL_Delay で待つので
+// 約 150ms ブロッキングする。走行中の復旧では制御ループを止められないため、同じ手順を
+// 「1回の呼び出し = I2C 1〜2 往復」に分けたものを公開する。順に:
+//   Mpu6050_BeginInit → MPU6050_RESET_WAIT_MS 待つ → Mpu6050_WakeUp → MPU6050_WAKE_WAIT_MS 待つ
+//   → Mpu6050_ConfigureStep を true (完了) になるまで繰り返す
+// どれかが失敗 (false / ok=false) したら最初からやり直すこと。
+#define MPU6050_RESET_WAIT_MS 100
+#define MPU6050_WAKE_WAIT_MS 50
+// 通常のブロッキング I2C のタイムアウトと試行回数
+#define MPU6050_IO_TIMEOUT_MS 100
+#define MPU6050_IO_RETRY_COUNT 3
+
+/**
+ * @brief デバイスを探してリセットを掛ける。obj は作り直される (オフセットも消える)。
+ * io_timeout_ms / io_retry_count は以後のブロッキング I2C (Mpu6050_ReadBlocking を含む) に使う。
+ * 走行中の復旧では、応答が無いときに止まる時間をこれで縛る。
+ */
+bool Mpu6050_BeginInit(Mpu6050 *obj, I2C_HandleTypeDef *i2c, uint8_t i2c_addr,
+                       uint16_t sample_rate_hz, Mpu6050DlpfBandwidth dlpf,
+                       uint16_t io_timeout_ms, uint8_t io_retry_count);
+
+/**
+ * @brief スリープを解除してクロック源を選ぶ。
+ */
+bool Mpu6050_WakeUp(Mpu6050 *obj);
+
+/**
+ * @brief レジスタを1つ設定する。*step は 0 から始めて呼ぶたびに進む。
+ * @param ok 書き込みに失敗したら false が入る (そのときの戻り値は true = これ以上進めない)。
+ * @return すべて設定し終えた (initialized になった) か、失敗したら true。
+ */
+bool Mpu6050_ConfigureStep(Mpu6050 *obj, uint8_t *step, bool *ok);
+
+/**
+ * @brief ブロッキング I2C のタイムアウトと試行回数を変える。
+ */
+void Mpu6050_SetIoTimeout(Mpu6050 *obj, uint16_t io_timeout_ms, uint8_t io_retry_count);
 
 /**
  * @brief 静止状態でサンプルを平均してオフセットを求める (ブロッキング)。

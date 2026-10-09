@@ -99,15 +99,17 @@ static void UpdateObservations(Drive* obj) {
 
 static void ResetTraction(Drive* obj);
 
-// 指令の送信を止めて惰行させる (MD側は無通信0.5秒で停止モードに入る)
+// トルク 0 を指令して惰行させる。
+// 送信を止めて惰行させてはいけない: MD は無通信0.5秒で停止モードに入るまで直前のトルクを
+// 出し続けるので、減速中の負トルクが停車後も残って後退する (2026-10 まではそうしていた)
 static void Coast(Drive* obj) {
   ResetTraction(obj);
   obj->torque_left_nm = 0.0f;
   obj->torque_right_nm = 0.0f;
   obj->torque_request_left_nm = 0.0f;
   obj->torque_request_right_nm = 0.0f;
-  BldcMotor_Stop(&obj->motors->rear_left);
-  BldcMotor_Stop(&obj->motors->rear_right);
+  BldcMotor_SetTorqueNm(&obj->motors->rear_left, 0.0f);
+  BldcMotor_SetTorqueNm(&obj->motors->rear_right, 0.0f);
 }
 
 // 後輪MDを制動モードに切り替えて左右へ同じ制動トルクを掛ける。制動トルクは回転を妨げる
@@ -156,7 +158,7 @@ static void SendSideBrake(Drive* obj) {
   BldcMotor_SetPosition(&obj->motors->rear_right, obj->side_brake_target_right_rad);
 }
 
-// 目標車速も実車速もほぼ0の間は指令を止めて自由回転させる (惰行)。上位が明示的に
+// 目標車速も実車速もほぼ0の間はトルク 0 を指令して自由回転させる (惰行)。上位が明示的に
 // ブレーキ (RAS_CMD_FLAG_BRAKE) を指定しない限り、停車中も車両を押さえ込まない。
 // 積分を持ち越すと再発進時に停止中に溜まった分が一気に出るのでリセットする
 static void CoastStandstill(Drive* obj) {

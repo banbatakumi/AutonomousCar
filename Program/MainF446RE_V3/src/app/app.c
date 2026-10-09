@@ -195,7 +195,7 @@ void Setup() {
   RasLink_Init(&ras_link, &ras_serial);
   Heartbeat_Init(&heartbeat, RAS_SIG_GPIO_Port, RAS_SIG_Pin);
 
-  Vehicle_Init(&vehicle, &ras_link, &drive, &steering, &lighting, &power, &heartbeat,
+  Vehicle_Init(&vehicle, &ras_link, &drive, &motors, &steering, &lighting, &power, &heartbeat,
                &buzzer, &button2, &range_sensor, &lidar);
   Telemetry_Init(&telemetry, &ras_link, &vehicle, &power, &encoder, &imu, &lidar, &motors,
                  &steering, &drive, &range_sensor);
@@ -248,17 +248,22 @@ static void UpdateSensors() {
   // 呼ばないため、Pi 未接続・起動中・通信途絶・緊急停止の間はトリガが出続けていた
   // (2026-10-04 修正)。直前周期の Vehicle_Update が決めた値なので 1周期 (500us) 遅れるが、
   // 判定を止めるだけなので許容する
-  if (Vehicle_IsArmed(&vehicle)) RangeSensor_Update(&range_sensor);
+  if (Vehicle_IsArmed(&vehicle)) {
+    RangeSensor_Update(&range_sensor);
+  } else {
+    // 止めている間の値を「有効な距離」として残さない (再開後の最初の計測まで無効値を返す)
+    RangeSensor_Invalidate(&range_sensor);
+  }
   Lidar_Update(&lidar);
 
-  // IMU の I2C 復旧処理 (imu.c の Recover()) は ~190ms メインループをブロッキングする
-  // (docs/code_review_2026-08-21.md A-3)。この間ハートビートのポーリングも止まるため、
-  // 復旧直後にエッジを偶然取りこぼすと誤って緊急停止がラッチされうる。根本対策
-  // (Recover のステートマシン化) は工数が大きいため、応急処置として基準時刻だけ
-  // リセットしておく (実際の断線・Pi側の異常を見逃す窓ができるわけではない。
-  // ブロッキングしていた間はそもそも判定できていなかった時間なので、その分を
-  // 「途絶していない」として扱うだけ)
-  if (Imu_ConsumeRecoveryRan(&imu)) {
+  // IMU の I2C 復旧 (imu.c の StepRecovery) は制御周期ごとに1段階ずつ進むので、通常は
+  // メインループを止めない (2026-10 まではブロッキングで約190ms止めていた)。ただし I2C バスが
+  // 電気的に張り付いていると HAL が1往復あたり 25ms 待つ。その間ハートビートのポーリングも
+  // 止まり、直後にエッジを偶然取りこぼすと誤って緊急停止がラッチされうるので、長く止まった
+  // ときだけ基準時刻をリセットする (実際の断線・Pi側の異常を見逃す窓ができるわけではない。
+  // 止まっていた間はそもそも判定できていなかった時間なので、その分を「途絶していない」として
+  // 扱うだけ)
+  if (Imu_ConsumeRecoveryBlocked(&imu)) {
     Heartbeat_ResetBaseline(&heartbeat);
   }
 }

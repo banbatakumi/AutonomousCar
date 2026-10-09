@@ -1,6 +1,7 @@
 #include "vehicle.h"
 
 #include <math.h>
+#include <stdio.h>
 
 #include "mymath.h"
 
@@ -160,6 +161,67 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
   return lidar_hit || us_near_hit || us_fallback_hit;
 }
 
+// 走行中に上位の ARM が外れたら、停車するまで駆動電源を入れたまま最大制動を続ける。
+// ARM ビットでそのまま駆動電源を切ると MD ごと落ちて制動できず、惰行で止まるのを待つことになる
+// (上位は通信途絶・デッドマンで「安全側」として DISARM を送ってくる)
+static void UpdateDisarmBraking(Vehicle* obj, bool arm_requested) {
+  if (arm_requested) {
+    obj->disarm_braking = false;
+  } else if (obj->arm_requested_prev) {
+    // 駆動電源が入っていなければ (ステア未較正・過電流での遮断) 制動する手段が無い
+    obj->disarm_braking = Power_IsDriveOn(obj->power);
+    Timer_Reset(&obj->disarm_brake_timer);
+  }
+  obj->arm_requested_prev = arm_requested;
+
+  if (obj->disarm_braking &&
+      (fabsf(Drive_GetVehicleSpeed(obj->drive)) < DRIVE_STANDSTILL_SPEED_M_S ||
+       Timer_Read(&obj->disarm_brake_timer) >= VEHICLE_DISARM_BRAKE_TIMEOUT_S)) {
+    obj->disarm_braking = false;
+  }
+}
+
+static const char* const kMdNames[MOTORS_COUNT] = {"rear-left", "rear-right", "steering"};
+
+// md_fault を立て、どの MD がなぜ使えないかを上位へ1回だけ知らせる
+static void LatchMdFault(Vehicle* obj, const char* when) {
+  obj->md_fault = true;
+  for (int i = 0; i < MOTORS_COUNT; i++) {
+    const char* reason = Motors_NotReadyReason(obj->motors, i);
+    if (reason == NULL) continue;
+    char text[64];
+    snprintf(text, sizeof(text), "MD %s %s: %s", kMdNames[i], when, reason);
+    RasLink_Log(obj->ras_link, RAS_LOG_ERROR, text);
+  }
+}
+
+// MD の起動待ちと健全性の監視。駆動電源が入っている間、毎周期呼ぶ。
+// 走行制御は MD の状態を見ずにトルクを指令するので、ここで見ていないと、片側の後輪 MD が
+// 過熱・電圧異常で止まっても反対側は駆動を続け (ヨーモーメントが出る)、ステア MD が
+// 止まっても舵が効かないまま走り続ける
+static void UpdateMdHealth(Vehicle* obj) {
+  bool powered = Power_IsDriveOn(obj->power);
+  if (!powered) {
+    obj->md_started = false;
+    obj->md_fault = false;
+  } else {
+    if (!obj->drive_power_prev) Timer_Reset(&obj->md_boot_timer);
+    bool ready = Motors_IsReady(obj->motors);
+    if (!obj->md_fault) {
+      if (!obj->md_started) {
+        if (ready) {
+          obj->md_started = true;
+        } else if (Timer_Read(&obj->md_boot_timer) >= VEHICLE_MD_BOOT_TIMEOUT_S) {
+          LatchMdFault(obj, "did not start");
+        }
+      } else if (!ready) {
+        LatchMdFault(obj, "stopped");
+      }
+    }
+  }
+  obj->drive_power_prev = powered;
+}
+
 // 上位の指令を車両へ適用する。目標値そのものではなく、加速度・舵角速度の上限で
 // レート制限した値を渡す (急な指令変化でタイヤを滑らせたり据え切りでラックを痛めないため)
 static void ApplyRasCommand(Vehicle* obj) {
@@ -177,13 +239,20 @@ static void ApplyRasCommand(Vehicle* obj) {
   if (command->mode != RAS_MODE_RESERVED) obj->mode = command->mode;
 
   bool arm_requested = (command->flags & RAS_CMD_FLAG_ARM) != 0;
-  Power_SetDrivePower(obj->power, arm_requested);
+  // 中心点が未較正だと舵角の絶対値が信用できないため走行させない。走らせない以上、
+  // 駆動電源も入れない (MD に給電しなければ、どの経路の指令も届かない)
+  bool center_valid = Steering_IsCenterValid(obj->steering);
+  UpdateDisarmBraking(obj, arm_requested);
+  Power_SetDrivePower(obj->power, (arm_requested && center_valid) || obj->disarm_braking);
   UpdateLidarPower(obj, arm_requested);
 
-  // 中心点が未較正だと舵角の絶対値が信用できないため走行させない
-  bool armed = arm_requested && Steering_IsCenterValid(obj->steering) &&
+  // 3台の MD が使える状態になるまでは走らせない。MD は給電から約1秒指令を受け付けず、
+  // その間に車速 PI を回すと、積分が振り切れた状態で MD が動き出して最大トルクが一気に出る
+  bool armed = arm_requested && center_valid && obj->md_started &&
                (obj->mode == RAS_MODE_MANUAL || obj->mode == RAS_MODE_AUTO);
   obj->armed = armed;
+  // 上位の指令に関わらず最大制動で止める場合: ARM が外れたあとの停止待ちと、MD の異常
+  bool forced_braking = obj->disarm_braking || obj->md_fault;
   bool cmd_braking = (command->flags & RAS_CMD_FLAG_BRAKE) != 0;
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
   bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
@@ -205,7 +274,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   float desired_direction = torque_mode ? command->target_torque_nm : command->target_speed_m_s;
   obj->auto_stop_active =
       armed && auto_stop_enabled && IsAutoStopObstacleAhead(obj, config, desired_direction);
-  bool braking = cmd_braking || obj->auto_stop_active;
+  bool braking = cmd_braking || obj->auto_stop_active || forced_braking;
 
   float target_speed_m_s = 0.0f;
   if (armed && !braking && !torque_mode && !side_brake_requested) {
@@ -214,7 +283,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 制動トルクの指定が無い (0) ときは最大で掛ける。0 をそのまま「制動トルク0」と解釈すると、
   // 上位がフィールドを埋め忘れただけでブレーキが効かなくなる。自動停止はできるだけ強く
   // 止めることが目的なので、上位が明示的にブレーキを踏んでいるとき以外は常に最大で掛ける
-  float brake_torque_nm = (cmd_braking && command->brake_torque_nm > 0.0f)
+  float brake_torque_nm = (cmd_braking && !forced_braking && command->brake_torque_nm > 0.0f)
                                ? command->brake_torque_nm
                                : DRIVE_MAX_BRAKE_TORQUE_NM;
 
@@ -223,24 +292,28 @@ static void ApplyRasCommand(Vehicle* obj) {
 
   float steer_rate_limit = command->steer_rate_limit_rad_s > 0.0f
                                ? command->steer_rate_limit_rad_s
-                               : Steering_GetMaxRoadWheelAngleRad();
+                               : VEHICLE_DEFAULT_STEER_RATE_RAD_S;
 
-  // armed でない間 (中心点未較正・DISARM・自律/手動以外のモード) は target_speed 側と同様に
-  // 舵角も進めない。center_valid が偽だと Steering_SetAngleRad は無意味な中心点 (0など) を
-  // 基準に絶対角を送ってしまうため、applied_steer_rad を凍結して最後に送った角度を
-  // MD に保持させ続ける (急変も、未較正の中心点に基づく指令も避けられる)。再アーム時は
+  // armed でない間 (中心点未較正・DISARM・MD の起動待ち・自律/手動以外のモード) は
+  // target_speed 側と同様に舵角も進めない。applied_steer_rad を凍結して最後に送った角度を
+  // MD に保持させ続ける (未較正の間は Steering 側が何も送らない)。再アーム時は
   // 凍結していた applied_steer_rad から steer_rate_limit で滑らかに追従するため、
   // 既存のレート制限ロジックはそのまま活きる
   if (armed) {
     float steer_step = steer_rate_limit * dt_s;
     obj->applied_steer_rad +=
         Constrain(target_steer_rad - obj->applied_steer_rad, -steer_step, steer_step);
-    Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
   }
+  // armed でなくても指令 (凍結した角度) は出し続ける。ステア MD は指令フレームを受け取って
+  // 初めてトルク上限を適用するので、送らないと「MD が揃うまで armed にしない」が永久に
+  // 解けない (起動してから一度もフェイルセーフを通らずに上位の COMMAND が届いた場合)
+  Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
 
-  // Drive_Enable は積分項とTCの上限をリセットするため、状態が変わったときだけ呼ぶ
-  if (armed && !Drive_IsEnabled(obj->drive)) Drive_Enable(obj->drive);
-  if (!armed && Drive_IsEnabled(obj->drive)) Drive_Disable(obj->drive);
+  // Drive_Enable は積分項とTCの上限をリセットするため、状態が変わったときだけ呼ぶ。
+  // ARM が外れたあとの停止待ちの間は、制動を掛けるために有効のままにする
+  bool drive_active = armed || obj->disarm_braking;
+  if (drive_active && !Drive_IsEnabled(obj->drive)) Drive_Enable(obj->drive);
+  if (!drive_active && Drive_IsEnabled(obj->drive)) Drive_Disable(obj->drive);
 
   // 加速度レート制限 (DRIVE_MAX_ACCEL_M_S2 が上限) は Drive 側が持つため、生の目標車速を
   // そのまま渡す。上限0は「制限なし」ではなく「動かない」になってしまうため、
@@ -248,8 +321,9 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTargetSpeed(obj->drive, target_speed_m_s, command->accel_limit_m_s2);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
-  // 未アーム中は無効化する (アームが外れた瞬間に位置保持へ入り込まないようにするため)
-  Drive_SetSideBrake(obj->drive, armed && side_brake_requested);
+  // 未アーム中は無効化する (アームが外れた瞬間に位置保持へ入り込まないようにするため)。
+  // 強制の制動中も入れない (Drive は位置保持を制動より優先する)
+  Drive_SetSideBrake(obj->drive, armed && side_brake_requested && !forced_braking);
   Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
   Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
   Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
@@ -257,7 +331,8 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetParams(obj->drive, &config->control);
 
   // 上位が生きている間の制動は常に全光量 (減光はフェイルセーフの停車保持だけ)
-  Timer_Reset(&obj->brake_dim_timer);
+  Timer_Reset(&obj->failsafe_stop_timer);
+  obj->failsafe_hold = false;
   Lighting_SetBrakeDimmed(obj->lighting, false);
   ApplyBrakeLight(obj, braking);
   Lighting_SetHeadlight(obj->lighting, HeadlightModeFromCommand(command->light_mode));
@@ -296,7 +371,8 @@ static void UpdateEstop(Vehicle* obj) {
 }
 
 // 上位の指令が使えない状況 (緊急停止・COMMAND 途絶) で共通に取る処置。最大の制動トルクで
-// 止め、上位の操作で入りっぱなしになりうる出力 (クラクション・パッシング) は解除する。
+// 止め、止まったら後輪の位置保持へ移る。上位の操作で入りっぱなしになりうる出力
+// (クラクション・パッシング) は解除する。
 // 舵角は最後の指令値のまま保持する (直進へ戻すと車体が予期しない方向へ動くため)
 static void ApplyFailsafe(Vehicle* obj) {
   // ApplyRasCommand() 側の command_rate_timer をここでもリセットしておく。フェイルセーフ中は
@@ -304,26 +380,33 @@ static void ApplyFailsafe(Vehicle* obj) {
   // 加速度・舵角速度のレート制限が1周期だけ無効化されたのと同じ状態になる
   Timer_Reset(&obj->command_rate_timer);
 
+  // 上位が DISARM を送っていた間 (MD の起動待ちを含む) は Drive が無効で、そのままでは
+  // 下の制動が出ない。駆動電源が入ったまま途絶しても必ず制動が掛かるようにする
+  if (!Drive_IsEnabled(obj->drive)) Drive_Enable(obj->drive);
+
+  // 止まって (ESS の停止判定と同じ車速未満が) VEHICLE_FAILSAFE_HOLD_DELAY_S 続いたら停車保持へ
+  // 移る。動き出したら (押された・坂で保持し切れない) 最大制動からやり直す
+  if (fabsf(Drive_GetVehicleSpeed(obj->drive)) >= VEHICLE_ESS_STOP_SPEED_M_S) {
+    Timer_Reset(&obj->failsafe_stop_timer);
+    obj->failsafe_hold = false;
+  } else if (!obj->failsafe_hold &&
+             Timer_Read(&obj->failsafe_stop_timer) >= VEHICLE_FAILSAFE_HOLD_DELAY_S) {
+    obj->failsafe_hold = true;
+  }
+
   Drive_SetTargetSpeed(obj->drive, 0.0f, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
-  // brake が torque_mode より優先されるため torque_mode の解除は現状表面化しないが、
-  // side_brake は Drive_Update 内で brake より先に判定されるため、これを明示的に解除
-  // しないと緊急停止・COMMAND途絶中に古い side_brake 状態が残っていた場合に位置保持へ
-  // 入り込み、最大制動トルクでの停止 (Drive_SetBrake) が効かなくなる。安全層は他モジュールの
-  // 内部優先順位に依存せず自己完結させるべきという方針からも、ここで明示的に解除しておく
   Drive_SetTorque(obj->drive, false, 0.0f);
-  Drive_SetSideBrake(obj->drive, false);
+  // 上位の指令で入っていたサイドブレーキ (後輪の位置保持) は持ち越さない。Drive は位置保持を
+  // 制動より優先するので、走行中に入ったままだと最大制動が効かなくなる。止まるまでは必ず
+  // 制動トルクで減速し、止まってからだけ位置保持へ切り替える。MD の制動は回転と逆向きの
+  // トルクで、車輪が止まる手前で抜ける (2rad/s 未満で 0)。それだけでは坂で動き出す
+  Drive_SetSideBrake(obj->drive, obj->failsafe_hold);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
   obj->armed = false;
-  // 止まって (ESS の停止判定と同じ車速未満が) VEHICLE_FAILSAFE_BRAKE_DIM_DELAY_S 続いてから
-  // だけ減光する。通信途絶直後の最大制動で減速・クリープしている間は全光量のまま (後続への
-  // 表示を弱めない)。Pi 未接続・起動中はずっとここを通るので、全光量で点けっぱなしにしない
-  // (省電力、2026-10-04)
-  if (fabsf(Drive_GetVehicleSpeed(obj->drive)) >= VEHICLE_ESS_STOP_SPEED_M_S) {
-    Timer_Reset(&obj->brake_dim_timer);
-  }
-  Lighting_SetBrakeDimmed(obj->lighting,
-                          Timer_Read(&obj->brake_dim_timer) >= VEHICLE_FAILSAFE_BRAKE_DIM_DELAY_S);
+  // 減速・クリープしている間は全光量のまま (後続への表示を弱めない)。Pi 未接続・起動中は
+  // ずっとここを通るので、停車保持に入ったら減光する (省電力、2026-10-04)
+  Lighting_SetBrakeDimmed(obj->lighting, obj->failsafe_hold);
   ApplyBrakeLight(obj, true);
   Lighting_SetPassing(obj->lighting, false);
   SetHorn(obj, false);
@@ -331,11 +414,12 @@ static void ApplyFailsafe(Vehicle* obj) {
   obj->auto_stop_active = false;
 }
 
-void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steering,
+void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors, Steering* steering,
                   Lighting* lighting, Power* power, Heartbeat* heartbeat, Buzzer* buzzer,
                   DigitalIn* estop_reset_button, RangeSensor* range_sensor, Lidar* lidar) {
   obj->ras_link = ras_link;
   obj->drive = drive;
+  obj->motors = motors;
   obj->steering = steering;
   obj->lighting = lighting;
   obj->power = power;
@@ -376,7 +460,17 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Steering* steer
 
   obj->armed = false;
   obj->prev_armed = false;
-  Timer_Init(&obj->brake_dim_timer);
+  Timer_Init(&obj->failsafe_stop_timer);
+  obj->failsafe_hold = false;
+
+  obj->arm_requested_prev = false;
+  obj->disarm_braking = false;
+  Timer_Init(&obj->disarm_brake_timer);
+
+  obj->drive_power_prev = false;
+  obj->md_started = false;
+  obj->md_fault = false;
+  Timer_Init(&obj->md_boot_timer);
 }
 
 // armed が変化した周期に一度だけ通知音を鳴らす。緊急停止・通信途絶で落ちた場合も
@@ -395,6 +489,7 @@ static void NotifyArmChange(Vehicle* obj) {
 
 static void UpdateInner(Vehicle* obj) {
   UpdateEstop(obj);
+  UpdateMdHealth(obj);
 
   // 緊急停止は上位の指令より優先する
   if (obj->estop_latched) {
@@ -421,6 +516,8 @@ void Vehicle_Update(Vehicle* obj) {
 bool Vehicle_IsEstopLatched(const Vehicle* obj) { return obj->estop_latched; }
 
 bool Vehicle_IsArmed(const Vehicle* obj) { return obj->armed; }
+
+bool Vehicle_IsMdFault(const Vehicle* obj) { return obj->md_fault; }
 
 uint8_t Vehicle_GetMode(const Vehicle* obj) { return obj->mode; }
 

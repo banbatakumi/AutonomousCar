@@ -14,9 +14,6 @@
 #define MPU6050_REG_PWR_MGMT_1 0x6B
 #define MPU6050_REG_WHO_AM_I 0x75
 
-#define MPU6050_I2C_TIMEOUT_MS 100
-#define MPU6050_I2C_RETRY_COUNT 3
-
 // PWR_MGMT_1
 #define MPU6050_PWR_DEVICE_RESET 0x80
 // クロック源にジャイロ X 軸の PLL を選ぶ (内蔵 RC より周波数安定度が高く、
@@ -36,10 +33,10 @@ static int16_t CombineBytes(uint8_t high, uint8_t low) {
 
 static HAL_StatusTypeDef WriteReg(Mpu6050 *obj, uint8_t reg, uint8_t value) {
   HAL_StatusTypeDef status = HAL_ERROR;
-  for (int i = 0; i < MPU6050_I2C_RETRY_COUNT; i++) {
+  for (int i = 0; i < obj->io_retry_count; i++) {
     status = HAL_I2C_Mem_Write(obj->i2c, (uint16_t)(obj->i2c_addr << 1), reg,
                                I2C_MEMADD_SIZE_8BIT, &value, 1,
-                               MPU6050_I2C_TIMEOUT_MS);
+                               obj->io_timeout_ms);
     if (status == HAL_OK) return HAL_OK;
   }
   return status;
@@ -48,10 +45,10 @@ static HAL_StatusTypeDef WriteReg(Mpu6050 *obj, uint8_t reg, uint8_t value) {
 static HAL_StatusTypeDef ReadReg(Mpu6050 *obj, uint8_t reg, uint8_t *buffer,
                                  uint16_t len) {
   HAL_StatusTypeDef status = HAL_ERROR;
-  for (int i = 0; i < MPU6050_I2C_RETRY_COUNT; i++) {
+  for (int i = 0; i < obj->io_retry_count; i++) {
     status = HAL_I2C_Mem_Read(obj->i2c, (uint16_t)(obj->i2c_addr << 1), reg,
                               I2C_MEMADD_SIZE_8BIT, buffer, len,
-                              MPU6050_I2C_TIMEOUT_MS);
+                              obj->io_timeout_ms);
     if (status == HAL_OK) return HAL_OK;
   }
   return status;
@@ -103,56 +100,106 @@ static bool FindDevice(Mpu6050 *obj, uint8_t preferred_addr) {
   return false;
 }
 
-bool Mpu6050_Init(Mpu6050 *obj, I2C_HandleTypeDef *i2c, uint8_t i2c_addr,
-                  uint16_t sample_rate_hz, Mpu6050DlpfBandwidth dlpf) {
+bool Mpu6050_BeginInit(Mpu6050 *obj, I2C_HandleTypeDef *i2c, uint8_t i2c_addr,
+                       uint16_t sample_rate_hz, Mpu6050DlpfBandwidth dlpf,
+                       uint16_t io_timeout_ms, uint8_t io_retry_count) {
   if (obj == NULL || i2c == NULL || sample_rate_hz == 0) return false;
 
   memset(obj, 0, sizeof(*obj));
   obj->i2c = i2c;
   obj->sample_rate_hz = sample_rate_hz;
+  obj->dlpf = dlpf;
+  Mpu6050_SetIoTimeout(obj, io_timeout_ms, io_retry_count);
 
   if (!FindDevice(obj, i2c_addr)) {
     printf("[MPU6050] Not found on I2C bus\n");
     return false;
   }
+  return WriteReg(obj, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR_DEVICE_RESET) == HAL_OK;
+}
 
-  if (WriteReg(obj, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR_DEVICE_RESET) != HAL_OK) {
+bool Mpu6050_WakeUp(Mpu6050 *obj) {
+  return WriteReg(obj, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR_CLK_PLL_XGYRO) == HAL_OK;
+}
+
+bool Mpu6050_ConfigureStep(Mpu6050 *obj, uint8_t *step, bool *ok) {
+  uint8_t reg = 0;
+  uint8_t value = 0;
+  *ok = true;
+
+  switch (*step) {
+    case 0:
+      reg = MPU6050_REG_CONFIG;
+      value = (uint8_t)obj->dlpf;
+      break;
+    case 1: {
+      uint16_t internal_rate_hz = (obj->dlpf == MPU6050_DLPF_BW_260HZ) ? 8000 : 1000;
+      uint16_t sample_rate_hz = obj->sample_rate_hz;
+      if (sample_rate_hz > internal_rate_hz) sample_rate_hz = internal_rate_hz;
+      uint16_t div = (uint16_t)(internal_rate_hz / sample_rate_hz);
+      if (div == 0) div = 1;
+      if (div > 256) div = 256;
+      // 実際に出るレートは内部レートの整数分の1にしかならないので、丸めた値を保持しておく
+      obj->sample_rate_hz = (uint16_t)(internal_rate_hz / div);
+      reg = MPU6050_REG_SMPLRT_DIV;
+      value = (uint8_t)(div - 1);
+      break;
+    }
+    case 2:
+      reg = MPU6050_REG_GYRO_CONFIG;
+      value = (uint8_t)(MPU6050_GYRO_FS_SEL << 3);
+      break;
+    case 3:
+      reg = MPU6050_REG_ACCEL_CONFIG;
+      value = 0x00;  // ±2 g
+      break;
+    case 4:
+      reg = MPU6050_REG_INT_PIN_CFG;
+      value = MPU6050_INT_PIN_CFG_PULSE;
+      break;
+    case 5:
+      reg = MPU6050_REG_INT_ENABLE;
+      value = MPU6050_INT_DATA_RDY_EN;
+      break;
+    default: {
+      // 溜まっている割り込み要因を読み捨ててから使い始める
+      uint8_t int_status = 0;
+      ReadReg(obj, MPU6050_REG_INT_STATUS, &int_status, 1);
+      obj->initialized = true;
+      return true;
+    }
+  }
+
+  if (WriteReg(obj, reg, value) != HAL_OK) {
+    *ok = false;
+    return true;
+  }
+  (*step)++;
+  return false;
+}
+
+void Mpu6050_SetIoTimeout(Mpu6050 *obj, uint16_t io_timeout_ms, uint8_t io_retry_count) {
+  obj->io_timeout_ms = io_timeout_ms;
+  obj->io_retry_count = io_retry_count;
+}
+
+bool Mpu6050_Init(Mpu6050 *obj, I2C_HandleTypeDef *i2c, uint8_t i2c_addr,
+                  uint16_t sample_rate_hz, Mpu6050DlpfBandwidth dlpf) {
+  if (!Mpu6050_BeginInit(obj, i2c, i2c_addr, sample_rate_hz, dlpf, MPU6050_IO_TIMEOUT_MS,
+                         MPU6050_IO_RETRY_COUNT)) {
     return false;
   }
-  HAL_Delay(100);
+  HAL_Delay(MPU6050_RESET_WAIT_MS);
 
-  if (WriteReg(obj, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR_CLK_PLL_XGYRO) != HAL_OK) {
-    return false;
+  if (!Mpu6050_WakeUp(obj)) return false;
+  HAL_Delay(MPU6050_WAKE_WAIT_MS);  // PLL のロック待ち
+
+  uint8_t step = 0;
+  bool ok = true;
+  while (!Mpu6050_ConfigureStep(obj, &step, &ok)) {
   }
-  HAL_Delay(50);  // PLL のロック待ち
+  if (!ok) return false;
 
-  if (WriteReg(obj, MPU6050_REG_CONFIG, (uint8_t)dlpf) != HAL_OK) return false;
-
-  uint16_t internal_rate_hz = (dlpf == MPU6050_DLPF_BW_260HZ) ? 8000 : 1000;
-  if (sample_rate_hz > internal_rate_hz) sample_rate_hz = internal_rate_hz;
-  uint16_t div = (uint16_t)(internal_rate_hz / sample_rate_hz);
-  if (div == 0) div = 1;
-  if (div > 256) div = 256;
-  // 実際に出るレートは内部レートの整数分の1にしかならないので、丸めた値を保持しておく
-  obj->sample_rate_hz = (uint16_t)(internal_rate_hz / div);
-  if (WriteReg(obj, MPU6050_REG_SMPLRT_DIV, (uint8_t)(div - 1)) != HAL_OK) {
-    return false;
-  }
-
-  if (WriteReg(obj, MPU6050_REG_GYRO_CONFIG, 0x00) != HAL_OK) return false;   // ±250 deg/s
-  if (WriteReg(obj, MPU6050_REG_ACCEL_CONFIG, 0x00) != HAL_OK) return false;  // ±2 g
-
-  if (WriteReg(obj, MPU6050_REG_INT_PIN_CFG, MPU6050_INT_PIN_CFG_PULSE) != HAL_OK) {
-    return false;
-  }
-  if (WriteReg(obj, MPU6050_REG_INT_ENABLE, MPU6050_INT_DATA_RDY_EN) != HAL_OK) {
-    return false;
-  }
-
-  uint8_t int_status = 0;
-  ReadReg(obj, MPU6050_REG_INT_STATUS, &int_status, 1);
-
-  obj->initialized = true;
   printf("[MPU6050] Initialized at 0x%02X (%u Hz, DLPF %u)\n", obj->i2c_addr,
          obj->sample_rate_hz, (unsigned)dlpf);
   return true;

@@ -9,6 +9,12 @@
 #define STEERING_CALIB_MAGIC 0x53544545u  // "STEE"
 // 駆動電源の投入直後に呼ばれるため、MDのブートから状態フレーム送信開始までを待てる長さにしてある
 #define STEERING_CALIB_TIMEOUT_S 5.0f
+// 中心点として記録する角度を、この数の連続した状態フレームの平均から求める (MD は 500us ごとに
+// 返すので約 25ms ぶん)。1フレームだけで決めると、同期ずれで CRC-8 をすり抜けたフレーム
+// (約 1/256) や、手を離した直後の揺れをそのまま中心点として Flash に書いてしまう
+#define STEERING_CALIB_FRAMES 50
+// 上の区間で、最初のフレームからこれ以上 [rad] 離れた角度が出たらやり直す
+#define STEERING_CALIB_MAX_SPREAD_RAD 0.02f
 
 typedef struct {
   uint32_t magic;
@@ -62,19 +68,37 @@ static void LoadFromFlash(Steering* obj) {
 // 時間がかかる場合があるため、固定時間ではなく最初の1フレームが届くまで待つ。タイムアウトまでに
 // 一度も受信できなければ配線・ボーレート不一致等で受信できていないと判断し、trueを返さない。
 static bool Calibrate(Steering* obj) {
-  uint32_t rx_count_before = BldcMotor_GetRxCount(obj->motor);
+  uint32_t rx_count = BldcMotor_GetRxCount(obj->motor);
 
   Timer timer;
   Timer_Init(&timer);
-  while (BldcMotor_GetRxCount(obj->motor) == rx_count_before) {
+  // 0/2π の境界をまたいでも平均が半周ずれないよう、最初のフレームからの差分を平均する
+  float first_rad = 0.0f;
+  float diff_sum_rad = 0.0f;
+  int frames = 0;
+  while (frames < STEERING_CALIB_FRAMES) {
     BldcMotor_Update(obj->motor);
     if (Timer_Read(&timer) > STEERING_CALIB_TIMEOUT_S) {
-      printf("Steering: calibration failed (no data received from motor)\n");
+      printf("Steering: calibration failed (%s)\n",
+             frames == 0 ? "no data received from motor" : "angle not steady");
       return false;
     }
+    if (BldcMotor_GetRxCount(obj->motor) == rx_count) continue;
+    rx_count = BldcMotor_GetRxCount(obj->motor);
+
+    float angle_rad = BldcMotor_GetMechAngle(obj->motor);
+    if (frames == 0) first_rad = angle_rad;
+    float diff_rad = GapRadians(angle_rad, first_rad);
+    if (Abs(diff_rad) > STEERING_CALIB_MAX_SPREAD_RAD) {
+      frames = 0;
+      diff_sum_rad = 0.0f;
+      continue;
+    }
+    diff_sum_rad += diff_rad;
+    frames++;
   }
 
-  obj->center_rad = BldcMotor_GetMechAngle(obj->motor);
+  obj->center_rad = NormalizeRadians(first_rad + diff_sum_rad / (float)STEERING_CALIB_FRAMES);
 
   SteeringCalibData calib = {STEERING_CALIB_MAGIC, obj->center_rad};
   Flash_WriteData(FLASH_USER_START_ADDR, &calib, sizeof(calib));
@@ -97,6 +121,9 @@ void Steering_Init(Steering* obj, BldcMotor* motor, bool do_calibrate) {
 }
 
 void Steering_SetAngleRad(Steering* obj, float angle_rad) {
+  // 中心点が無い (未較正) 間は何も指令しない。未較正時の center_rad は 0 で、これを基準に
+  // 絶対角を送ると、駆動電源が入った瞬間にステアが無関係な機械角へ動く
+  if (!obj->center_valid) return;
   angle_rad = Constrain(angle_rad, -STEERING_MAX_ANGLE_RAD, STEERING_MAX_ANGLE_RAD);
   float target_rad = NormalizeRadians(obj->center_rad + STEERING_DIRECTION_SIGN * angle_rad);
   BldcMotor_SetPosition(obj->motor, target_rad);
