@@ -11,11 +11,11 @@
 
 #include "drive.h"
 
-#define HOST_SIM_ABI 3
+#define HOST_SIM_ABI 4
 
 // 入力 (1制御周期ごと) の列
 enum {
-  IN_MODE = 0,     // 0=車速指令 1=トルク指令 2=制動 3=DISARM (惰行)
+  IN_MODE = 0,     // 0=車速指令 1=トルク指令 2=制動 3=DISARM (惰行) 4=車速指令+ローンチコントロール
   IN_VALUE,        // 目標車速 [m/s] / 1輪あたりのトルク [Nm] / 1輪あたりの制動トルク [Nm]
   IN_ACCEL_LIMIT,  // [m/s^2] (車速指令のとき。0 = ファームの上限)
   IN_STEER,        // 路面舵角 [rad]
@@ -46,7 +46,7 @@ enum {
   OUT_FW_SPEED,     // ファームが推定した車速
   OUT_FW_SLIP_LEFT,
   OUT_FW_SLIP_RIGHT,
-  OUT_FLAGS,        // bit0=TC bit1=ABS bit2=TV bit3=片輪浮き対策 が介入中
+  OUT_FLAGS,        // bit0=TC bit1=ABS bit2=TV bit3=片輪浮き対策 が介入中 bit4=ローンチコントロールで発進中
   OUT_DISTANCE,     // 走行距離 [m]
   OUT_TORQUE_LEFT,  // モータが実際に出したトルク [Nm]
   OUT_TORQUE_RIGHT,
@@ -263,6 +263,8 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   g_host_now_s = s->now_s;
   g_steer_rad = (float)steer;
   int mode = advance ? (int)(u[IN_MODE] + 0.5) : 3;
+  // ローンチコントロールを持たない古いファームでは 4 はただの車速指令
+  bool speed_mode = mode == 0 || mode == 4;
   if (mode == 3) {
     if (Drive_IsEnabled(&s->drive)) Drive_Disable(&s->drive);
   } else {
@@ -270,9 +272,12 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
       Drive_Enable(&s->drive);
       // Drive_Enable は目標車速を 0 から始める (停止から ARM する前提)。初速のある場面では
       // 「その速度で走っていた」ことにする。そうしないと最初に目標 0 へ向けて制動してしまう
-      if (s->step == 0 && mode == 0) s->drive.target_speed_m_s = (float)cfg->initial_speed_m_s;
+      if (s->step == 0 && speed_mode) s->drive.target_speed_m_s = (float)cfg->initial_speed_m_s;
     }
-    Drive_SetTargetSpeed(&s->drive, mode == 0 ? (float)u[IN_VALUE] : 0.0f, (float)u[IN_ACCEL_LIMIT]);
+    Drive_SetTargetSpeed(&s->drive, speed_mode ? (float)u[IN_VALUE] : 0.0f, (float)u[IN_ACCEL_LIMIT]);
+#ifdef HOST_FW_HAS_LAUNCH
+    Drive_SetLaunch(&s->drive, mode == 4);
+#endif
     Drive_SetTorque(&s->drive, mode == 1, mode == 1 ? (float)u[IN_VALUE] : 0.0f);
     Drive_SetBrake(&s->drive, mode == 2, mode == 2 ? (float)u[IN_VALUE] : 0.0f);
   }
@@ -374,6 +379,9 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   o[OUT_FW_SLIP_RIGHT] = Drive_GetSlipRight(d);
   o[OUT_FLAGS] = (Drive_IsTractionControlActive(d) ? 1 : 0) | (Drive_IsAbsActive(d) ? 2 : 0) |
                  (Drive_IsTorqueVectoringActive(d) ? 4 : 0) | (Drive_IsWheelLiftGuardActive(d) ? 8 : 0);
+#ifdef HOST_FW_HAS_LAUNCH
+  if (Drive_IsLaunchActive(d)) o[OUT_FLAGS] += 16;
+#endif
   o[OUT_DISTANCE] = s->distance;
   o[OUT_TORQUE_LEFT] = s->md[0].torque_nm;
   o[OUT_TORQUE_RIGHT] = s->md[1].torque_nm;

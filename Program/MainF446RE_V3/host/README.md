@@ -23,7 +23,7 @@
 コンパイル (上位の `tools/ctrl_tune/fw.py` が自動で行う):
 
 ```sh
-cc -O2 -shared -fPIC -DHOST_FW_HAS_CONTROL_PARAMS \
+cc -O2 -shared -fPIC -DHOST_FW_HAS_CONTROL_PARAMS -DHOST_FW_HAS_LAUNCH \
    -Ihost/shim -Ilib/pid -Ilib/filter -Ilib/mymath -Isrc/control \
    host/host_sim.c src/control/drive.c src/control/torque_vectoring.c src/control/control_params.c \
    -o host_sim.dylib

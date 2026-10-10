@@ -332,6 +332,36 @@ static void UnwindIntegral(Drive* obj, float requested_nm, float applied_nm, flo
   obj->speed_pid.integral += (applied_nm - requested_nm) / obj->speed_pid.ki * (dt_s / DRIVE_ANTIWINDUP_TT_S);
 }
 
+// ローンチコントロールの状態を進め、発進中なら真を返す (条件は drive.h の同名の節)。
+// 車速指令で走っている周期 (制動・サイドブレーキ・torque_mode でない) にだけ呼ぶ
+static bool UpdateLaunch(Drive* obj, float dt_s) {
+  if (!obj->launch_requested) {
+    obj->launching = false;
+    obj->launch_spent = false;
+    return false;
+  }
+  float dir = obj->speed_setpoint_m_s >= 0.0f ? 1.0f : -1.0f;
+  // 目標へ向かう向きを正にした、目標車速と実車速
+  float setpoint_m_s = obj->speed_setpoint_m_s * dir;
+  float speed_m_s = obj->vehicle_speed_m_s * dir;
+
+  if (!obj->launching) {
+    if (obj->launch_spent || !obj->tc_enabled) return false;
+    if (speed_m_s <= -DRIVE_LAUNCH_REVERSE_SPEED_M_S) return false;
+    if (setpoint_m_s - speed_m_s < DRIVE_LAUNCH_MIN_STEP_M_S) return false;
+    obj->launching = true;
+    obj->launch_spent = true;
+    obj->launch_time_s = 0.0f;
+  }
+
+  obj->launch_time_s += dt_s;
+  if (speed_m_s >= setpoint_m_s - DRIVE_LAUNCH_END_MARGIN_M_S || !obj->tc_enabled ||
+      obj->launch_time_s >= DRIVE_LAUNCH_TIMEOUT_S) {
+    obj->launching = false;
+  }
+  return obj->launching;
+}
+
 // ---------------------------------------------------------------------------
 
 void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering, Imu* imu) {
@@ -367,6 +397,10 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->brake_torque_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
   obj->torque_mode_active = false;
   obj->manual_torque_nm = 0.0f;
+  obj->launch_requested = false;
+  obj->launching = false;
+  obj->launch_spent = false;
+  obj->launch_time_s = 0.0f;
   obj->side_brake_active = false;
   obj->side_brake_engaged = false;
   obj->side_brake_target_left_rad = 0.0f;
@@ -406,6 +440,12 @@ void Drive_Update(Drive* obj) {
     ResetAbs(obj);
   }
 
+  // ローンチコントロールは車速指令の間だけ。それ以外を通ったら、次の発進でまた使える
+  if (!obj->enabled || obj->side_brake_active || obj->brake_active || obj->torque_mode_active) {
+    obj->launching = false;
+    obj->launch_spent = false;
+  }
+
   if (!obj->enabled) {
     Coast(obj);
     return;
@@ -428,6 +468,7 @@ void Drive_Update(Drive* obj) {
   }
 
   float requested_total_nm;
+  bool launching = false;
   if (obj->torque_mode_active) {
     // 車速PIを迂回して指令トルクをそのまま使う。離脱時に積分が溜まったまま復帰しないよう
     // SendBrake と同様に毎周期リセットしておく。目標車速もブレーキ同様0へ戻す
@@ -437,14 +478,29 @@ void Drive_Update(Drive* obj) {
   } else {
     // 目標車速を accel_limit_m_s2 で speed_setpoint_m_s へ近づける (急な指令変化でタイヤを
     // 滑らせないため)。IsStandstill() はこのレート制限後の値で判定する
-    float speed_step = obj->accel_limit_m_s2 * dt_s;
-    obj->target_speed_m_s +=
-        Constrain(obj->speed_setpoint_m_s - obj->target_speed_m_s, -speed_step, speed_step);
-    if (IsStandstill(obj)) {
-      CoastStandstill(obj);
-      return;
+    launching = UpdateLaunch(obj, dt_s);
+    if (launching) {
+      // 全開を要求して TC にグリップの限界へ絞らせる。目標車速を実車速に合わせ続け、PIへ戻す
+      // ときは今の車速から残りをランプで詰める。積分は「その車速を保つトルク」から始める
+      // (0 から始めると、積分が溜まるまで車速が落ち込む)
+      float dir = obj->speed_setpoint_m_s >= 0.0f ? 1.0f : -1.0f;
+      obj->target_speed_m_s = obj->vehicle_speed_m_s;
+      PID_Reset(&obj->speed_pid);
+      if (obj->speed_pid.ki > 0.0f) {
+        obj->speed_pid.integral = dir * obj->params.launch_exit_torque_nm * 2.0f / obj->speed_pid.ki;
+      }
+      requested_total_nm = dir * DRIVE_MAX_TOTAL_TORQUE_NM;
+    } else {
+      float speed_step = obj->accel_limit_m_s2 * dt_s;
+      obj->target_speed_m_s +=
+          Constrain(obj->speed_setpoint_m_s - obj->target_speed_m_s, -speed_step, speed_step);
+      if (IsStandstill(obj)) {
+        obj->launch_spent = false;
+        CoastStandstill(obj);
+        return;
+      }
+      requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
     }
-    requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
   }
 
   // トルクベクタリングには実測ヨーレートが要る。IMU が使えないときの代用値 (舵角からの
@@ -506,8 +562,11 @@ void Drive_Update(Drive* obj) {
   left_nm = ApplyOverspeedLimit(obj, left_nm);
   right_nm = ApplyOverspeedLimit(obj, right_nm);
 
-  // torque_mode 中は PID を使っていない (毎周期リセット済み) ので巻き戻しは無意味
-  if (!obj->torque_mode_active) UnwindIntegral(obj, requested_total_nm, left_nm + right_nm, dt_s);
+  // torque_mode・ローンチコントロール中は PID を使っていない (毎周期リセット済み) ので
+  // 巻き戻しは無意味 (積分 0 から巻き戻すと、PIへ戻した瞬間に逆向きのトルクが出る)
+  if (!obj->torque_mode_active && !launching) {
+    UnwindIntegral(obj, requested_total_nm, left_nm + right_nm, dt_s);
+  }
   SendTorque(obj, left_nm, right_nm);
 }
 
@@ -530,6 +589,14 @@ void Drive_SetBrake(Drive* obj, bool on, float torque_nm) {
 void Drive_SetTorque(Drive* obj, bool on, float torque_nm) {
   obj->torque_mode_active = on;
   obj->manual_torque_nm = Constrain(torque_nm, -DRIVE_MAX_TORQUE_NM, DRIVE_MAX_TORQUE_NM);
+}
+
+void Drive_SetLaunch(Drive* obj, bool on) {
+  obj->launch_requested = on;
+}
+
+bool Drive_IsLaunchActive(const Drive* obj) {
+  return obj->enabled && obj->launching;
 }
 
 void Drive_SetSideBrake(Drive* obj, bool on) {
@@ -568,6 +635,8 @@ void Drive_Enable(Drive* obj) {
   // 無効化中に古い目標車速が残っていると再有効化した瞬間に急発進するため、0から始める
   obj->speed_setpoint_m_s = 0.0f;
   obj->target_speed_m_s = 0.0f;
+  obj->launching = false;
+  obj->launch_spent = false;
   obj->side_brake_engaged = false;
   TorqueVectoring_Reset(&obj->tv);
   Timer_Reset(&obj->timer);

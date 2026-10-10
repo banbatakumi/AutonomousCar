@@ -25,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0013u
+#define RAS_PROTOCOL_VERSION 0x0014u
 // "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
 // 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
 // Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
@@ -111,6 +111,11 @@ typedef enum {
 // COMMAND 途絶・緊急停止では horn/passing と同様に強制的に消灯する。v0.14 で新設
 #define RAS_CMD_FLAG2_WINKER_LEFT (1u << 1)
 #define RAS_CMD_FLAG2_WINKER_RIGHT (1u << 2)
+// ローンチコントロール。立っている間、車速指令の目標が実車速より大きく離れた加速 (発進) で、目標車速の
+// ランプと車速PIを迂回し、全開のトルク + TC で目標車速まで加速する (始める・終える条件は src/control/drive.h の
+// 「ローンチコントロール」の節)。brake・torque_mode・side_brake の間は意味を持たない。
+// 実際に発進中かは TELEMETRY.flags の RAS_FLAG_LAUNCH_ACTIVE。v0.20 で新設
+#define RAS_CMD_FLAG2_LAUNCH (1u << 3)
 
 // COMMAND.flags bit3-4 (前照灯モード)
 typedef enum {
@@ -160,6 +165,9 @@ typedef enum {
 // MD (3台のいずれか) が使えないため走行を止めている (Vehicle_IsMdFault)。どの MD かは
 // md_status、理由は LOG で分かる。駆動電源が切れる (ARM を外す) まで立ち続ける。v0.19 で新設
 #define RAS_FLAG_MD_FAULT (1u << 23)
+// ローンチコントロールで発進している最中 (Drive_IsLaunchActive)。上位が要求 (RAS_CMD_FLAG2_LAUNCH)
+// していても、条件を満たさず始まらなかった・もう終わった、なら立たない。v0.20 で新設
+#define RAS_FLAG_LAUNCH_ACTIVE (1u << 24)
 
 // TELEMETRY.md_status[i]
 // bit0 は MD が「受理済みの指令を実行中」(停止モードでない) で、回転中かどうかではない

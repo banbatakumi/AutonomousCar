@@ -268,6 +268,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool torque_mode = (command->flags & RAS_CMD_FLAG_TORQUE_MODE) != 0;
   bool auto_stop_enabled = (command->flags & RAS_CMD_FLAG_AUTO_STOP) != 0;
   bool side_brake_requested = (command->flags2 & RAS_CMD_FLAG2_SIDE_BRAKE) != 0;
+  bool launch_requested = (command->flags2 & RAS_CMD_FLAG2_LAUNCH) != 0;
   bool winker_left = (command->flags2 & RAS_CMD_FLAG2_WINKER_LEFT) != 0;
   bool winker_right = (command->flags2 & RAS_CMD_FLAG2_WINKER_RIGHT) != 0;
   if (winker_left && winker_right) {
@@ -332,6 +333,8 @@ static void ApplyRasCommand(Vehicle* obj) {
   Drive_SetTargetSpeed(obj->drive, target_speed_m_s, command->accel_limit_m_s2);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
+  // 制動・torque_mode・サイドブレーキとの優先順位は Drive 側が持つ (車速指令の発進でだけ働く)
+  Drive_SetLaunch(obj->drive, armed && launch_requested);
   // 後輪の位置保持に入るのは、上位のサイドブレーキ要求か、ブレーキホールド (制動して止まった)。
   // 未アーム中は無効化する (アームが外れた瞬間に位置保持へ入り込まないようにするため)。
   // 強制の制動中は上位のサイドブレーキ要求を聞かない (Drive は位置保持を制動より優先するので、
@@ -403,6 +406,7 @@ static void ApplyFailsafe(Vehicle* obj) {
   Drive_SetTargetSpeed(obj->drive, 0.0f, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Drive_SetTorque(obj->drive, false, 0.0f);
+  Drive_SetLaunch(obj->drive, false);
   // 上位の指令で入っていたサイドブレーキ (後輪の位置保持) は持ち越さない。Drive は位置保持を
   // 制動より優先するので、走行中に入ったままだと最大制動が効かなくなる。止まるまでは必ず
   // 制動トルクで減速し、止まってからだけ位置保持へ切り替える。MD の制動は回転と逆向きの

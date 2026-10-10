@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // ===========================================================================
-// 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータと、ステアのリンクの換算
+// 足回りの制御 (TC・ABS・片輪浮き対策・TV・ローンチコントロール) の調整パラメータと、ステアのリンクの換算
 //
 // 上位 (Raspberry Pi) が CONFIG_SET / CONFIG_GET (param_id は下の表の2列目) で実行時に
 // 読み書きする。Flash へは保存しないので、電源を入れ直すと下の既定値へ戻る — 上位は
@@ -47,7 +47,12 @@
   /* 路面舵角 = gain*x + cubic*x^3、x = モータ角 × STEERING_LINKAGE_RATIO [rad]。 */              \
   /* 既定は 1 と 0 (= 換算比が一定)。上位がシステム同定の結果を送る */                           \
   X(steer_link_gain, 0x0081, 1.0f, 0.5f, 1.5f)                                                  \
-  X(steer_link_cubic, 0x0082, 0.0f, -1.5f, 1.5f)
+  X(steer_link_cubic, 0x0082, 0.0f, -1.5f, 1.5f)                                                \
+  /* --- ローンチコントロール (v0.20。drive.h の同名の節) --- */                                 \
+  /* 発進を終えて車速PIへ戻すときの積分の初期値 [Nm、1輪あたり] = その車速を保つのに要る */      \
+  /* トルク (転がり抵抗ぶん)。0 だと積分が溜まるまで車速が目標より これ×2/DRIVE_SPEED_KP */     \
+  /* [m/s] 落ち込む。大きすぎれば同じだけ行き過ぎる */                                           \
+  X(launch_exit_torque_nm, 0x00A1, 0.0f, 0.0f, 0.05f)
 
 typedef struct {
 #define CONTROL_PARAM_FIELD(name, id, def, lo, hi) float name;

@@ -79,6 +79,38 @@
 // 上位が明示的にブレーキ (RAS_CMD_FLAG_BRAKE) を指定しない限り、停車中も車両を押さえ込まない
 #define DRIVE_STANDSTILL_SPEED_M_S 0.05f
 
+// ===========================================================================
+// ローンチコントロール (発進の加速。Drive_SetLaunch)
+//
+// 車速指令の加速は、目標車速のランプ (DRIVE_MAX_ACCEL_M_S2) を車速PIが追う形なので、偏差が
+// 溜まるまでトルクが出ない (グリップの限界のトルクに届くまで約0.3秒。Pi 側 tools/ctrl_tune の
+// 車両モデルで、停止からの最初の1秒に進む距離がトルク指令の全開の約3/4)。上位が要求している間、
+// 目標車速が実車速より大きく離れた加速だけ、ランプとPIを迂回して全開のトルクを要求し、TC に
+// グリップの限界へ絞らせる (= トルク指令の全開と同じ加速)。車速が目標に届いたら車速PIへ戻す。
+//
+//   始める: 要求あり・目標車速が車速より DRIVE_LAUNCH_MIN_STEP_M_S 以上速い (徐行の指令や、
+//           上位が自分で刻むランプでは始めない)・目標と逆向きに DRIVE_LAUNCH_REVERSE_SPEED_M_S
+//           以上で動いていない (動いていれば、まず車速PIで止める)。
+//           車速は問わない: 上位は停止からだけでなく、低速で経路に乗ってから要求することがある
+//   終わる: 車速が目標 (の DRIVE_LAUNCH_END_MARGIN_M_S 手前) に届いた / 要求が下りた / 制動・
+//           torque_mode・サイドブレーキ / DRIVE_LAUNCH_TIMEOUT_S 経った (壁に当たっている・
+//           前輪が読めない)
+//   1回の要求で1回だけ。要求を下ろす・制動する・止まって惰行する、のどれかでまた使える
+//   (届かずに時間切れで終わったあと、止まったまま全開を繰り返さないため)。
+//   いつ要求するか (= 全開で加速してよい場面か) は上位が決める
+//
+// 発進中は目標車速 (target_speed_m_s) を実車速に合わせ続けるので、PIへ戻すときは「今の車速から
+// 残りをランプで詰める」形になる。積分は発進中のものを持ち越さず、その車速を保つのに要るトルク
+// (launch_exit_torque_nm。上位が同定値から決めて送る) から始める。
+// 空転を抑えるのは TC だけなので、TC が無効なら始めない。
+// ===========================================================================
+#define DRIVE_LAUNCH_REVERSE_SPEED_M_S 0.3f
+#define DRIVE_LAUNCH_MIN_STEP_M_S 0.5f
+// 目標のこれだけ手前で終える。車速の読み (前輪のローパス、τ≈10ms) と MD の遅れのぶん、全開の
+// 加速度 (約2.5m/s^2) では実車速が読みより 0.05m/s ほど先にいる
+#define DRIVE_LAUNCH_END_MARGIN_M_S 0.05f
+#define DRIVE_LAUNCH_TIMEOUT_S 3.0f  // 最高速 (5m/s) まで約2秒
+
 // 上位から指令できる制動トルクの上限 [Nm]。MD側のトルク上限 (DRIVE_MAX_TORQUE_NM) を
 // 超える値を送っても MD 側で頭打ちになるだけなので、指令の時点で同じ値に揃えておく
 #define DRIVE_MAX_BRAKE_TORQUE_NM DRIVE_MAX_TORQUE_NM
@@ -200,6 +232,10 @@ typedef struct {
   // (TC/TV は掛けたまま。brake_active の方が優先される)
   bool torque_mode_active;
   float manual_torque_nm;   // torque_mode 中に指令された1輪あたりの駆動トルク [Nm] (負=後退方向)
+  bool launch_requested;    // 上位からの要求 (毎周期 Drive_SetLaunch で更新)
+  bool launching;           // ローンチコントロールで発進している最中
+  bool launch_spent;        // この要求ではもう使った (条件は「ローンチコントロール」の節)
+  float launch_time_s;      // 発進を始めてからの時間
   bool side_brake_active;   // 上位からの要求 (毎周期 Drive_SetSideBrake で更新)
   bool side_brake_engaged;  // 実際に位置保持へ入っているか (角度をラッチ済みか)
   float side_brake_target_left_rad;
@@ -290,6 +326,18 @@ void Drive_SetBrake(Drive* obj, bool on, float torque_nm);
  * クランプされる (上位のクランプに頼らない)。
  */
 void Drive_SetTorque(Drive* obj, bool on, float torque_nm);
+
+/**
+ * @brief ローンチコントロールを要求する/下ろす。on の間、車速指令の目標が実車速より大きく離れた
+ * 加速 (発進) で、目標車速のランプと車速PIを迂回し、全開のトルク + TC で目標車速まで加速する
+ * (条件は drive.h の「ローンチコントロール」の節)。torque_mode・制動中は何もしない。
+ */
+void Drive_SetLaunch(Drive* obj, bool on);
+
+/**
+ * @brief ローンチコントロールで発進している最中か。
+ */
+bool Drive_IsLaunchActive(const Drive* obj);
 
 /**
  * @brief サイドブレーキ (位置制御によるパーキングロック) を掛ける/離す。on の間は
