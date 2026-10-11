@@ -167,6 +167,23 @@ static void CoastStandstill(Drive* obj) {
   Coast(obj);
 }
 
+// 車速PIの加速度フィードフォワード (drive.h の同名の節)。この周期に目標車速を step_m_s 動かした。
+// 戻り値は PI の出力に足すトルク [Nm、後輪2輪の合計]
+static float SpeedFeedforward(Drive* obj, float step_m_s, float dt_s) {
+  if (dt_s > 0.0f) {
+    obj->speed_ff_accel_m_s2 +=
+        (step_m_s / dt_s - obj->speed_ff_accel_m_s2) * (dt_s / (DRIVE_SPEED_FF_TAU_S + dt_s));
+  }
+  float nm = obj->params.speed_ff_nm_per_m_s2 * obj->speed_ff_accel_m_s2;
+  // 転がり抵抗ぶんは目標車速の向きへ。目標がほぼ 0 の間は向きが定まらないので足さない
+  if (obj->target_speed_m_s >= DRIVE_STANDSTILL_SPEED_M_S) {
+    nm += obj->params.speed_ff_rr_nm;
+  } else if (obj->target_speed_m_s <= -DRIVE_STANDSTILL_SPEED_M_S) {
+    nm -= obj->params.speed_ff_rr_nm;
+  }
+  return nm;
+}
+
 static void SendTorque(Drive* obj, float left_nm, float right_nm) {
   obj->torque_left_nm = left_nm;
   obj->torque_right_nm = right_nm;
@@ -393,6 +410,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->speed_setpoint_m_s = 0.0f;
   obj->accel_limit_m_s2 = DRIVE_MAX_ACCEL_M_S2;
   obj->target_speed_m_s = 0.0f;
+  obj->speed_ff_accel_m_s2 = 0.0f;
   obj->brake_active = false;
   obj->brake_torque_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
   obj->torque_mode_active = false;
@@ -444,6 +462,7 @@ void Drive_Update(Drive* obj) {
   if (!obj->enabled || obj->side_brake_active || obj->brake_active || obj->torque_mode_active) {
     obj->launching = false;
     obj->launch_spent = false;
+    obj->speed_ff_accel_m_s2 = 0.0f;  // 車速PIを通らない間は、目標車速の傾きの記憶を持ち越さない
   }
 
   if (!obj->enabled) {
@@ -489,17 +508,22 @@ void Drive_Update(Drive* obj) {
       if (obj->speed_pid.ki > 0.0f) {
         obj->speed_pid.integral = dir * obj->params.launch_exit_torque_nm * 2.0f / obj->speed_pid.ki;
       }
+      obj->speed_ff_accel_m_s2 = 0.0f;
       requested_total_nm = dir * DRIVE_MAX_TOTAL_TORQUE_NM;
     } else {
       float speed_step = obj->accel_limit_m_s2 * dt_s;
-      obj->target_speed_m_s +=
-          Constrain(obj->speed_setpoint_m_s - obj->target_speed_m_s, -speed_step, speed_step);
+      float step_m_s = Constrain(obj->speed_setpoint_m_s - obj->target_speed_m_s, -speed_step, speed_step);
+      obj->target_speed_m_s += step_m_s;
       if (IsStandstill(obj)) {
         obj->launch_spent = false;
+        obj->speed_ff_accel_m_s2 = 0.0f;
         CoastStandstill(obj);
         return;
       }
-      requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s);
+      requested_total_nm = PID_Update(&obj->speed_pid, obj->target_speed_m_s, obj->vehicle_speed_m_s) +
+                           SpeedFeedforward(obj, step_m_s, dt_s);
+      requested_total_nm =
+          Constrain(requested_total_nm, -DRIVE_MAX_TOTAL_TORQUE_NM, DRIVE_MAX_TOTAL_TORQUE_NM);
     }
   }
 
@@ -635,6 +659,7 @@ void Drive_Enable(Drive* obj) {
   // 無効化中に古い目標車速が残っていると再有効化した瞬間に急発進するため、0から始める
   obj->speed_setpoint_m_s = 0.0f;
   obj->target_speed_m_s = 0.0f;
+  obj->speed_ff_accel_m_s2 = 0.0f;
   obj->launching = false;
   obj->launch_spent = false;
   obj->side_brake_engaged = false;

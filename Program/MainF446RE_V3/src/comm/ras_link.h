@@ -25,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0014u
+#define RAS_PROTOCOL_VERSION 0x0015u
 // "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
 // 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
 // Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)

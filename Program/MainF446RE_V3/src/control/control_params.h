@@ -52,7 +52,13 @@
   /* 発進を終えて車速PIへ戻すときの積分の初期値 [Nm、1輪あたり] = その車速を保つのに要る */      \
   /* トルク (転がり抵抗ぶん)。0 だと積分が溜まるまで車速が目標より これ×2/DRIVE_SPEED_KP */     \
   /* [m/s] 落ち込む。大きすぎれば同じだけ行き過ぎる */                                           \
-  X(launch_exit_torque_nm, 0x00A1, 0.0f, 0.0f, 0.05f)
+  X(launch_exit_torque_nm, 0x00A1, 0.0f, 0.0f, 0.05f)                                           \
+  /* --- 車速PIの加速度フィードフォワード (v0.21。drive.h の同名の節。後輪2輪の合計トルク) --- */  \
+  /* 車速PIの出力に「これ × 目標車速の傾き [m/s^2]」を足す [Nm/(m/s^2)] = 1 / 車体の利得。 */    \
+  /* 0 で無し (既定)。上位がシステム同定の結果 (speed_plant_gain) から決めて送る */               \
+  X(speed_ff_nm_per_m_s2, 0x00B1, 0.0f, 0.0f, 0.2f)                                             \
+  /* 同じく「これ × 進む向き」を足す [Nm] = 転がり抵抗ぶんのトルク (その車速を保つのに要る) */   \
+  X(speed_ff_rr_nm, 0x00B2, 0.0f, 0.0f, 0.05f)
 
 typedef struct {
 #define CONTROL_PARAM_FIELD(name, id, def, lo, hi) float name;

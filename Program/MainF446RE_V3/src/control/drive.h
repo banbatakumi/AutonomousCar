@@ -3,10 +3,10 @@
 
 #include <stdbool.h>
 
+#include "control_params.h"
 #include "encoder.h"
 #include "imu.h"
 #include "lpf.h"
-#include "control_params.h"
 #include "motors.h"
 #include "pid.h"
 #include "steering.h"
@@ -60,15 +60,23 @@
 // ===========================================================================
 // 制御パラメータ
 // ===========================================================================
-#define DRIVE_SPEED_KP 0.25f  // 車速PIの比例ゲイン [Nm / (m/s)]
-#define DRIVE_SPEED_KI 0.5f   // 車速PIの積分ゲイン [Nm / (m/s) / s]
-#define DRIVE_SPEED_KD 0.0f   // 車速は微分ノイズが乗りやすいため既定では使わない
+#define DRIVE_SPEED_KP 0.3f  // 車速PIの比例ゲイン [Nm / (m/s)]
+#define DRIVE_SPEED_KI 0.6f  // 車速PIの積分ゲイン [Nm / (m/s) / s]
+#define DRIVE_SPEED_KD 0.0f  // 車速は微分ノイズが乗りやすいため既定では使わない
 
 // 1輪あたりのトルク上限 [Nm] (プロトコル上の絶対上限は ±3.2767)。
 // この値は指令のクランプに使うと同時に MD 側のトルク上限としても設定するため、
 // このマイコンのバグや通信異常で過大な指令が出ても最終段で頭打ちになる。
-// 上位が指令できる制動トルク (DRIVE_MAX_BRAKE_TORQUE_NM) もこの上限を超えないこと
-#define DRIVE_MAX_TORQUE_NM 0.15f
+// 上位が指令できる制動トルク (DRIVE_MAX_BRAKE_TORQUE_NM) もこの上限を超えないこと。
+//
+// ★MD 側の絶対上限 (Kt × 最大電流 10A。Kt は MD ごとの校正値) を超えないこと。MD は受け取った
+// 上限を自分の絶対上限で頭打ちにして返し、こちらは指令と完全に一致するまで MD を「使える」と
+// みなさない (Motors_NotReadyReason)。2026-10-10 まで 0.15 だったが、後輪 MD の絶対上限は
+// 約0.148・0.144Nm (走行記録のトルク指令÷電流から。Kt 0.0148・0.0144Nm/A) で届かず、MD の健全性
+// 監視 (v0.19) を入れた途端に ARM の5秒後に md_fault でラッチして走れなくなった。
+// タイヤのグリップの限界は約0.09Nm なので、0.13 でも走りには出ない。MD を校正し直して Kt が
+// 0.013Nm/A を下回ると同じ症状になる (LOG に "torque limit not applied" と出る)
+#define DRIVE_MAX_TORQUE_NM 0.13f
 #define DRIVE_MAX_SPEED_M_S 5.0f  // これを超えたら正トルクを出さない (暴走時の最終防壁)
 // 目標車速の変化をこの加速度でレート制限する (急な指令変化でタイヤを滑らせないため)。
 // 上位 (Drive_SetTargetSpeed) が指定できる加速度制限の上限もこの値になる
@@ -78,6 +86,25 @@
 // 停車: 目標車速がほぼ0かつ実車速もほぼ0のとき、指令を止めて自由回転させる (惰行)。
 // 上位が明示的にブレーキ (RAS_CMD_FLAG_BRAKE) を指定しない限り、停車中も車両を押さえ込まない
 #define DRIVE_STANDSTILL_SPEED_M_S 0.05f
+
+// ===========================================================================
+// 車速PIの加速度フィードフォワード (v0.21。params.speed_ff_nm_per_m_s2・speed_ff_rr_nm)
+//
+// 車速PIだけだと、加速度 a を出すトルクは偏差が a / (車体の利得 × Kp) だけ溜まるまで出ない
+// (約0.15秒ぶんの遅れ。上位の経路追従では、コーナーの手前の減速が遅れて速すぎる速度で入った)。
+// 目標車速はこのモジュールが accel_limit の傾きで動かしているので、その傾きは分かっている。
+// 「その加速に要るトルク」= 傾き × speed_ff_nm_per_m_s2 と、転がり抵抗ぶん speed_ff_rr_nm
+// (進む向き) を PI の出力に先に足す。PI は残ったずれ (モデルの誤差・勾配・TC の介入) だけを直す。
+//
+//   - 傾きは「この周期に目標車速を動かした量 ÷ dt」。上位は 50Hz で目標を刻むので、目標に届いた
+//     周期は 0、届く前は accel_limit、と周期ごとに跳ぶ。DRIVE_SPEED_FF_TAU_S の 1 次ローパスで
+//     ならす (上位はこの時定数ぶん先の速度を送る。Pi 側 raspi/nav/speedctl.py の FW_FF_TAU_S と
+//     sim/vehicle.py の SpeedController.FF_TAU_S も同じ値にすること)
+//   - 足した後の合計を ±最大トルクに収める。TC・リミッタで削られた分の積分の巻き戻し
+//     (UnwindIntegral) は、足した後の要求と実際に出したトルクの差で行う (従来と同じ)
+//   - 制動・トルク指令・ローンチコントロール・停車の惰行の間は足さない (傾きの記憶も 0 に戻す)
+//   - 2 つの値とも 0 (既定) なら何も足さない = v0.20 までと同じ動き
+#define DRIVE_SPEED_FF_TAU_S 0.02f
 
 // ===========================================================================
 // ローンチコントロール (発進の加速。Drive_SetLaunch)
@@ -226,6 +253,8 @@ typedef struct {
   // レート制限後、実際にPIへ渡している目標車速。Drive_Update が毎周期 speed_setpoint_m_s
   // へ accel_limit_m_s2 で近づける
   float target_speed_m_s;
+  // 目標車速の傾き [m/s^2] (ローパス後)。加速度フィードフォワードに使う
+  float speed_ff_accel_m_s2;
   bool brake_active;      // 真の間は車速制御を止めて制動トルクだけを出す
   float brake_torque_nm;  // 制動時に後輪各輪へ掛ける制動トルク [Nm] (常に正)
   // 真の間は車速PIを迂回し、manual_torque_nm を左右等配分の総駆動トルクとして直接使う
@@ -260,17 +289,17 @@ typedef struct {
   // トルクの向きを基準にしたスリップ速度 (drive.c の SlipSpeedAlongTorque) を見る
   float slip_left;
   float slip_right;
-  float slip_ref_left_m_s;   // 左後輪が滑っていなければ出るはずの周速 (スリップの基準)
+  float slip_ref_left_m_s;  // 左後輪が滑っていなければ出るはずの周速 (スリップの基準)
   float slip_ref_right_m_s;
   SlipLimiter tc_left;
   SlipLimiter tc_right;
-  float tc_limit_left_nm;   // 左輪のトルク上限 (働いていなければ DRIVE_MAX_TORQUE_NM)
+  float tc_limit_left_nm;  // 左輪のトルク上限 (働いていなければ DRIVE_MAX_TORQUE_NM)
   float tc_limit_right_nm;
   bool tc_limiting;          // 前周期、いずれかの輪で上限が実際にトルクを削った
   bool wheel_lift_limiting;  // 同 片輪浮き対策の偏差の方が効いていた (または絶対上限で切った)
   SlipLimiter abs;
-  float abs_limit_nm;       // 制動トルクの上限 (左右共通。働いていなければ DRIVE_MAX_BRAKE_TORQUE_NM)
-  float abs_floor_time_s;   // 上限が DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いている継続時間
+  float abs_limit_nm;         // 制動トルクの上限 (左右共通。働いていなければ DRIVE_MAX_BRAKE_TORQUE_NM)
+  float abs_floor_time_s;     // 上限が DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いている継続時間
   bool abs_fallback_latched;  // 真の間はABSを止めて要求どおりに制動する (ブレーキ解除で戻る)
   // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
   // Drive_SetBrake) のときは制動トルクを負値として入れるので、符号を見れば駆動しているのか
