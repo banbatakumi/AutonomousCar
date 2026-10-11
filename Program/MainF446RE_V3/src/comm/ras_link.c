@@ -16,7 +16,6 @@
 // PONG ペイロード内の t_pong_tx_us の位置 → フレーム先頭からは +5 (ヘッダ長)
 #define RAS_PONG_TX_TIME_OFFSET 8
 
-// 各パケットのペイロード長
 #define RAS_LEN_TELEMETRY 84
 #define RAS_LEN_PONG 12
 #define RAS_LEN_VERSION 10
@@ -294,14 +293,14 @@ static void SendVersion(RasLink* obj) {
   SendFrame(obj, RAS_TXQ_INFO, RAS_TYPE_VERSION, p, RAS_LEN_VERSION, 0);
 }
 
-// 車両の固定上限値を通知する。CONFIG_SET で変更する仕組み (旧 RAS_PARAM_MAX_SPEED 等、
-// v0.10 で廃止) の代わりに、STM側が持つ定数を Pi へ読み取り専用で伝えるためのパケット。
+// 車両の固定上限値を通知する。CONFIG_SET で変更する仕組みの代わりに、STM側が持つ定数を Pi へ読み取り専用で伝えるためのパケット。
 // 量子化はせず f32 のまま送る (VERSION と同様に頻度が低いため帯域を気にしなくてよい)
 static void SendLimits(RasLink* obj) {
   uint8_t p[RAS_LEN_LIMITS];
   uint16_t pos = 0;
   float max_speed_m_s = DRIVE_MAX_SPEED_M_S;
-  float max_accel_m_s2 = DRIVE_MAX_ACCEL_M_S2;
+  // accel_limit に上限は掛けない。COMMAND.accel_limit (u16 × 0.001) で表せる最大を返す
+  float max_accel_m_s2 = RAS_ACCEL_LIMIT_WIRE_MAX_M_S2;
   // 駆動トルクと制動トルクは同じ上限を共有する (DRIVE_MAX_BRAKE_TORQUE_NM は
   // DRIVE_MAX_TORQUE_NM のエイリアス) ため、1つの値で両方をカバーする
   float max_torque_nm = DRIVE_MAX_TORQUE_NM;
@@ -606,9 +605,9 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
           obj->rx_len_error++;
         }
         // その場で同期ワードの探し直しに戻る。上位から来るのは既知の TYPE・固定長だけなので、
-        // ここに来るのは TYPE/LEN が化けたとき。以前は化けた LEN ぶん (最大 255+CRC2 バイト) を
-        // 読み飛ばしており、Pi→STM は約 2.3〜3.4kB/s なので 75〜110ms 分の COMMAND を失って
-        // COMMAND 途絶 (100ms) の自動ブレーキに入りえた (2026-09-27)
+        // ここに来るのは TYPE/LEN が化けたとき。化けた LEN ぶん (最大 255+CRC2 バイト) を
+        // 読み飛ばすと 75〜110ms 分の COMMAND を失い、COMMAND 途絶 (100ms) の自動ブレーキに
+        // 入りえるので、1バイトだけ進めて SYNC を探し直す
         obj->rx_state = RX_SYNC1;
         break;
       }
@@ -725,8 +724,8 @@ void RasLink_Update(RasLink* obj) {
     obj->version_burst_left--;
   }
   // テレメトリは Telemetry_Update が新しいスナップショットを作ったときに1回だけ送る (周期は
-  // Telemetry_Update 側の 100Hz)。以前は独立した 50Hz タイマーで送っており、スナップショットとの
-  // 位相差 (0〜20ms) だけ古い中身を送り、位相がずれると同じ中身を2回送る・1回飛ばすこともあった
+  // Telemetry_Update 側の 100Hz)。別タイマーで送ると位相差ぶん古い中身を送り、同じ中身の重複や
+  // 欠落も起きる
   if (obj->telemetry_ready) {
     obj->telemetry_ready = false;
     SendTelemetry(obj);

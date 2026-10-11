@@ -119,9 +119,8 @@ void Telemetry_Update(Telemetry* obj) {
   telemetry.steer_actual_rad = Steering_GetRoadWheelAngleRad(obj->steering);
   telemetry.steer_cmd_rad = Vehicle_GetAppliedSteerRad(obj->vehicle);
 
-  // 4輪ともフィルタ後の値で揃える。以前は前輪だけ生の角速度を渡しており、静止中でも
-  // ±12m/s 振れて上位が使えなかった (12bit ADC の 1LSB を 500us で微分すると 0.09m/s に
-  // 化けるため。生値をそのまま出すと配列の中で前輪だけ意味が違うことになる)
+  // 4輪ともフィルタ後の値で揃える。前輪の生の角速度は静止中でも ±12m/s 振れて上位が使えず
+  // (12bit ADC の 1LSB を 500us で微分すると 0.09m/s に化ける)、配列の中で前輪だけ意味が違ってしまう
   telemetry.wheel_speed_m_s[0] = obj->drive->front_speed_left_m_s;
   telemetry.wheel_speed_m_s[1] = obj->drive->front_speed_right_m_s;
   telemetry.wheel_speed_m_s[2] = obj->drive->rear_speed_left_m_s;

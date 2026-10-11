@@ -36,8 +36,7 @@
 // LSI のばらつき (17〜47kHz) で実際は 340ms〜940ms に振れる
 #define WATCHDOG_TIMEOUT_MS 500
 
-// Raspberry Pi (上位) との通信。USART1、1000000bps (2026-09-26 に 250000bps から変更。
-// APB2 45MHz (HCLK 180MHz の 1/4) で USARTDIV = 45M/(16×1M) = 2.8125 = 2+13/16 となり誤差 0%)。
+// Raspberry Pi (上位) との通信。USART1、1000000bps (APB2 45MHz (HCLK 180MHz の 1/4) で USARTDIV = 45M/(16×1M) = 2.8125 = 2+13/16 となり誤差 0%)。
 // 受信リングバッファは制御ループが一度でも詰まると取りこぼすため大きめに取る。
 // Serial_Available() はバッファが線速で満杯になる時間 (サイズ×10bit÷ボーレート) より長く
 // ポーリングが空くと上書きとみなして読み捨てるので、ボーレートを4倍にした分サイズも4倍にし、
@@ -49,16 +48,13 @@
 #define LIDAR_SERIAL_RX_BUF_SIZE 256
 
 // ステアリング/左後輪/右後輪 各MDとのシリアル受信バッファサイズ [B]。
-// MD とは USART2/USART3/UART4 とも 1000000bps (2026-09-27 に 250000bps から変更。APB1 45MHz で
+// MD とは USART2/USART3/UART4 とも 1000000bps (APB1 45MHz で
 // USARTDIV = 45M/(16×1M) = 2.8125 = 2+13/16 となり誤差 0%。MD側は PCLK1 36MHz ÷ 1M = 36 で誤差 0%)。
 // MDは 500us ごとに11バイトの状態フレームを返すので1周期あたり約11バイト。Serial_Available() は
 // バッファが線速で満杯になる時間より長くポーリングが空くと読み捨てるため、1Mbps では
 // 64バイトだと 640us しか猶予が無く制御周期の揺らぎで誤判定しうる。256バイト (2.56ms) 取る
 #define MD_SERIAL_RX_BUF_SIZE 256
 
-// ---------------------------------------------------------------------------
-// モジュールのインスタンス
-// ---------------------------------------------------------------------------
 static uint16_t adc1_buffer[POWER_ADC1_NUM_CH * POWER_ADC1_NUM_SAMPLES];
 static uint16_t adc2_buffer[ENCODER_ADC2_NUM_CH * ENCODER_ADC2_NUM_SAMPLES];
 static AdcDma adc1;
@@ -220,7 +216,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   } else if (GPIO_Pin == ECHO_REAR_Pin) {
     RangeSensor_OnRearEchoEdge(&range_sensor);
   } else if (GPIO_Pin == INT_Pin) {
-    // MPU6050 の新しいサンプルが揃った → 非同期I2C読み出しを開始する
     Imu_OnDataReady(&imu);
   }
 }
@@ -241,13 +236,9 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
 static void UpdateSensors() {
   Encoder_Update(&encoder);
   Imu_Update(&imu);
-  // DISARM中は自動停止判定 (vehicle.c) が超音波値を参照しないため、トリガ送出自体を
-  // 止めて消費電力を抑える。自動停止が超音波を見るのは上位指令を ARM として適用している
-  // 周期だけなので、それと同じ Vehicle_IsArmed で判定する。以前の Drive_IsEnabled は
-  // MainApp() 冒頭の Drive_Enable で真から始まり、ApplyFailsafe() が Drive_Disable を
-  // 呼ばないため、Pi 未接続・起動中・通信途絶・緊急停止の間はトリガが出続けていた
-  // (2026-10-04 修正)。直前周期の Vehicle_Update が決めた値なので 1周期 (500us) 遅れるが、
-  // 判定を止めるだけなので許容する
+  // 自動停止が超音波を見るのは上位指令を ARM として適用している周期だけなので、それと同じ
+  // Vehicle_IsArmed でトリガ送出を止めて省電力にする (Drive_IsEnabled は常に真から始まるので
+  // 使えない)。直前周期の Vehicle_Update が決めた値なので 1周期 (500us) 遅れるが許容する
   if (Vehicle_IsArmed(&vehicle)) {
     RangeSensor_Update(&range_sensor);
   } else {
@@ -257,7 +248,7 @@ static void UpdateSensors() {
   Lidar_Update(&lidar);
 
   // IMU の I2C 復旧 (imu.c の StepRecovery) は制御周期ごとに1段階ずつ進むので、通常は
-  // メインループを止めない (2026-10 まではブロッキングで約190ms止めていた)。ただし I2C バスが
+  // メインループを止めない。ただし I2C バスが
   // 電気的に張り付いていると HAL が1往復あたり 25ms 待つ。その間ハートビートのポーリングも
   // 止まり、直後にエッジを偶然取りこぼすと誤って緊急停止がラッチされうるので、長く止まった
   // ときだけ基準時刻をリセットする (実際の断線・Pi側の異常を見逃す窓ができるわけではない。
@@ -292,8 +283,7 @@ void MainApp() {
     Drive_Update(&drive);
     Motors_Transmit(&motors, Power_IsDriveOn(&power));
 
-    // Telemetry_Update 自体が内部で 100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるため、
-    // 毎周期呼んでも問題ない。実際の送信は RasLink 側でさらにキューイングされる
+    // Telemetry_Update 自体が内部で 100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれる
     Telemetry_Update(&telemetry);
     Telemetry_PublishLidarSector(&telemetry);
     RasLink_Update(&ras_link);

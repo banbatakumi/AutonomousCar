@@ -24,8 +24,8 @@ static inline void AdcDma_Init(AdcDma *obj, ADC_HandleTypeDef *hadc, uint16_t *b
   obj->num_samples = num_samples;
   HAL_ADC_Start_DMA(hadc, (uint32_t *)buffer, num_ranks * num_samples);
   // 値は呼び出し側がポーリングで読む (上の GetAverageRaw 等) ので、DMA の半分/満了の
-  // 割り込みは要らない。HAL のコールバックも空のまま、ADC1/ADC2 合わせて約9k回/s
-  // 割り込みだけが起きていた (2026-10-04、省電力)。転送エラー (TE/DME) の割り込みは残す
+  // 割り込みは要らない。HAL のコールバックも空のままで、残すと ADC1/ADC2 合わせて約9k回/s
+  // 割り込みだけが起きるため (省電力)。転送エラー (TE/DME) の割り込みは残す
   __HAL_DMA_DISABLE_IT(hadc->DMA_Handle, DMA_IT_HT | DMA_IT_TC);
 }
 

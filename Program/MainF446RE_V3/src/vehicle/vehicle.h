@@ -29,7 +29,7 @@
 //   2. COMMAND が生きている        → 上位の指令
 //   3. それ以外 (未接続・途絶)     → フェイルセーフ
 //
-// 「止める」の約束 (2026-10。上位・MD と意味を揃えた):
+// 「止める」の約束 (上位・MD と意味を揃えてある):
 //   - 走行中に上位の ARM が外れても、すぐには駆動電源を切らない。電源を切ると MD ごと落ちて
 //     制動できず惰行するので、停車するまで最大制動を続けてから切る (VEHICLE_DISARM_BRAKE_*)
 //   - ARM されても、3台の MD が使える状態になるまでは走らせない (VEHICLE_MD_BOOT_TIMEOUT_S)。
@@ -46,8 +46,7 @@
 // 駆動電源を入れてから、3台の MD が使える状態 (Motors_IsReady) になるのを待つ時間の上限 [s]。
 // MD の起動は約1秒 (電流ゼロ点の校正を含む。惰行中の再 ARM ではやり直しで最大約4秒)
 #define VEHICLE_MD_BOOT_TIMEOUT_S 5.0f
-// COMMAND.steer_rate_limit が 0 (指定なし) のときの舵角速度の上限 [rad/s]。
-// 以前は「最大舵角 [rad] の数値」をそのまま流用していた (ほぼ同じ値だが単位の違う量)
+// COMMAND.steer_rate_limit が 0 (指定なし) のときの舵角速度の上限 [rad/s]
 #define VEHICLE_DEFAULT_STEER_RATE_RAD_S 0.5f
 
 // クラクションの音程 [Hz]。押している間だけ鳴らすため、単発ビープではなく連続トーンで出す
@@ -72,11 +71,12 @@
 #define VEHICLE_BRAKE_HOLD_SPEED_M_S 0.2f
 #define VEHICLE_BRAKE_HOLD_DELAY_S 0.3f
 // 自動停止 (RAS_CMD_FLAG_AUTO_STOP) の動的停止距離
-// d_stop = v・VEHICLE_AUTO_STOP_DELAY_S + v²/(2・DRIVE_MAX_ACCEL_M_S2) + マージン
+// d_stop = v・VEHICLE_AUTO_STOP_DELAY_S + v²/(2・VEHICLE_AUTO_STOP_DECEL_M_S2) + マージン
 // のうち、通信・処理・制動応答の遅延見積り [s] (未実測プレースホルダー。実測後に更新すること)
 #define VEHICLE_AUTO_STOP_DELAY_S 0.1f
-// 上式の a_max には車体質量・実測減速度が無いため、既存の駆動加速上限 (DRIVE_MAX_ACCEL_M_S2,
-// src/control/drive.h) を制動側の近似としてそのまま流用する。
+// 上式の減速度 [m/s^2]。★実測の制動は ABS 込みで約2.5m/s² (上位側の同定、フローリング) なので
+// 少し楽観的。測り直したら更新すること
+#define VEHICLE_AUTO_STOP_DECEL_M_S2 3.0f
 // 安全マージンは上位が RasConfig.auto_stop_margin_cm (CONFIG_SET param_id = 0x0060) で
 // cm単位の連続値として直接指定する (段階的なレベルではない。既定値・範囲は ras_link.h の
 // RAS_AUTO_STOP_MARGIN_* 参照)
@@ -93,7 +93,7 @@
 #define VEHICLE_AUTO_STOP_ULTRASONIC_NEAR_CM 5.0f
 
 // 各センサの車体先端(バンパー)からの後退量 [cm]。上位 (Raspberry Pi) 側の
-// raspi/config/vehicle.toml (base_link = 後輪車軸中心、実測確定 2026-08-20) の
+// raspi/config/vehicle.toml (base_link = 後輪車軸中心、実測確定) の
 // footprint (前端 x=+30cm、後端 x=-7cm) とセンサ取付座標から算出した固定値。
 // センサはいずれも車体先端より内側に付いているため、実測距離はそのままだと
 // 「車体先端から障害物まで」より長く出る。しきい値側にこの分を足して補正する
@@ -117,7 +117,7 @@
 // 減速度によるブレーキ灯の点灯 (制動モードでなくても、実際に減速していれば点ける)。
 // 車速の窓差分 (VEHICLE_ESS_DECEL_WINDOW_S) は実機で σ≈2.3m/s² も揺れる (前輪エンコーダの
 // 回転に同期したうねり) ので、1次遅れでならしてからしきい値に掛ける。値は実機の周回の記録
-// (2026-10-06、最高 2.8m/s・262s) を当てて決めた: これより短い時定数は減速の途中で
+// (最高 2.8m/s・262s) を当てて決めた: これより短い時定数は減速の途中で
 // 消えてまた点き、長いと点くのが遅れて加速に移ってからも残る
 #define VEHICLE_BRAKE_LIGHT_DECEL_TAU_S 0.1f
 #define VEHICLE_BRAKE_LIGHT_ON_DECEL_M_S2 1.5f   // 点ける減速度 (下げると減速していないのに点く回数が増える)

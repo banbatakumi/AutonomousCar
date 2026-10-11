@@ -9,9 +9,8 @@
 #include "timer.h"
 
 // ===========================================================================
-// Raspberry Pi (上位) との UART 通信。プロトコル仕様は
-// docs/pi_uart_protocol_v0.4_request.md と、変更点だけを書いた
-// docs/pi_uart_protocol_v0.5_delta.md 〜 docs/pi_uart_protocol_v0.15_delta.md に対応する。
+// Raspberry Pi (上位) との UART 通信。レイアウトは ras_link.c、近年の変更点は
+// docs/pi_uart_protocol_v0.19_delta.md 〜 v0.22_delta.md (旧版は docs/archive/)。
 //
 // 物理層: USART1, 1000000bps 8N1 (分周誤差0%。2026-09-26 に 250000bps から変更)。
 //
@@ -25,7 +24,10 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0015u
+#define RAS_PROTOCOL_VERSION 0x0016u
+// COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
+// (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
+#define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
 // "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
 // 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
 // Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
@@ -62,13 +64,13 @@ typedef enum {
   RAS_TYPE_VERSION = 0x07,
   RAS_TYPE_STATS = 0x08,
   RAS_TYPE_LIDAR_SECTOR_C = 0x09,
-  RAS_TYPE_LIMITS = 0x0A,  // 車両の固定上限値 (v0.11 で新設)
+  RAS_TYPE_LIMITS = 0x0A,  // 車両の固定上限値
   RAS_TYPE_COMMAND = 0x10,
   RAS_TYPE_CONFIG_SET = 0x11,
   RAS_TYPE_PING = 0x12,
   RAS_TYPE_CONFIG_GET = 0x13,
   RAS_TYPE_VERSION_REQ = 0x14,
-  RAS_TYPE_LIMITS_REQ = 0x15,  // v0.11 で新設
+  RAS_TYPE_LIMITS_REQ = 0x15,  //
 } RasPacketType;
 
 // COMMAND.mode / TELEMETRY.flags bit0-1
@@ -76,30 +78,29 @@ typedef enum {
   RAS_MODE_DISARM = 0,
   RAS_MODE_MANUAL = 1,
   RAS_MODE_AUTO = 2,
-  RAS_MODE_RESERVED = 3,  // 旧 CALIB。v0.4 で廃止したため受信しても現在のモードを維持する
+  RAS_MODE_RESERVED = 3,  // 旧 CALIB (廃止)。受信しても現在のモードを維持する
 } RasMode;
 
 // COMMAND.flags
 #define RAS_CMD_FLAG_ARM (1u << 0)
 #define RAS_CMD_FLAG_BRAKE (1u << 1)
 #define RAS_CMD_FLAG_HORN (1u << 2)
-// bit3-4 は前照灯モード (RasLightMode)。v0.4 の1ビット (RAS_CMD_FLAG_LIGHT) では
-// 「前後とも消灯」を表現できなかったため 2ビットへ拡張した
+// bit3-4 は前照灯モード (RasLightMode)。1ビットでは「前後とも消灯」を表現できないため 2ビット
 #define RAS_CMD_LIGHT_MODE_SHIFT 3
 #define RAS_CMD_LIGHT_MODE_MASK (0x03u << RAS_CMD_LIGHT_MODE_SHIFT)
 #define RAS_CMD_FLAG_PASSING (1u << 5)
 // 立っている間は車速PIを迂回し、target_torque を後輪へ直接指令する。brake と同時に
-// 立っていたら brake を優先する (Drive_Update 側の優先順位で解決する)。v0.6 で新設
+// 立っていたら brake を優先する (Drive_Update 側の優先順位で解決する)
 #define RAS_CMD_FLAG_TORQUE_MODE (1u << 6)
 // 立っている間、進行方向の障害物までの距離が車速から計算した動的停止距離
 // (d_stop = v・t_delay + v²/2a_max + マージン。マージンは RAS_PARAM_AUTO_STOP_MARGIN_CM で
 // cm単位で直接指定) を下回ったら最大制動トルクで自動停止する (src/vehicle/vehicle.c)。判定は前後LiDARの
 // セーフティゾーン(角度×距離のROI内点数)を主に用い、超音波は LiDAR が死角・欠測のときの
 // フォールバックと至近距離の独立トリガーの2役を担う。下りている間は従来通り上位の指令のみに
-// 従う。v0.7 で新設、v0.12 で動的停止距離・LiDAR併用へ拡張
+// 従う
 #define RAS_CMD_FLAG_AUTO_STOP (1u << 7)
 
-// COMMAND.flags2 (v0.13 で新設。flags が8bit使い切ったための拡張バイト)
+// COMMAND.flags2 (flags が8bit使い切ったための拡張バイト)
 // 立っている間、指令を受けた瞬間の後輪モータ機械角度を目標値としてラッチし、位置制御へ
 // 切り替えて機械的に切り替える (パーキングロック)。速度に関わらず即座に切り替わり、
 // brake (bit1) より優先する (Drive_Update 側の優先順位で解決する)。
@@ -108,13 +109,13 @@ typedef enum {
 // 両方同時に立っていればハザード (左右同時点滅) として扱う。brake/side_brake と違い
 // 走行系には関与しないため優先順位の調停は不要。フォールト表示のハザード点滅
 // (src/hmi/indicator.c) の方が優先し、フォールト中はこのビットの状態に関わらずハザードになる。
-// COMMAND 途絶・緊急停止では horn/passing と同様に強制的に消灯する。v0.14 で新設
+// COMMAND 途絶・緊急停止では horn/passing と同様に強制的に消灯する
 #define RAS_CMD_FLAG2_WINKER_LEFT (1u << 1)
 #define RAS_CMD_FLAG2_WINKER_RIGHT (1u << 2)
 // ローンチコントロール。立っている間、車速指令の目標が実車速より大きく離れた加速 (発進) で、目標車速の
 // ランプと車速PIを迂回し、全開のトルク + TC で目標車速まで加速する (始める・終える条件は src/control/drive.h の
 // 「ローンチコントロール」の節)。brake・torque_mode・side_brake の間は意味を持たない。
-// 実際に発進中かは TELEMETRY.flags の RAS_FLAG_LAUNCH_ACTIVE。v0.20 で新設
+// 実際に発進中かは TELEMETRY.flags の RAS_FLAG_LAUNCH_ACTIVE
 #define RAS_CMD_FLAG2_LAUNCH (1u << 3)
 
 // COMMAND.flags bit3-4 (前照灯モード)
@@ -127,9 +128,9 @@ typedef enum {
 
 // TELEMETRY.flags
 #define RAS_FLAG_MODE_MASK 0x0003u
-// 上位の指令で走れる状態 (Vehicle_IsArmed)。v0.18 までは「駆動電源が入っている」だった
-// (ステア未較正・MD の起動待ち・ARM が外れたあとの停止待ちでも立っていた)。
-// 駆動電源の状態は RAS_FLAG_DRIVE_POWER_ON (v0.19)
+// 上位の指令で走れる状態 (Vehicle_IsArmed)。「駆動電源が入っている」とは別
+// (ステア未較正・MD の起動待ち・ARM が外れたあとの停止待ちでは立たない)。
+// 駆動電源の状態は RAS_FLAG_DRIVE_POWER_ON
 #define RAS_FLAG_ARMED (1u << 2)
 #define RAS_FLAG_ESTOP_ACTIVE (1u << 3)
 #define RAS_FLAG_UART_TIMEOUT (1u << 4)
@@ -144,29 +145,29 @@ typedef enum {
 #define RAS_FLAG_FAULT_DRIVE_UNDERVOLTAGE (1u << 13)
 #define RAS_FLAG_FAULT_SIGNAL_UNDERVOLTAGE (1u << 14)
 #define RAS_FLAG_DRIVE_POWER_LOCKED (1u << 15)
-// 障害物により自動停止が実際に作動中 (flags.auto_stop が有効かつ検知中)。v0.7 で新設
+// 障害物により自動停止が実際に作動中 (flags.auto_stop が有効かつ検知中)
 #define RAS_FLAG_AUTO_STOP_ACTIVE (1u << 16)
 // サイドブレーキが実際に位置制御へ切り替わって固定中かどうか (要求中でも
-// MDのデータ無効でトルク制動へフォールバックしている間は偽)。v0.13 で新設
+// MDのデータ無効でトルク制動へフォールバックしている間は偽)
 #define RAS_FLAG_SIDE_BRAKE_ACTIVE (1u << 17)
 // 左/右ウィンカーが実際に点滅中かどうか。フォールトによるハザード表示 (src/hmi/indicator.c)
 // が上位のウィンカー要求より優先するため、要求どおりとは限らない (フォールト中は要求に
-// 関わらず両方立つ)。v0.14 で新設
+// 関わらず両方立つ)
 #define RAS_FLAG_WINKER_LEFT_ACTIVE (1u << 18)
 #define RAS_FLAG_WINKER_RIGHT_ACTIVE (1u << 19)
-// ABSが制動トルクを要求より削っている最中かどうか (フォールバック中は偽)。v0.15 で新設
+// ABSが制動トルクを要求より削っている最中かどうか (フォールバック中は偽)
 #define RAS_FLAG_ABS_ACTIVE (1u << 20)
 // 片輪浮き対策 (後輪左右の速度差・後輪周速の絶対上限) がトルクを削っている最中かどうか。
-// このとき RAS_FLAG_TC_ACTIVE は立たない (どちらの偏差が効いたかを分ける)。v0.16 で新設
+// このとき RAS_FLAG_TC_ACTIVE は立たない (どちらの偏差が効いたかを分ける)
 #define RAS_FLAG_WHEEL_LIFT_ACTIVE (1u << 21)
 // 駆動電源 (DRIVE_POWER) が入っている。ARM 要求中のほか、ARM が外れたあと停車を待って
-// 制動している間も立つ。v0.19 で新設
+// 制動している間も立つ
 #define RAS_FLAG_DRIVE_POWER_ON (1u << 22)
 // MD (3台のいずれか) が使えないため走行を止めている (Vehicle_IsMdFault)。どの MD かは
-// md_status、理由は LOG で分かる。駆動電源が切れる (ARM を外す) まで立ち続ける。v0.19 で新設
+// md_status、理由は LOG で分かる。駆動電源が切れる (ARM を外す) まで立ち続ける
 #define RAS_FLAG_MD_FAULT (1u << 23)
 // ローンチコントロールで発進している最中 (Drive_IsLaunchActive)。上位が要求 (RAS_CMD_FLAG2_LAUNCH)
-// していても、条件を満たさず始まらなかった・もう終わった、なら立たない。v0.20 で新設
+// していても、条件を満たさず始まらなかった・もう終わった、なら立たない
 #define RAS_FLAG_LAUNCH_ACTIVE (1u << 24)
 
 // TELEMETRY.md_status[i]
@@ -177,7 +178,7 @@ typedef enum {
 #define RAS_MD_STATUS_OVERCURRENT (1u << 3)
 #define RAS_MD_STATUS_COMM_OK (1u << 4)
 #define RAS_MD_STATUS_LIMIT_SYNCED (1u << 5)
-// MD のエンコーダが未校正 (MD は動かない)。v0.19 で新設
+// MD のエンコーダが未校正 (MD は動かない)
 #define RAS_MD_STATUS_UNCALIBRATED (1u << 6)
 
 typedef enum {
@@ -196,28 +197,28 @@ typedef enum {
 } RasConfigResult;
 
 // 実装済みのパラメータのみを定義する。
-// 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータは v0.16 で対応した。param_id と
+// 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータは param_id と
 // 範囲・既定値は src/control/control_params.h の表が唯一の定義で、ここには並べない
 // (0x0011-0x0015, 0x0021-0x002A, 0x0051, 0x0071-0x0073)。Flash へは保存しない。
 // 速度PIのゲイン (0x0030,0x0031) は未対応で、受信すると RAS_CONFIG_UNKNOWN_PARAM を返す。
 // 「OK を返すが何も変わらない」より、対応していないことを Pi 側に伝える方が安全。
-// TC/TV の ON/OFF (0x0010/0x0020) はゲインではなく機能そのものの有効/無効なので v0.8 で対応した。
-// 片輪浮き対策 (0x0050) の ON/OFF は v0.9 で新設。TC本体 (0x0010) とは独立に切替できる。
-// 最大速度・最大加速度・最大舵角 (旧 0x0001-0x0003) は v0.10 で廃止した。上位から変更する
+// TC/TV の ON/OFF (0x0010/0x0020) はゲインではなく機能そのものの有効/無効なので対応している。
+// 片輪浮き対策 (0x0050) の ON/OFF は TC本体 (0x0010) とは独立に切替できる。
+// 最大速度・最大加速度・最大舵角 (旧 0x0001-0x0003) は廃止した。上位から変更する
 // 実用上の必要が無かったため、Drive/Steering 側の固定定数 (DRIVE_MAX_SPEED_M_S /
-// DRIVE_MAX_ACCEL_M_S2 / Steering_GetMaxRoadWheelAngleRad()) に一本化してある
-// (最大舵角だけは v0.18 からリンクの換算 steer_link_* で変わる。変わるたびに LIMITS を送り直す)
+// Steering_GetMaxRoadWheelAngleRad()) に一本化してある。最大加速度は上限そのものを
+// 無くしてある (上位が COMMAND.accel_limit で毎回決める。drive.h の DRIVE_DEFAULT_ACCEL_M_S2 の注記)
+// (最大舵角だけはリンクの換算 steer_link_* で変わる。変わるたびに LIMITS を送り直す)
 typedef enum {
-  RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
-  RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は有効)。v0.8 で新設
+  RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は有効)
+  RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は有効)
   RAS_PARAM_LIDAR_FORMAT = 0x0040,  // RasLidarFormat
-  RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)。v0.9 で新設
-  RAS_PARAM_AUTO_STOP_MARGIN_CM = 0x0060,  // 安全マージン [cm] を直接指定。v0.12 で新設
-  RAS_PARAM_ABS_ENABLE = 0x0070,           // 0.0=無効, 非0=有効 (既定は有効)。v0.15 で新設
-  // ブレーキホールド (制動して止まったら後輪の位置保持へ移る)。0.0=無効, 非0=有効 (既定は有効)。
-  // v0.19 で新設
+  RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)
+  RAS_PARAM_AUTO_STOP_MARGIN_CM = 0x0060,  // 安全マージン [cm] を直接指定
+  RAS_PARAM_ABS_ENABLE = 0x0070,           // 0.0=無効, 非0=有効 (既定は有効)
+  // ブレーキホールド (制動して止まったら後輪の位置保持へ移る)。0.0=無効, 非0=有効 (既定は有効)
   RAS_PARAM_BRAKE_HOLD_ENABLE = 0x0090,
-  // ステアのリンクの換算 (v0.18)。値・範囲は control_params.h の表。入れた瞬間に Steering へ反映し
+  // ステアのリンクの換算。値・範囲は control_params.h の表。入れた瞬間に Steering へ反映し
   // LIMITS を送り直すので、ID だけここにも置く
   RAS_PARAM_STEER_LINK_GAIN = 0x0081,
   RAS_PARAM_STEER_LINK_CUBIC = 0x0082,
@@ -231,7 +232,7 @@ typedef enum {
 
 // 自動停止の動的停止距離 (d_stop = v・t_delay + v²/2a_max + マージン) に加える安全マージン
 // [cm] の範囲。物理項 (車速由来の制動距離) は車両特性として固定し、上位は margin のみを
-// 任意の値で直接指定できる (段階的なレベルではなく連続値)。範囲外はクランプする。v0.12 で新設
+// 任意の値で直接指定できる (段階的なレベルではなく連続値)。範囲外はクランプする
 #define RAS_AUTO_STOP_MARGIN_MIN_CM 0.0f
 #define RAS_AUTO_STOP_MARGIN_MAX_CM 100.0f
 #define RAS_AUTO_STOP_MARGIN_DEFAULT_CM 15.0f
@@ -239,19 +240,19 @@ typedef enum {
 typedef struct {
   bool tc_enabled;
   bool tv_enabled;
-  bool wheel_lift_guard_enabled;  // v0.9 で新設。既定は有効
+  bool wheel_lift_guard_enabled;  // 既定は有効
   uint8_t lidar_format;
-  float auto_stop_margin_cm;  // v0.12 で新設。既定は RAS_AUTO_STOP_MARGIN_DEFAULT_CM
-  bool abs_enabled;           // v0.15 で新設。既定は有効
-  bool brake_hold_enabled;    // v0.19 で新設。既定は有効
-  ControlParams control;      // v0.16 で新設。足回りの制御の調整パラメータ
+  float auto_stop_margin_cm;  // 既定は RAS_AUTO_STOP_MARGIN_DEFAULT_CM
+  bool abs_enabled;           // 既定は有効
+  bool brake_hold_enabled;    // 既定は有効
+  ControlParams control;      // 足回りの制御の調整パラメータ
 } RasConfig;
 
 // 受信した COMMAND をデコードしたもの
 typedef struct {
   uint8_t mode;    // RasMode
   uint8_t flags;   // RAS_CMD_FLAG_*
-  uint8_t flags2;  // RAS_CMD_FLAG2_* (v0.13 で新設)
+  uint8_t flags2;  // RAS_CMD_FLAG2_*
   float target_speed_m_s;
   float target_steer_rad;  // 路面舵角 (反時計回り = 左旋回が正)
   float accel_limit_m_s2;
@@ -260,7 +261,7 @@ typedef struct {
   // 呼び出し側が既定値へ読み替えること (accel_limit と同じ約束)
   float brake_torque_nm;
   // 駆動トルク直接指令 [Nm] (負=後退方向)。brake_torque と違い 0 は素直に「トルク0」を
-  // 意味する (未指定への読み替えはしない)。flags の torque_mode が立っているときのみ使う。v0.6 で新設
+  // 意味する (未指定への読み替えはしない)。flags の torque_mode が立っているときのみ使う
   float target_torque_nm;
   uint8_t light_mode;  // RasLightMode (flags bit3-4 をデコードしたもの)
   uint8_t seq;
@@ -294,14 +295,14 @@ typedef struct {
   float motor_current_a[3];  // q軸電流 [RL, RR, ST] 制動時は負
   float torque_cmd_nm[2];    // TC 適用後の最終指令トルク [RL, RR]
 
-  // TCのチューニング用 (v0.13 で新設)。slip は正=空転・負=ロック傾向。tc_limit は
+  // TCのチューニング用。slip は正=空転・負=ロック傾向。tc_limit は
   // DRIVE_MAX_TORQUE_NM が「制限なし」、それより小さければ介入中を意味する
   float slip[2];         // 後輪スリップ率 [RL, RR] (無次元)
   float tc_limit_nm[2];  // TCが動的に決めたトルク上限 [RL, RR]
-  // --- v0.16 で追加 (制御の介入を上位で見るため。src/comm/telemetry.c) ---
+  // --- 制御の介入を上位で見るため (src/comm/telemetry.c) ---
   float torque_req_nm[2];        // スリップ制限が絞る前に掛けたかったトルク [RL, RR] (制動は負)
   float abs_limit_nm;            // ABS が決めた制動トルクの上限
-  float tv_ratio;                // TV の配分の比率 (左旋回で正 = 右輪が多い)。v0.17 (v0.16 は規範ヨーレート)
+  float tv_ratio;                // TV の配分の比率 (左旋回で正 = 右輪が多い)
   float tv_moment_nm;            // TV が要求した左右差のヨーモーメント換算 (左旋回が正)
 
   uint8_t temp_c[4];       // [MD後左, MD後右, MDステア, STM32内蔵]

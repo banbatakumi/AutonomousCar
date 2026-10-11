@@ -101,7 +101,7 @@ static void ResetTraction(Drive* obj);
 
 // トルク 0 を指令して惰行させる。
 // 送信を止めて惰行させてはいけない: MD は無通信0.5秒で停止モードに入るまで直前のトルクを
-// 出し続けるので、減速中の負トルクが停車後も残って後退する (2026-10 まではそうしていた)
+// 出し続けるので、減速中の負トルクが停車後も残って後退する
 static void Coast(Drive* obj) {
   ResetTraction(obj);
   obj->torque_left_nm = 0.0f;
@@ -408,7 +408,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->tc_enabled = true;
   obj->wheel_lift_guard_enabled = true;
   obj->speed_setpoint_m_s = 0.0f;
-  obj->accel_limit_m_s2 = DRIVE_MAX_ACCEL_M_S2;
+  obj->accel_limit_m_s2 = DRIVE_DEFAULT_ACCEL_M_S2;
   obj->target_speed_m_s = 0.0f;
   obj->speed_ff_accel_m_s2 = 0.0f;
   obj->brake_active = false;
@@ -600,9 +600,13 @@ void Drive_SetParams(Drive* obj, const ControlParams* params) {
 
 void Drive_SetTargetSpeed(Drive* obj, float m_s, float accel_limit_m_s2) {
   obj->speed_setpoint_m_s = Constrain(m_s, -DRIVE_MAX_SPEED_M_S, DRIVE_MAX_SPEED_M_S);
-  obj->accel_limit_m_s2 = accel_limit_m_s2 > 0.0f
-                               ? Constrain(accel_limit_m_s2, 0.01f, DRIVE_MAX_ACCEL_M_S2)
-                               : DRIVE_MAX_ACCEL_M_S2;
+  // 上位が指定した値に上限は掛けない (drive.h の DRIVE_DEFAULT_ACCEL_M_S2 の注記)
+  if (accel_limit_m_s2 > 0.0f) {
+    obj->accel_limit_m_s2 =
+        accel_limit_m_s2 > DRIVE_MIN_ACCEL_LIMIT_M_S2 ? accel_limit_m_s2 : DRIVE_MIN_ACCEL_LIMIT_M_S2;
+  } else {
+    obj->accel_limit_m_s2 = DRIVE_DEFAULT_ACCEL_M_S2;
+  }
 }
 
 void Drive_SetBrake(Drive* obj, bool on, float torque_nm) {

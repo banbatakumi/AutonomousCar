@@ -22,7 +22,7 @@
 #define STEERING_DIRECTION_SIGN (-1.0f)
 
 // モータ機械角 [rad] → 路面舵角 [rad] の換算。リンク機構は線形ではなく、大舵角ほど路面舵角が
-// 付いてこない (2026-10-08 の実測: 比 0.5 のままだと 29.1° と報告しているとき前輪は約 26.5°)。
+// 付いてこない (実測: 比 0.5 のままだと 29.1° と報告しているとき前輪は約 26.5°)。
 //   x        = モータ角 × STEERING_LINKAGE_RATIO   (中立付近の比で直した「見かけの舵角」)
 //   路面舵角 = gain*x + cubic*x^3                   (Steering_SetLinkage。既定は 1 と 0)
 // gain・cubic は上位がシステム同定 (舵角ごとの曲率) で求めて CONFIG_SET で送る (control_params.h の

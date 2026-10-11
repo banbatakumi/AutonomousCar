@@ -75,8 +75,8 @@ static void ApplyBrakeLight(Vehicle* obj, bool braking) {
 // VEHICLE_LIDAR_IDLE_OFF_DELAY_S が経つまでは点けたままにする (短い停止での
 // 頻繁な電源入り切りと、それによる再ARM直後のセンサ空白を避けるため)
 //
-// 回転モータの PWM も電源と一緒に止める/戻す (2026-10-04)。以前は電源を切った後も
-// PA8 から duty 40% が出続け、無給電の LD06 へ入力保護ダイオード経由で流れ込む恐れがあった
+// 回転モータの PWM も電源と一緒に止める/戻す (電源を切った後も PA8 から出し続けると、
+// 無給電の LD06 へ入力保護ダイオード経由で流れ込む恐れがある)
 static void UpdateLidarPower(Vehicle* obj, bool want_on) {
   if (want_on) {
     Timer_Reset(&obj->lidar_idle_timer);
@@ -104,7 +104,7 @@ static void UpdateLidarPower(Vehicle* obj, bool want_on) {
 static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
   float v = (speed_m_s >= 0.0f) ? speed_m_s : -speed_m_s;
   float physical_cm =
-      (v * VEHICLE_AUTO_STOP_DELAY_S + (v * v) / (2.0f * DRIVE_MAX_ACCEL_M_S2)) * 100.0f;
+      (v * VEHICLE_AUTO_STOP_DELAY_S + (v * v) / (2.0f * VEHICLE_AUTO_STOP_DECEL_M_S2)) * 100.0f;
   return physical_cm + config->auto_stop_margin_cm;
 }
 
@@ -246,7 +246,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 実質無効化されてしまうため、drive.c / pid.h と同じガードでレート制限を無効にする
   if (dt_s <= 0.0f || dt_s > 0.1f) dt_s = 0.0f;
 
-  // mode = 3 は v0.4 で予約になったため、受信しても現在のモードを維持する
+  // mode = 3 は予約なので、受信しても現在のモードを維持する
   if (command->mode != RAS_MODE_RESERVED) obj->mode = command->mode;
 
   bool arm_requested = (command->flags & RAS_CMD_FLAG_ARM) != 0;
@@ -309,8 +309,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   // armed でない間 (中心点未較正・DISARM・MD の起動待ち・自律/手動以外のモード) は
   // target_speed 側と同様に舵角も進めない。applied_steer_rad を凍結して最後に送った角度を
   // MD に保持させ続ける (未較正の間は Steering 側が何も送らない)。再アーム時は
-  // 凍結していた applied_steer_rad から steer_rate_limit で滑らかに追従するため、
-  // 既存のレート制限ロジックはそのまま活きる
+  // 凍結していた applied_steer_rad から steer_rate_limit で滑らかに追従する
   if (armed) {
     float steer_step = steer_rate_limit * dt_s;
     obj->applied_steer_rad +=
@@ -327,9 +326,9 @@ static void ApplyRasCommand(Vehicle* obj) {
   if (drive_active && !Drive_IsEnabled(obj->drive)) Drive_Enable(obj->drive);
   if (!drive_active && Drive_IsEnabled(obj->drive)) Drive_Disable(obj->drive);
 
-  // 加速度レート制限 (DRIVE_MAX_ACCEL_M_S2 が上限) は Drive 側が持つため、生の目標車速を
-  // そのまま渡す。上限0は「制限なし」ではなく「動かない」になってしまうため、
-  // 0 のときは Drive_SetTargetSpeed 側で DRIVE_MAX_ACCEL_M_S2 に読み替える
+  // 加速度レート制限 (上位が送る accel_limit の傾き。上限なし) は Drive 側が持つため、
+  // 生の目標車速をそのまま渡す。上限0は「制限なし」ではなく「動かない」になってしまうため、
+  // 0 のときは Drive_SetTargetSpeed 側で DRIVE_DEFAULT_ACCEL_M_S2 に読み替える
   Drive_SetTargetSpeed(obj->drive, target_speed_m_s, command->accel_limit_m_s2);
   Drive_SetBrake(obj->drive, braking, brake_torque_nm);
   Drive_SetTorque(obj->drive, torque_mode, command->target_torque_nm);
@@ -416,7 +415,7 @@ static void ApplyFailsafe(Vehicle* obj) {
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
   obj->armed = false;
   // 減速・クリープしている間は全光量のまま (後続への表示を弱めない)。Pi 未接続・起動中は
-  // ずっとここを通るので、止まったら減光する (省電力、2026-10-04。ブレーキホールドが無効でも)
+  // ずっとここを通るので、止まったら減光する (省電力。ブレーキホールドが無効でも)
   Lighting_SetBrakeDimmed(obj->lighting, stopped);
   ApplyBrakeLight(obj, true);
   Lighting_SetPassing(obj->lighting, false);
