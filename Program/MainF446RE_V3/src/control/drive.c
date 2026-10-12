@@ -393,7 +393,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   BldcMotor_SetTorqueLimitNm(&motors->rear_right, DRIVE_MAX_TORQUE_NM);
 
   ControlParams_SetDefaults(&obj->params);
-  PID_Init(&obj->speed_pid, DRIVE_SPEED_KP, DRIVE_SPEED_KI, DRIVE_SPEED_KD,
+  PID_Init(&obj->speed_pid, obj->params.speed_kp, obj->params.speed_ki, DRIVE_SPEED_KD,
            -DRIVE_MAX_TOTAL_TORQUE_NM, DRIVE_MAX_TOTAL_TORQUE_NM);
   TorqueVectoring_Init(&obj->tv, &obj->params, DRIVE_REAR_TRACK_M, DRIVE_REAR_WHEEL_RADIUS_M);
   LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0f);
@@ -405,7 +405,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   Timer_Init(&obj->timer);
 
   obj->enabled = false;
-  obj->tc_enabled = true;
+  obj->tc_enabled = false;  // 上位が送る (ras_link.c と同じ。毎周期 Drive_SetTractionControlEnabled で上書きされる)
   obj->wheel_lift_guard_enabled = true;
   obj->speed_setpoint_m_s = 0.0f;
   obj->accel_limit_m_s2 = DRIVE_DEFAULT_ACCEL_M_S2;
@@ -596,6 +596,8 @@ void Drive_Update(Drive* obj) {
 
 void Drive_SetParams(Drive* obj, const ControlParams* params) {
   obj->params = *params;
+  obj->speed_pid.kp = params->speed_kp;
+  obj->speed_pid.ki = params->speed_ki;
 }
 
 void Drive_SetTargetSpeed(Drive* obj, float m_s, float accel_limit_m_s2) {

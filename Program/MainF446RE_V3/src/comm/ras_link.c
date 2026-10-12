@@ -672,8 +672,10 @@ void RasLink_Init(RasLink* obj, Serial* serial) {
   QueueInit(&obj->tx_queue[RAS_TXQ_INFO], obj->tx_info_storage, sizeof(obj->tx_info_storage));
   QueueInit(&obj->tx_queue[RAS_TXQ_LOG], obj->tx_log_storage, sizeof(obj->tx_log_storage));
 
-  obj->config.tc_enabled = true;
-  obj->config.tv_enabled = true;
+  // TC・TV の ON/OFF は上位 (Raspberry Pi の vehicle.toml [control] tc_enable/tv_enable) が接続のたびに
+  // 送って決める。上位が何も送らない間は無効 (値の出どころを上位の1か所にするため)
+  obj->config.tc_enabled = false;
+  obj->config.tv_enabled = false;
   obj->config.wheel_lift_guard_enabled = true;
   obj->config.lidar_format = RAS_LIDAR_FORMAT_STANDARD;
   obj->config.auto_stop_margin_cm = RAS_AUTO_STOP_MARGIN_DEFAULT_CM;

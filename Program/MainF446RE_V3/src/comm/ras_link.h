@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0016u
+#define RAS_PROTOCOL_VERSION 0x0017u
 // COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
 // (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
 #define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
@@ -199,9 +199,8 @@ typedef enum {
 // 実装済みのパラメータのみを定義する。
 // 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータは param_id と
 // 範囲・既定値は src/control/control_params.h の表が唯一の定義で、ここには並べない
-// (0x0011-0x0015, 0x0021-0x002A, 0x0051, 0x0071-0x0073)。Flash へは保存しない。
-// 速度PIのゲイン (0x0030,0x0031) は未対応で、受信すると RAS_CONFIG_UNKNOWN_PARAM を返す。
-// 「OK を返すが何も変わらない」より、対応していないことを Pi 側に伝える方が安全。
+// (0x0011-0x0015, 0x0021-0x002C, 0x0030-0x0031 = 車速PI, 0x0051, 0x0071-0x0073)。Flash へは保存しない。
+// 値は持たない: 起動直後は仮置き (下限 = 何もしない値) で、上位が全項目を送るまで ARM を通さない運用。
 // TC/TV の ON/OFF (0x0010/0x0020) はゲインではなく機能そのものの有効/無効なので対応している。
 // 片輪浮き対策 (0x0050) の ON/OFF は TC本体 (0x0010) とは独立に切替できる。
 // 最大速度・最大加速度・最大舵角 (旧 0x0001-0x0003) は廃止した。上位から変更する
@@ -210,8 +209,8 @@ typedef enum {
 // 無くしてある (上位が COMMAND.accel_limit で毎回決める。drive.h の DRIVE_DEFAULT_ACCEL_M_S2 の注記)
 // (最大舵角だけはリンクの換算 steer_link_* で変わる。変わるたびに LIMITS を送り直す)
 typedef enum {
-  RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は有効)
-  RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は有効)
+  RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は無効。上位が接続のたびに送る)
+  RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は無効。上位が接続のたびに送る)
   RAS_PARAM_LIDAR_FORMAT = 0x0040,  // RasLidarFormat
   RAS_PARAM_WHEEL_LIFT_GUARD_ENABLE = 0x0050,  // 0.0=無効, 非0=有効 (既定は有効)
   RAS_PARAM_AUTO_STOP_MARGIN_CM = 0x0060,  // 安全マージン [cm] を直接指定
@@ -238,8 +237,8 @@ typedef enum {
 #define RAS_AUTO_STOP_MARGIN_DEFAULT_CM 15.0f
 
 typedef struct {
-  bool tc_enabled;
-  bool tv_enabled;
+  bool tc_enabled;  // 既定は無効 (上位が送る)
+  bool tv_enabled;  // 既定は無効 (上位が送る)
   bool wheel_lift_guard_enabled;  // 既定は有効
   uint8_t lidar_format;
   float auto_stop_margin_cm;  // 既定は RAS_AUTO_STOP_MARGIN_DEFAULT_CM

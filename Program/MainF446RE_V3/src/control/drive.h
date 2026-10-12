@@ -60,9 +60,8 @@
 // ===========================================================================
 // 制御パラメータ
 // ===========================================================================
-#define DRIVE_SPEED_KP 0.3f  // 車速PIの比例ゲイン [Nm / (m/s)]
-#define DRIVE_SPEED_KI 0.6f  // 車速PIの積分ゲイン [Nm / (m/s) / s]
-#define DRIVE_SPEED_KD 0.0f  // 車速は微分ノイズが乗りやすいため既定では使わない
+// 車速PIの比例・積分ゲインは調整パラメータ (control_params.h の speed_kp・speed_ki。上位が送る)
+#define DRIVE_SPEED_KD 0.0f  // 車速は微分ノイズが乗りやすいため使わない
 
 // 1輪あたりのトルク上限 [Nm] (プロトコル上の絶対上限は ±3.2767)。
 // この値は指令のクランプに使うと同時に MD 側のトルク上限としても設定するため、
@@ -249,7 +248,7 @@ typedef struct {
   Timer timer;
 
   bool enabled;
-  bool tc_enabled;                // 既定は有効
+  bool tc_enabled;                // 既定は無効 (上位が送る)
   bool wheel_lift_guard_enabled;  // 既定は有効。TC本体とは独立にON/OFF可能
   bool abs_enabled;               // 既定は有効
   // 上位から指令された生の目標車速 (レート制限前)。Drive_SetTargetSpeed が更新する

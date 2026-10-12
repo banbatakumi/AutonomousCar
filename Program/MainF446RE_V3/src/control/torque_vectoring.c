@@ -18,7 +18,7 @@ void TorqueVectoring_Init(TorqueVectoring* obj, const ControlParams* params, flo
   obj->track_m = track_m;
   obj->wheel_radius_m = wheel_radius_m;
 
-  obj->enabled = true;
+  obj->enabled = false;  // 上位が送る (毎周期 Drive_SetTorqueVectoringEnabled で上書きされる)
   TorqueVectoring_Reset(obj);
 }
 
