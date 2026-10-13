@@ -44,6 +44,15 @@ static inline void Timer_RewindUs(Timer* timer, uint32_t us) {
   timer->start_time -= us * Timer_GetCyclesPerUs();
 }
 
+/**
+ * @brief 開始時刻を us だけ未来へずらす (経過時間から us を差し引く)。
+ * 周期処理で Timer_Reset の代わりに使うと、呼び出しが遅れたぶんを次の周期へ持ち越さず、
+ * 平均の周期が us ちょうどになる (Timer_Reset は遅れたぶんだけ毎回周期が延びる)。
+ */
+static inline void Timer_AdvanceUs(Timer* timer, uint32_t us) {
+  timer->start_time += us * Timer_GetCyclesPerUs();
+}
+
 static inline void WaitUs(uint32_t micros) {
   uint32_t startTick = DWT->CYCCNT;
   uint32_t requiredTicks = micros * (SystemCoreClock / 1000000);

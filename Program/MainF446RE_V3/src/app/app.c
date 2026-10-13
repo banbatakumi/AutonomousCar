@@ -277,8 +277,10 @@ void MainApp() {
     UpdateSensors();
 
     // MDの状態 (舵角・後輪速度) は Vehicle/Drive が使うので先に受信し、Drive が決めた指令は
-    // その周期のうちに送る (受信を後に回すと1周期古い値で制御することになる)
+    // その周期のうちに送る (受信を後に回すと1周期古い値で制御することになる)。
+    // 上位の COMMAND も同じ理由で Vehicle より前に取り込む
     Motors_Receive(&motors, Power_IsDriveOn(&power));
+    RasLink_Receive(&ras_link);
     Vehicle_Update(&vehicle);
     Drive_Update(&drive);
     Motors_Transmit(&motors, Power_IsDriveOn(&power));

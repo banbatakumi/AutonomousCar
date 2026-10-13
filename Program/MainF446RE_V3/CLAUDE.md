@@ -21,8 +21,8 @@ make run      # make -j12 後、SWDFlash.sh (ST-Link, STM32_Programmer_CLI) で 
 
 ## 現在の状態
 
-- プロトコル: `RAS_PROTOCOL_VERSION` = 0x0016 (v0.22)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.22_delta.md`。
-- **v0.19 以降 (ARM の「止める」約束・ブレーキホールド・ローンチ・車速PIの加速度FF・ランプ上限廃止) はビルドのみで実機未書き込み**。MD 側も同時に書き込むこと。
+- プロトコル: `RAS_PROTOCOL_VERSION` = 0x0017 (v0.23)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.22_delta.md`。
+- STM32 は v0.23 を書き込み済み (上位が `protocol_version` 0x0017 を確認)。**MD 側に v0.19 以降 (ARM の「止める」約束・ブレーキホールド・ローンチ・車速PIの加速度FF・ランプ上限廃止) の対応版を書き込んだかは未確認**。
 - **実機未検証の機能**: トルクベクタリング (荷重比例の配分)、ステアのリンク換算 (v0.18)、自動停止 (LiDAR 主・超音波補助)、LIMITS パケット、ブレーキホールドの移行条件、ローンチ、加速度FF、省電力化 (超音波/LiDAR PWM 停止)。ABS・TC・片輪浮き対策のしきい値/ゲインは机上値 (上位側の車両モデルで最適化した初期値)。ESS ブレーキ灯のしきい値・自動停止の遅延見積り (`VEHICLE_AUTO_STOP_DELAY_S`) は未実測。
 - 実機確認済み: LiDAR 給電の ARM 連動、後輪の位置保持。
 
@@ -60,7 +60,7 @@ docs/        README.md を参照
 ```
 
 - 新機能は担当モジュールを作り、app.c にはインスタンス・初期化・呼び出しだけを足す。各モジュールは「struct + `Module_Init()` で依存注入 + `Module_Update()`」形式でグローバル参照を避ける。
-- メインループ順 (2kHz): `Motors_Receive → Vehicle_Update → Drive_Update → Motors_Transmit` (受信を指令計算の前に置かないと1周期古い状態で制御する)。
+- メインループ順 (2kHz): `Motors_Receive → RasLink_Receive → Vehicle_Update → Drive_Update → Motors_Transmit → Telemetry → RasLink_Update` (MD の状態も上位の COMMAND も、指令計算の前に受信しないと1周期古いもので制御する。`RasLink_Update` は送信だけ)。
 - `lib/crc8` は MD リポジトリ (`ProgramV4/lib/crc8/crc8.h`) とバイト単位で同一に保つ (多項式を変えると HD が落ちる)。`lib/crc16` は Pi 用 (CCITT-FALSE、LiDAR/テレメトリの長いフレームに必要)。
 - `Serial_Write` は進行中の DMA を中断するので、Pi 向けは `Serial_WriteAsync` を使う。MD 向け 1回の送信 (6バイト=60us@1Mbps) は次の送信までに完了させる。
 - Flash 書き込みは `lib/flash/flash.h` 経由 (Sector 7 ユーザー、Sector 6 MPU6050 較正)。

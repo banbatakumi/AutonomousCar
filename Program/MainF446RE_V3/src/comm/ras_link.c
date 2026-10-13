@@ -423,6 +423,7 @@ static void HandleCommand(RasLink* obj, const uint8_t* p, uint32_t now_us) {
   obj->command.rx_time_us = now_us;
   obj->has_command = true;
   obj->last_command_us = now_us;
+  obj->command_alive = true;
 }
 
 static void HandlePing(RasLink* obj, const uint8_t* p, uint32_t rx_time_us) {
@@ -709,11 +710,17 @@ void RasLink_OnUartIdle(RasLink* obj) {
   obj->rx_idle_head = Serial_DmaHead(obj->serial);
 }
 
-void RasLink_Update(RasLink* obj) {
+void RasLink_Receive(RasLink* obj) {
   while (Serial_Available(obj->serial)) {
     ParseByte(obj, Serial_Read(obj->serial));
   }
+  if (obj->command_alive &&
+      (uint32_t)(Micros() - obj->last_command_us) >= RAS_COMMAND_TIMEOUT_US) {
+    obj->command_alive = false;
+  }
+}
 
+void RasLink_Update(RasLink* obj) {
   uint32_t now = Micros();
 
   // LIMITS は起動時に変わらない値なので VERSION と同じバースト送信に相乗りさせる
@@ -761,7 +768,7 @@ bool RasLink_HasCommand(const RasLink* obj) {
 }
 
 bool RasLink_IsCommandAlive(const RasLink* obj) {
-  if (!obj->has_command) return false;
+  if (!obj->has_command || !obj->command_alive) return false;
   return (uint32_t)(Micros() - obj->last_command_us) < RAS_COMMAND_TIMEOUT_US;
 }
 

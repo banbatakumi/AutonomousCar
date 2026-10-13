@@ -6,6 +6,9 @@
 // ビン中心からのずれの初期値。実際のずれは必ず 0.5度以下なので、最初の点は必ず採用される
 #define BIN_ERROR_UNSET 999.0f
 
+// 点の時刻の逆行として直す上限 [us]。パケット1つ (約2.7ms) とポーリングの遅れより十分大きい
+#define LIDAR_MAX_BACKSTEP_US 100000
+
 static void StartSector(Lidar* obj, uint8_t sector_idx, uint32_t t_us) {
   memset(obj->building.distance_mm, 0, sizeof(obj->building.distance_mm));
   memset(obj->building.intensity, 0, sizeof(obj->building.intensity));
@@ -72,6 +75,16 @@ static void PlacePoint(Lidar* obj, float angle_deg, uint16_t distance_mm, uint8_
 // 新しい1点 (cur) を受け取り、直前の点との間にあるビン中心 (整数度) の値を補間して置く
 static void PlaceInterpolated(Lidar* obj, float angle_deg, uint16_t distance_mm, uint8_t intensity,
                               uint32_t t_us) {
+  // 点の時刻は逆行させない。パケットの時刻は末尾を処理した Micros() (500us 刻みのポーリング遅れが
+  // 乗る) で、先頭点はそこから回転速度で遡って求めるので、前のパケットの処理が遅れた周期の次は
+  // 先頭点が前のパケットの末尾点より数百us 過去になる。そのまま符号なしで差を取ると補間した点の
+  // 時刻が約2^32us 飛び、セクタの t_start_us・duration_us が壊れる (実機で全セクタの約1.4%)。
+  // 長く止まっていた後 (給電の入れ直し) は前の点が無関係なので、小さな逆行だけを直す
+  int32_t ahead_us = (int32_t)(t_us - obj->prev_t_us);
+  if (obj->has_prev_point && ahead_us < 0 && ahead_us > -LIDAR_MAX_BACKSTEP_US) {
+    t_us = obj->prev_t_us;
+  }
+
   float gap = angle_deg - obj->prev_angle_deg;
   if (gap < -180.0f) gap += 360.0f;  // 360度の折り返し
 

@@ -103,8 +103,17 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
 void Telemetry_Update(Telemetry* obj) {
   // RasLink 側の実送信自体が100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるので、ここでの組み立ても同じ周期に間引く
   // (ADC読み・MD状態集計・BuildFlags()の全モジュール問い合わせを2kHzで回す必要はない)
-  if (Timer_ReadUs(&obj->update_timer) < RAS_TELEMETRY_INTERVAL_US) return;
-  Timer_Reset(&obj->update_timer);
+  uint32_t elapsed_us = Timer_ReadUs(&obj->update_timer);
+  if (elapsed_us < RAS_TELEMETRY_INTERVAL_US) return;
+  // 周期の起点を「今」ではなく1周期ぶんだけ進める。Timer_Reset だと、この関数が呼ばれる位置が
+  // 制御周期の中で前後するぶん (LiDAR の処理量で変わる) 20周期目に 1us 足りず 21周期目まで
+  // 待つことがあり、LiDAR が回っている間は 100Hz のはずが約 97Hz に落ちていた。
+  // 大きく遅れたとき (ブロッキング処理の直後) は追いつこうとせず今から数え直す
+  if (elapsed_us >= 2u * RAS_TELEMETRY_INTERVAL_US) {
+    Timer_Reset(&obj->update_timer);
+  } else {
+    Timer_AdvanceUs(&obj->update_timer, RAS_TELEMETRY_INTERVAL_US);
+  }
 
   LogNewFaults(obj, Power_GetFaults(obj->power));
 

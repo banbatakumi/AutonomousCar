@@ -367,6 +367,9 @@ typedef struct {
   RasCommand command;
   bool has_command;
   uint32_t last_command_us;
+  // COMMAND が途絶していないか。途絶を一度検出したら、次の COMMAND を受けるまで偽のまま保つ
+  // (経過時間だけで判定すると、Micros() が一周する約71.6分後に古い COMMAND が 100ms 生き返る)
+  bool command_alive;
   RasConfig config;
   RasTelemetry telemetry;
 
@@ -396,14 +399,23 @@ typedef struct {
 void RasLink_Init(RasLink* obj, Serial* serial);
 
 /**
- * @brief 受信処理・定期送信・送信キューの吐き出しを1周期分行う。
+ * @brief 受信済みのバイト列を解釈し、COMMAND / CONFIG_SET などを取り込む。
+ * 制御周期ごとに、指令を使う Vehicle_Update より前で呼ぶこと (後に呼ぶと、届いた COMMAND が
+ * 効くのが1周期遅れる)。応答 (PONG / CONFIG_ACK など) は送信キューへ積むだけで、送り出すのは
+ * RasLink_Update。
+ */
+void RasLink_Receive(RasLink* obj);
+
+/**
+ * @brief 定期送信と送信キューの吐き出しを1周期分行う。
  * PONG の応答性と時刻同期の精度が呼び出し周期で決まるため、制御周期ごと (2kHz 目安) に呼ぶこと。
+ * 受信は RasLink_Receive。
  */
 void RasLink_Update(RasLink* obj);
 
 /**
  * @brief 次の TELEMETRY で送る内容を差し替える。制御周期ごとに最新値で呼ぶこと
- * (実際の送信は 50Hz に間引かれる)。
+ * (実際の送信は RAS_TELEMETRY_INTERVAL_US ごとに間引かれる)。
  */
 void RasLink_SetTelemetry(RasLink* obj, const RasTelemetry* telemetry);
 
