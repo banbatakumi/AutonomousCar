@@ -1,6 +1,7 @@
 #include "drive.h"
 
 #include "mymath.h"
+#include <math.h>
 
 #define DRIVE_MAX_TOTAL_TORQUE_NM (DRIVE_MAX_TORQUE_NM * 2.0f)
 
@@ -24,7 +25,7 @@ static float EstimateVehicleSpeed(Drive* obj) {
 
   // 射影に使うのはモータ機械角ではなく路面舵角。リンク比が1でない機体では別物になる
   float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
-  return (obj->front_speed_left_m_s + obj->front_speed_right_m_s) * 0.5f * Cos(steer_rad);
+  return (obj->front_speed_left_m_s + obj->front_speed_right_m_s) * 0.5f * cosf(steer_rad);
 }
 
 // TCのスリップ判定専用の車体速度推定。EstimateVehicleSpeed() と同じ計算だが、
@@ -38,7 +39,7 @@ static float EstimateVehicleSpeedForSlip(Drive* obj) {
   float omega_right = LPF_Update(&obj->lpf_front_right_tc,
                                  Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR);
   float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
-  return (omega_left + omega_right) * 0.5f * DRIVE_FRONT_WHEEL_RADIUS_M * Cos(steer_rad);
+  return (omega_left + omega_right) * 0.5f * DRIVE_FRONT_WHEEL_RADIUS_M * cosf(steer_rad);
 }
 
 // ヨーレートは IMU の実測値を優先する。舵角からの幾何計算 (自転車モデル) は前輪が滑ると
@@ -51,9 +52,9 @@ static float EstimateYawRate(Drive* obj) {
 
   obj->yaw_rate_measured = false;
   float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
-  float cos_steer = Cos(steer_rad);
+  float cos_steer = cosf(steer_rad);
   if (Abs(cos_steer) < 0.1f) return 0.0f;
-  return obj->vehicle_speed_m_s * (Sin(steer_rad) / cos_steer) / DRIVE_WHEELBASE_M;
+  return obj->vehicle_speed_m_s * (sinf(steer_rad) / cos_steer) / DRIVE_WHEELBASE_M;
 }
 
 // スリップ率 (上位への報告用) = (駆動輪周速 − その輪が本来出るべき速度) / max(|基準速度|, 下限)。

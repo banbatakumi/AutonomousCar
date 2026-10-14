@@ -59,8 +59,37 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// printf の出力 (UART5)。Setup の間は従来どおりブロッキングで送る (起動ログを取りこぼさない)。
+// メインループに入ったあと (Log_EnableNonBlocking) は、リングバッファに積むだけにして
+// Log_Pump() が送れる分だけ1バイトずつ送り出す。ブロッキングで送ると最大10ms 止まり、
+// その間ハートビートのポーリング・制御・MD への指令が止まる。溢れた分は捨てる
+#define LOG_RING_SIZE 512
+static uint8_t log_ring[LOG_RING_SIZE];
+static volatile uint16_t log_head = 0;
+static volatile uint16_t log_tail = 0;
+static volatile uint8_t log_nonblocking = 0;
+
+void Log_EnableNonBlocking(void) { log_nonblocking = 1; }
+
+void Log_Pump(void) {
+  if (log_head == log_tail) return;
+  if (!(huart5.Instance->SR & USART_SR_TXE)) return;
+  huart5.Instance->DR = log_ring[log_tail];
+  log_tail = (uint16_t)((log_tail + 1) % LOG_RING_SIZE);
+}
+
 int _write(int file, char* ptr, int len) {
-  HAL_UART_Transmit(&huart5, (uint8_t*)ptr, len, 10);
+  (void)file;
+  if (!log_nonblocking) {
+    HAL_UART_Transmit(&huart5, (uint8_t*)ptr, len, 10);
+    return len;
+  }
+  for (int i = 0; i < len; i++) {
+    uint16_t next = (uint16_t)((log_head + 1) % LOG_RING_SIZE);
+    if (next == log_tail) break;  // 満杯 (残りは捨てる)
+    log_ring[log_head] = (uint8_t)ptr[i];
+    log_head = next;
+  }
   return len;
 }
 

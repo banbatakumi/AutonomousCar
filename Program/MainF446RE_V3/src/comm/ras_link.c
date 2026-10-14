@@ -472,11 +472,20 @@ static uint8_t ApplyConfig(RasLink* obj, uint16_t param_id, float value, float* 
     default: {
       // 足回りの制御の調整パラメータ (結果コードは RasConfigResult と同じ値)
       uint8_t result = (uint8_t)ControlParams_Set(&obj->config.control, param_id, value, applied);
-      // ステアのリンクの換算はすぐ入れる。路面舵角の可動範囲 (LIMITS.max_steer_rad) が変わるので、
-      // 上位が古い上限で指令を丸め続けないよう LIMITS を送り直す
+      // ステアのリンクの換算は、走っている間に入れると舵角の意味が途中で変わるので、ここでは保持するだけで
+      // 実際の適用は Vehicle が停車・DISARM のときに行う (vehicle.c UpdateSteeringLinkage)。
+      // ACK の applied は保持した値。傾きの下限のために cubic が引き上げられるなら、その値を保持して返す
+      // (gain の変更で保持中の cubic が引き上げられた場合は、cubic の保持値だけが変わる。CONFIG_GET で読める)
       if (param_id == RAS_PARAM_STEER_LINK_GAIN || param_id == RAS_PARAM_STEER_LINK_CUBIC) {
-        Steering_SetLinkage(obj->config.control.steer_link_gain, obj->config.control.steer_link_cubic);
-        SendLimits(obj);
+        float cubic_used = Steering_ClampLinkageCubic(obj->config.control.steer_link_gain,
+                                                       obj->config.control.steer_link_cubic);
+        if (cubic_used != obj->config.control.steer_link_cubic) {
+          obj->config.control.steer_link_cubic = cubic_used;
+          if (param_id == RAS_PARAM_STEER_LINK_CUBIC) {
+            *applied = cubic_used;
+            result = RAS_CONFIG_OUT_OF_RANGE;
+          }
+        }
       }
       return result;
     }
@@ -566,7 +575,22 @@ static int ExpectedPayloadLen(uint8_t type) {
   }
 }
 
-static void ParseByte(RasLink* obj, uint8_t byte) {
+static void ParseByte(RasLink* obj, uint8_t byte);
+
+// 読み進めたフレームを捨てるとき、先頭の SYNC1 を除いた消費済みバイトをもう一度通して、
+// その中に始まっている次のフレームを拾う。捨てたフレームの中身が実は途中で切れた前のフレームの
+// 残りで、その後ろに本物のフレームが続いていた場合に、本物まで失わないため
+// (再帰は消費済みの長さずつ短くなるので、深さは RAS_RX_RAW_MAX 以内)
+static void ResyncFromRaw(RasLink* obj) {
+  uint8_t buf[RAS_RX_RAW_MAX];
+  uint8_t n = obj->rx_raw_len;
+  memcpy(buf, obj->rx_raw, n);
+  obj->rx_raw_len = 0;
+  obj->rx_state = RX_SYNC1;
+  for (uint8_t i = 1; i < n; i++) ParseByte(obj, buf[i]);
+}
+
+static void ParseStep(RasLink* obj, uint8_t byte) {
   switch (obj->rx_state) {
     case RX_SYNC1:
       if (byte == RAS_SYNC1) obj->rx_state = RX_SYNC2;
@@ -578,6 +602,7 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
       } else if (byte != RAS_SYNC1) {
         // 0xAA が連続する場合は最後の 0xAA を同期ワードの先頭として扱い続ける
         obj->rx_state = RX_SYNC1;
+        obj->rx_raw_len = 0;
       }
       break;
 
@@ -608,8 +633,8 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
         // その場で同期ワードの探し直しに戻る。上位から来るのは既知の TYPE・固定長だけなので、
         // ここに来るのは TYPE/LEN が化けたとき。化けた LEN ぶん (最大 255+CRC2 バイト) を
         // 読み飛ばすと 75〜110ms 分の COMMAND を失い、COMMAND 途絶 (100ms) の自動ブレーキに
-        // 入りえるので、1バイトだけ進めて SYNC を探し直す
-        obj->rx_state = RX_SYNC1;
+        // 入りえるので、1バイトだけ進めて SYNC を探し直す (消費済みのバイトも含めて)
+        ResyncFromRaw(obj);
         break;
       }
       obj->rx_state = (obj->rx_len > 0) ? RX_PAYLOAD : RX_CRC_LO;
@@ -634,6 +659,7 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
 
       if (obj->rx_crc_received != obj->rx_crc) {
         obj->rx_crc_error++;
+        ResyncFromRaw(obj);
         break;
       }
 
@@ -649,6 +675,7 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
       // 到着時刻そのものになる。一致しなければ後続バイトが続いているので現在時刻で代用する
       uint32_t frame_end_us =
           (obj->serial->rxBtm == obj->rx_idle_head) ? obj->rx_idle_time_us : Micros();
+      obj->rx_raw_len = 0;
       DispatchPacket(obj, frame_end_us);
       break;
     }
@@ -657,6 +684,19 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
       obj->rx_state = RX_SYNC1;
       break;
   }
+}
+
+static void ParseByte(RasLink* obj, uint8_t byte) {
+  // フレームの生バイトを控える。SYNC1 の連続は最後の1つだけを先頭として残す
+  if (obj->rx_state == RX_SYNC1 || (obj->rx_state == RX_SYNC2 && byte == RAS_SYNC1)) {
+    if (byte == RAS_SYNC1) {
+      obj->rx_raw[0] = byte;
+      obj->rx_raw_len = 1;
+    }
+  } else if (obj->rx_raw_len < RAS_RX_RAW_MAX) {
+    obj->rx_raw[obj->rx_raw_len++] = byte;
+  }
+  ParseStep(obj, byte);
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +786,8 @@ void RasLink_Update(RasLink* obj) {
 
   PumpTx(obj);
 }
+
+void RasLink_SendLimits(RasLink* obj) { SendLimits(obj); }
 
 void RasLink_SetTelemetry(RasLink* obj, const RasTelemetry* telemetry) {
   obj->telemetry = *telemetry;

@@ -148,6 +148,15 @@ LidarRoiResult Lidar_QueryRoi(const Lidar* obj, float center_deg, float half_wid
                               float max_distance_cm);
 
 /**
+ * @brief center_deg を軸とする矩形の窓 (前方 0〜max_forward_cm、左右 ±half_width_cm、
+ * いずれも LiDAR 基準) に入る点の数を数える。center_deg ±89度のビンを走査し、
+ * fresh_count は窓の外も含めた走査範囲内で新しいビンの数。左右は対称なので鏡像の影響を受けない。
+ * center_deg は 0 または 180 付近でのみ使うこと (Lidar_QueryRoi と同じ)。
+ */
+LidarRoiResult Lidar_QueryCorridor(const Lidar* obj, float center_deg, float half_width_cm,
+                                   float max_forward_cm);
+
+/**
  * @brief 回転モータのデューティを設定する (0.0-1.0)。回転数の調整用。
  */
 void Lidar_SetMotorDuty(Lidar* obj, float duty);

@@ -1,5 +1,6 @@
 #include "app.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -219,6 +220,10 @@ void Setup() {
   }
 }
 
+// printf の出力をメインループ中だけノンブロッキングにする (Core/Src/main.c)
+extern void Log_EnableNonBlocking(void);
+extern void Log_Pump(void);
+
 // ECHOピンの変化割り込み (stm32f4xx_it.c の EXTI9_5_IRQHandler/EXTI15_10_IRQHandler 経由) から呼ばれる
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if (GPIO_Pin == ECHO_FRONT_Pin) {
@@ -245,6 +250,8 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
 
 static void UpdateSensors() {
   Encoder_Update(&encoder);
+  // ジャイロのバイアス追従は車が止まっているときだけ (Drive_GetVehicleSpeed は前輪エンコーダ由来)
+  Imu_SetVehicleStill(&imu, fabsf(Drive_GetVehicleSpeed(&drive)) < DRIVE_STANDSTILL_SPEED_M_S);
   Imu_Update(&imu);
   // 自動停止が超音波を見るのは上位指令を ARM として適用している周期だけなので、それと同じ
   // Vehicle_IsArmed でトリガ送出を止めて省電力にする (Drive_IsEnabled は常に真から始まるので
@@ -273,6 +280,7 @@ void MainApp() {
   // 上位 (Raspberry Pi) と繋がっていない/armされていない間は Vehicle 側のフェイルセーフが
   // ブレーキを掛け続けるので、Drive は制動モードで後輪を押さえる
   Drive_Enable(&drive);
+  Log_EnableNonBlocking();
 
   while (1) {
     // ループが回っていること自体が生存の証拠なので、先頭で無条件に叩く。
@@ -285,6 +293,7 @@ void MainApp() {
     Lighting_Update(&lighting);
     Buzzer_Update(&buzzer);
     UpdateSensors();
+    Log_Pump();
 
     // MDの状態 (舵角・後輪速度) は Vehicle/Drive が使うので先に受信し、Drive が決めた指令は
     // その周期のうちに送る (受信を後に回すと1周期古い値で制御することになる)。

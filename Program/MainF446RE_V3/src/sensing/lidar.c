@@ -219,6 +219,40 @@ LidarRoiResult Lidar_QueryRoi(const Lidar* obj, float center_deg, float half_wid
   return result;
 }
 
+// 1度ビンの cos/sin (0〜90度)。ビンは整数度なので表は正確 (初回に1度だけ作る)
+static float bin_cos[91];
+static float bin_sin[91];
+static bool bin_trig_ready = false;
+
+LidarRoiResult Lidar_QueryCorridor(const Lidar* obj, float center_deg, float half_width_cm,
+                                   float max_forward_cm) {
+  if (!bin_trig_ready) {
+    for (int i = 0; i <= 90; i++) {
+      bin_cos[i] = cosf((float)i * (3.14159265f / 180.0f));
+      bin_sin[i] = sinf((float)i * (3.14159265f / 180.0f));
+    }
+    bin_trig_ready = true;
+  }
+  LidarRoiResult result = {0, 0};
+  uint32_t now = Micros();
+  int center = (int)(center_deg + 0.5f);
+  for (int offset = -89; offset <= 89; offset++) {
+    int bin = ((center + offset) % 360 + 360) % 360;
+    uint8_t sector_idx = (uint8_t)(bin / LIDAR_DEG_PER_SECTOR);
+    if (!obj->sector_alive[sector_idx]) continue;
+    if ((uint32_t)(now - obj->sector_update_us[sector_idx]) >= LIDAR_TIMEOUT_US) continue;
+    result.fresh_count++;
+    uint16_t mm = obj->point_distance_mm[bin];
+    if (mm == 0) continue;
+    int a = offset < 0 ? -offset : offset;
+    float d_cm = (float)mm / 10.0f;
+    float x_cm = d_cm * bin_cos[a];
+    float y_cm = d_cm * bin_sin[a];
+    if (x_cm <= max_forward_cm && y_cm <= half_width_cm) result.hit_count++;
+  }
+  return result;
+}
+
 void Lidar_SetMotorDuty(Lidar* obj, float duty) {
   PwmOut_Write(&obj->motor, duty);
 }

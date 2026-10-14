@@ -44,6 +44,14 @@
 // (DRIVE_MAX_SPEED_M_S) からの最大制動でも止まり切れる長さにしてある (減速度 2.5m/s² で 2秒)。
 // 前輪エンコーダの異常で車速が 0 に落ちなくても、これを過ぎたら電源を切る
 #define VEHICLE_DISARM_BRAKE_TIMEOUT_S 3.0f
+// 緊急停止・COMMAND 途絶で停車を保持しているとき、止まってからこの時間が経ったら駆動電源を切る [s]。
+// 電源を入れたまま位置保持を続けると、据え切りと同様にモータが過熱し、電池も減り続ける。
+// 切ると坂では転がりうるが、30秒止まっていれば人が気づく時間は十分にあるとみなす。
+// 戻すには、ラッチ (緊急停止) を解除して ARM を一度下ろしてから入れ直す (ARM で電源が入る)
+#define VEHICLE_FAILSAFE_POWER_OFF_S 30.0f
+// 自動停止の検知手段が失われている状態 (ARM 中に LiDAR も前後の超音波も使えない) が、この時間
+// 続いたら TELEMETRY の AUTO_STOP_BLIND を立てる [s]。ARM 直後の LiDAR の起動待ちで立たないため
+#define VEHICLE_AUTO_STOP_BLIND_DELAY_S 3.0f
 // 駆動電源を入れてから、3台の MD が使える状態 (Motors_IsReady) になるのを待つ時間の上限 [s]。
 // MD の起動は約1秒 (電流ゼロ点の校正を含む。惰行中の再 ARM ではやり直しで最大約4秒)
 #define VEHICLE_MD_BOOT_TIMEOUT_S 5.0f
@@ -89,9 +97,13 @@
 // 実車速がこの絶対値未満 (ほぼ静止) のときは、前後判定に実車速ではなく上位が指令した方向を
 // 使う。静止中は実車速の符号が定まらず常に前方判定に固定されてしまうため
 #define VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S 0.05f
-// 前方0度・後方180度を中心に、LiDARのセーフティゾーンとして見る片側角度幅 [deg]
-#define VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_DEG 20.0f
-// 上の角度窓内で、停止距離以内の点がこの数以上あれば障害物ありと確定する。単発ノイズは
+// LiDAR のセーフティゾーンは、前方 (0度) か後方 (180度) へ伸ばした矩形で見る。
+// 奥行きは動的停止距離 (+ LiDAR の取付オフセット)、片側の幅は次の値。扇形にすると遠方ほど
+// 幅が広がり、コースの壁を拾って走行中に誤って止まるため、車体が通る幅だけを見る。
+// 半車幅 9cm (surge_mk2/config/vehicle.toml の footprint、y=±0.09m) に余裕 6cm を足した値。
+// (LiDAR の y 取付オフセットは 0)
+#define VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_CM 15.0f
+// 上の矩形内で、停止距離以内の点がこの数以上あれば障害物ありと確定する。単発ノイズは
 // 1点しか占めないため、時間方向のデバウンスではなく空間方向の点密度で誤検知を弾く
 #define VEHICLE_AUTO_STOP_LIDAR_MIN_POINTS 3
 // LiDARの結果に関わらず、超音波がこの距離未満を検知したら常に停止する (至近距離の保険。
@@ -200,6 +212,19 @@ typedef struct {
   // 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したか。
   // テレメトリの RAS_FLAG_AUTO_STOP_ACTIVE に使う
   bool auto_stop_active;
+  // Steering へ適用済みのリンクの換算 (RasConfig の値は UpdateSteeringLinkage が停車・DISARM のときに適用)
+  float linkage_gain;
+  float linkage_cubic;
+
+  // 自動停止の検知手段が使えない状態の継続 (VEHICLE_AUTO_STOP_BLIND_DELAY_S)
+  bool auto_stop_blind;
+  bool auto_stop_blind_pending;
+  uint32_t auto_stop_blind_start_us;
+
+  // フェイルセーフで停車を保持している間の経過 (Timer は約24秒で一周するので Micros で数える)。
+  // VEHICLE_FAILSAFE_POWER_OFF_S を過ぎたら駆動電源を切る
+  bool failsafe_idle;
+  uint32_t failsafe_idle_start_us;
 
   // 緊急制動表示 (ESS) の判定用。decel_timer ごとに |車速| の差分から減速度を求める
   Timer ess_decel_timer;
@@ -261,6 +286,18 @@ float Vehicle_GetAppliedSteerRad(const Vehicle* obj);
  * @brief 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したかを取得する。
  */
 bool Vehicle_IsAutoStopActive(const Vehicle* obj);
+
+/**
+ * @brief ハートビート (RAS_SIG) を一度も検出していない (緊急停止の層が働いていない) か。
+ * 上位は ARM を通す前に確認すること。TELEMETRY の RAS_FLAG_NO_HEARTBEAT に使う。
+ */
+bool Vehicle_IsHeartbeatMissing(const Vehicle* obj);
+
+/**
+ * @brief ARM 中に LiDAR も前後の超音波も使えず、自動停止が何も検知できない状態が続いているか。
+ * TELEMETRY の RAS_FLAG_AUTO_STOP_BLIND に使う。
+ */
+bool Vehicle_IsAutoStopBlind(const Vehicle* obj);
 
 /**
  * @brief 上位から要求されたウィンカー/ハザード状態を取得する。フォールト時のハザード優先など

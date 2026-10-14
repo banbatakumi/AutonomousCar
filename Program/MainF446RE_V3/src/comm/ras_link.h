@@ -37,6 +37,8 @@
 #define RAS_SYNC2 0x55u
 #define RAS_FRAME_OVERHEAD 7  // SYNC(2) + TYPE + SEQ + LEN + CRC16(2)
 #define RAS_PAYLOAD_MAX 255
+// 受信で受け付ける最長のフレーム (SYNC2 + TYPE/SEQ/LEN 3 + 最長ペイロード + CRC2) に余裕を足した長さ
+#define RAS_RX_RAW_MAX 32
 #define RAS_FRAME_MAX (RAS_FRAME_OVERHEAD + RAS_PAYLOAD_MAX)
 
 // LiDAR 1セクタあたりの点数 (1周360点を12分割)
@@ -169,6 +171,11 @@ typedef enum {
 // ローンチコントロールで発進している最中 (Drive_IsLaunchActive)。上位が要求 (RAS_CMD_FLAG2_LAUNCH)
 // していても、条件を満たさず始まらなかった・もう終わった、なら立たない
 #define RAS_FLAG_LAUNCH_ACTIVE (1u << 24)
+// ハートビート (RAS_SIG) を一度も検出していない。緊急停止の層が働いていないので、上位は ARM を
+// 通さないこと (Pi 側の --no-heartbeat で動かすときを除く)
+#define RAS_FLAG_NO_HEARTBEAT (1u << 25)
+// ARM 中に LiDAR も前後の超音波も使えない状態が続いている。自動停止が何も検知できない
+#define RAS_FLAG_AUTO_STOP_BLIND (1u << 26)
 
 // TELEMETRY.md_status[i]
 // bit0 は MD が「受理済みの指令を実行中」(停止モードでない) で、回転中かどうかではない
@@ -347,6 +354,10 @@ typedef struct {
   uint8_t tx_seq;
 
   // --- 受信 ---
+  // 読み進めているフレームの生バイト (先頭は SYNC1)。ヘッダ不正・CRC 不一致で捨てるとき、
+  // 消費済みのバイトの中に次のフレームの SYNC があれば拾い直すために持つ
+  uint8_t rx_raw[RAS_RX_RAW_MAX];
+  uint8_t rx_raw_len;
   uint8_t rx_state;
   uint8_t rx_type;
   uint8_t rx_seq;
@@ -437,6 +448,12 @@ bool RasLink_HasCommand(const RasLink* obj);
  * 偽になったら自動ブレーキへ落とすこと。
  */
 bool RasLink_IsCommandAlive(const RasLink* obj);
+
+/**
+ * @brief LIMITS を送り直す。可動範囲 (max_steer_rad) が変わったとき (ステアのリンクの換算を適用したとき)
+ * に呼ぶ。上位が古い上限で指令を丸め続けないようにするため。
+ */
+void RasLink_SendLimits(RasLink* obj);
 
 /**
  * @brief 現在の設定値を取得する。CONFIG_SET / CONFIG_GET で更新される。

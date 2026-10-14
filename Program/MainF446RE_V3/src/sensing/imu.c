@@ -123,7 +123,7 @@ static uint32_t ComputeChecksum(const ImuCalibrationRecord *record) {
 }
 
 static bool LoadCalibration(Mpu6050Offset *out) {
-  ImuCalibrationRecord record;
+  ImuCalibrationRecord record = {0};
   Flash_ReadData(FLASH_MPU_START_ADDR, &record, sizeof(record));
   if (record.magic != IMU_CALIB_MAGIC) return false;
   if (record.version != IMU_CALIB_VERSION && record.version != IMU_CALIB_VERSION_GYRO_250DPS) {
@@ -211,7 +211,10 @@ static float NormalizeDeg(float deg) {
 // 静止していれば残留ジャイロバイアスへゆっくり追従する。
 // 起動時キャリブレーション後も温度変化でバイアスがずれ、それが yaw のドリフトになるため。
 static void TrackGyroBias(Imu *obj, float gx, float gy, float gz, float accel_norm) {
-  bool quiet = fabsf(gx) < IMU_STATIONARY_GYRO_DPS &&
+  // 車が動いている間は追従しない。ゆっくりした旋回 (定常円旋回の低速など) や振動の少ない
+  // 一定速度の走行を「静止」と取り違えると、本物のヨーレートをバイアスとして学習してしまう。
+  // 車速は前輪エンコーダ (Imu_SetVehicleStill)
+  bool quiet = obj->vehicle_still && fabsf(gx) < IMU_STATIONARY_GYRO_DPS &&
                fabsf(gy) < IMU_STATIONARY_GYRO_DPS &&
                fabsf(gz) < IMU_STATIONARY_GYRO_DPS &&
                fabsf(accel_norm - AHRS_GRAVITY_MPS2) < IMU_STATIONARY_ACCEL_TOL_MPS2;
@@ -448,7 +451,17 @@ void Imu_Init(Imu *obj, I2C_HandleTypeDef *i2c, bool calibrate_on_boot) {
 
   if (!Mpu6050_Init(&obj->mpu, i2c, MPU6050_I2C_ADDR_LOW, IMU_SAMPLE_RATE_HZ,
                     IMU_DLPF)) {
-    printf("[IMU] Init failed\n");
+    // 接続できなくても、通信が止まったときの復旧 (StepRecovery) を使って一定間隔で再試行する。
+    // 復旧は MPU6050 を作り直したあとに、保存済みのオフセットと姿勢の初期化まで行うので、
+    // ここでは復旧が使う最低限の状態だけ整えておく (Imu_IsReady は成功するまで false)
+    printf("[IMU] Init failed; will retry\n");
+    Ahrs_Init(&obj->ahrs, IMU_AHRS_KP, IMU_AHRS_KI);
+    Mpu6050Offset saved;
+    if (LoadCalibration(&saved)) obj->calib_offset = saved;
+    obj->i2c_addr = MPU6050_I2C_ADDR_LOW;
+    obj->initialized = true;
+    obj->last_sample_tick = HAL_GetTick();
+    obj->last_recovery_tick = obj->last_sample_tick;
     return;
   }
 
@@ -532,6 +545,8 @@ bool Imu_Update(Imu *obj) {
   }
   return false;
 }
+
+void Imu_SetVehicleStill(Imu *obj, bool still) { obj->vehicle_still = still; }
 
 const ImuData *Imu_GetData(const Imu *obj) { return &obj->data; }
 

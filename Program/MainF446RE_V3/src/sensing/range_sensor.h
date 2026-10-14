@@ -25,7 +25,15 @@ typedef struct {
   // 変化しないため、値ではなくこのseqの変化で「新しい計測が来たか」を判別する
   uint32_t front_lpf_seq;
   uint32_t rear_lpf_seq;
+  // 直近に計測が確定した時刻 (Micros) と、そのときの seq。ECHO が返っているか (断線・故障でないか)
+  uint32_t front_alive_seq;
+  uint32_t rear_alive_seq;
+  uint32_t front_alive_us;
+  uint32_t rear_alive_us;
 } RangeSensor;
+
+// この時間 (トリガ5回分) 計測が1つも確定しなければ、センサは使えないとみなす [us]
+#define RANGE_SENSOR_ALIVE_TIMEOUT_US (ULTRASONIC_TRIGGER_INTERVAL_US * 5u)
 
 /**
  * @brief 前後の超音波センサを初期化する。
@@ -77,5 +85,16 @@ float RangeSensor_GetFrontDistanceFilteredCm(RangeSensor* obj);
  * @brief LPF を通した後方の距離 [cm] を取得する。未検知時は ULTRASONIC_NO_ECHO。
  */
 float RangeSensor_GetRearDistanceFilteredCm(RangeSensor* obj);
+
+/**
+ * @brief 前方の超音波が使えている (直近 RANGE_SENSOR_ALIVE_TIMEOUT_US 以内に計測が確定した) か。
+ * 無反射でも ECHO は返るので、前に何も無いだけなら true。トリガを止めている間は false。
+ */
+bool RangeSensor_IsFrontAlive(const RangeSensor* obj);
+
+/**
+ * @brief 後方の超音波が使えているか (RangeSensor_IsFrontAlive と同じ)。
+ */
+bool RangeSensor_IsRearAlive(const RangeSensor* obj);
 
 #endif  // RANGE_SENSOR_H_

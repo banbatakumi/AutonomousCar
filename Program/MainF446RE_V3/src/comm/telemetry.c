@@ -61,6 +61,8 @@ static uint32_t BuildFlags(Telemetry* obj) {
   if (Drive_IsAbsActive(obj->drive)) flags |= RAS_FLAG_ABS_ACTIVE;
   if (Drive_IsWheelLiftGuardActive(obj->drive)) flags |= RAS_FLAG_WHEEL_LIFT_ACTIVE;
   if (Drive_IsLaunchActive(obj->drive)) flags |= RAS_FLAG_LAUNCH_ACTIVE;
+  if (Vehicle_IsHeartbeatMissing(obj->vehicle)) flags |= RAS_FLAG_NO_HEARTBEAT;
+  if (Vehicle_IsAutoStopBlind(obj->vehicle)) flags |= RAS_FLAG_AUTO_STOP_BLIND;
   if (Vehicle_IsWinkerLeftActive(obj->vehicle)) flags |= RAS_FLAG_WINKER_LEFT_ACTIVE;
   if (Vehicle_IsWinkerRightActive(obj->vehicle)) flags |= RAS_FLAG_WINKER_RIGHT_ACTIVE;
 

@@ -52,6 +52,11 @@ static void Accumulate(int32_t* accum_mrad, float* carry_mrad, float gap_rad) {
   *carry_mrad -= (float)whole;
 }
 
+// 前回の読み取りからこれ以上空いたら、角度差から回転量を決められない [s]。角度差は ±半周に
+// 畳んで求めるので、1回の間に半周を超えて回ると折り返して逆向き・過小に読む。
+// 15ms なら半周 (π) を超えるのは 209rad/s (前輪の周速で約6m/s) 以上のとき
+#define ENCODER_MAX_DT_S 0.015f
+
 void Encoder_Update(Encoder* obj) {
   float dt_s = (float)Timer_ReadUs(&obj->timer) / 1000000.0f;
   if (dt_s <= 0.0f) return;
@@ -62,8 +67,12 @@ void Encoder_Update(Encoder* obj) {
   float gap_left_rad = GapRadians(new_angle_left_rad, obj->angle_left_rad);
   float gap_right_rad = GapRadians(new_angle_right_rad, obj->angle_right_rad);
 
-  obj->angular_velocity_left_rad_s = gap_left_rad / dt_s;
-  obj->angular_velocity_right_rad_s = gap_right_rad / dt_s;
+  // 長く空いたとき (メインループが止まっていた) は、角速度を更新せず直前の値を保つ
+  // (折り返しを誤った速度を出さない)。累積は、半周以内の回転なら正しく足せるのでそのまま足す
+  if (dt_s <= ENCODER_MAX_DT_S) {
+    obj->angular_velocity_left_rad_s = gap_left_rad / dt_s;
+    obj->angular_velocity_right_rad_s = gap_right_rad / dt_s;
+  }
 
   Accumulate(&obj->accum_angle_left_mrad, &obj->accum_carry_left_mrad, gap_left_rad);
   Accumulate(&obj->accum_angle_right_mrad, &obj->accum_carry_right_mrad, gap_right_rad);

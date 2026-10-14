@@ -43,11 +43,16 @@ static float RoadToLinear(float road_rad) {
   return x;
 }
 
-void Steering_SetLinkage(float gain, float cubic) {
+float Steering_ClampLinkageCubic(float gain, float cubic) {
   // 傾き gain + 3*cubic*x^2 が可動範囲の端でも下限を割らないようにする
   float cubic_min = (STEERING_LINKAGE_MIN_SLOPE - gain) / (3.0f * kMaxLinearRad * kMaxLinearRad);
+  return cubic < cubic_min ? cubic_min : cubic;
+}
+
+float Steering_SetLinkage(float gain, float cubic) {
   link_gain = gain;
-  link_cubic = cubic < cubic_min ? cubic_min : cubic;
+  link_cubic = Steering_ClampLinkageCubic(gain, cubic);
+  return link_cubic;
 }
 
 static void LoadFromFlash(Steering* obj) {

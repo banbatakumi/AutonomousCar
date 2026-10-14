@@ -145,14 +145,20 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
   // Lidar_QueryRoi へ触れず即座に超音波フォールバックへ倒すことを明示する
   LidarRoiResult roi = {0, 0};
   if (Lidar_IsOk(obj->lidar)) {
-    roi = Lidar_QueryRoi(obj->lidar, lidar_center_deg, VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_DEG,
-                         d_stop_cm + lidar_offset_cm);
+    roi = Lidar_QueryCorridor(obj->lidar, lidar_center_deg, VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_CM,
+                              d_stop_cm + lidar_offset_cm);
   }
   bool lidar_fresh = roi.fresh_count > 0;
   bool lidar_hit = roi.hit_count >= VEHICLE_AUTO_STOP_LIDAR_MIN_POINTS;
 
-  float us_dist_cm = forward ? RangeSensor_GetFrontDistanceFilteredCm(obj->range_sensor)
-                              : RangeSensor_GetRearDistanceFilteredCm(obj->range_sensor);
+  // 近づいてくる障害物には LPF (計測1〜2回ぶんの遅れ。60ms間隔で 2m/s なら十数cm) が遅れるので、
+  // 生値の方が近ければ生値を使う。生値が遠い・無反射のときは LPF の値 (単発の外れ値で止まらない)
+  float us_filtered_cm = forward ? RangeSensor_GetFrontDistanceFilteredCm(obj->range_sensor)
+                                  : RangeSensor_GetRearDistanceFilteredCm(obj->range_sensor);
+  float us_raw_cm = forward ? RangeSensor_GetFrontDistanceCm(obj->range_sensor)
+                             : RangeSensor_GetRearDistanceCm(obj->range_sensor);
+  float us_dist_cm = us_filtered_cm;
+  if (us_raw_cm >= 0.0f && (us_dist_cm < 0.0f || us_raw_cm < us_dist_cm)) us_dist_cm = us_raw_cm;
   bool us_near_hit = us_dist_cm >= 0.0f &&
                      us_dist_cm < (VEHICLE_AUTO_STOP_ULTRASONIC_NEAR_CM + us_offset_cm);
   bool us_fallback_hit = !lidar_fresh && us_dist_cm >= 0.0f &&
@@ -271,6 +277,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 中心点が未較正だと舵角の絶対値が信用できないため走行させない。走らせない以上、
   // 駆動電源も入れない (MD に給電しなければ、どの経路の指令も届かない)
   bool center_valid = Steering_IsCenterValid(obj->steering);
+  obj->failsafe_idle = false;
   UpdateDisarmBraking(obj, arm_requested);
   Power_SetDrivePower(obj->power, (arm_requested && center_valid) || obj->disarm_braking);
   UpdateLidarPower(obj, arm_requested);
@@ -428,6 +435,20 @@ static void ApplyFailsafe(Vehicle* obj) {
   // 止まったら停車保持へ移る。動き出したら (押された・坂で保持し切れない) 最大制動からやり直す
   bool stopped = UpdateBrakeHold(obj, true);
 
+  // 止まったまま長く保持し続けない (過熱・電池消耗の防止)。切ったあとは ARM し直すまで電源を入れない
+  // (電源は ApplyRasCommand だけが入れる)。動き出した (押された・坂で滑る) らやり直す
+  if (!stopped || !Power_IsDriveOn(obj->power)) {
+    obj->failsafe_idle = false;
+  } else if (!obj->failsafe_idle) {
+    obj->failsafe_idle = true;
+    obj->failsafe_idle_start_us = Micros();
+  } else if ((uint32_t)(Micros() - obj->failsafe_idle_start_us) >=
+             (uint32_t)(VEHICLE_FAILSAFE_POWER_OFF_S * 1000000.0f)) {
+    Power_SetDrivePower(obj->power, 0);
+    obj->failsafe_idle = false;
+    RasLink_Log(obj->ras_link, RAS_LOG_WARN, "drive power off: stopped for a long time in failsafe");
+  }
+
   Drive_SetTargetSpeed(obj->drive, 0.0f, 0.0f);
   Drive_SetBrake(obj->drive, true, DRIVE_MAX_BRAKE_TORQUE_NM);
   Drive_SetTorque(obj->drive, false, 0.0f);
@@ -474,6 +495,14 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors,
   obj->horn_on = false;
   obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
+  obj->auto_stop_blind = false;
+  obj->auto_stop_blind_pending = false;
+  obj->auto_stop_blind_start_us = 0;
+  // Steering の既定の換算 (gain 1, cubic 0) と同じ。RasConfig の既定も同じなので起動直後は何もしない
+  obj->linkage_gain = 1.0f;
+  obj->linkage_cubic = 0.0f;
+  obj->failsafe_idle = false;
+  obj->failsafe_idle_start_us = 0;
 
   Timer_Init(&obj->ess_decel_timer);
   obj->ess_prev_abs_speed_m_s = 0.0f;
@@ -533,8 +562,25 @@ static void NotifyArmChange(Vehicle* obj) {
   }
 }
 
+// CONFIG_SET で受けたステアのリンクの換算を、停車して DISARM のときに適用する。走っている間に
+// 換算が変わると、同じ指令でも舵角が途中で変わる。適用したら可動範囲が変わるので LIMITS を送り直す
+static void UpdateSteeringLinkage(Vehicle* obj) {
+  if (obj->armed || obj->disarm_braking) return;
+  if (fabsf(Drive_GetVehicleSpeed(obj->drive)) >= DRIVE_STANDSTILL_SPEED_M_S) return;
+  const RasConfig* config = RasLink_GetConfig(obj->ras_link);
+  if (config->control.steer_link_gain == obj->linkage_gain &&
+      config->control.steer_link_cubic == obj->linkage_cubic) {
+    return;
+  }
+  Steering_SetLinkage(config->control.steer_link_gain, config->control.steer_link_cubic);
+  obj->linkage_gain = config->control.steer_link_gain;
+  obj->linkage_cubic = config->control.steer_link_cubic;
+  RasLink_SendLimits(obj->ras_link);
+}
+
 static void UpdateInner(Vehicle* obj) {
   UpdateEstop(obj);
+  UpdateSteeringLinkage(obj);
   UpdateMdHealth(obj);
 
   // 緊急停止は上位の指令より優先する
@@ -554,8 +600,27 @@ static void UpdateInner(Vehicle* obj) {
   }
 }
 
+// 自動停止が何も検知できない状態か (ARM 中に LiDAR も前後の超音波も使えない) を更新する。
+// 超音波はトリガを止めている DISARM 中は使えないので、ARM 中だけ見る
+static void UpdateAutoStopBlind(Vehicle* obj) {
+  bool blind_now = obj->armed && !Lidar_IsOk(obj->lidar) &&
+                   !RangeSensor_IsFrontAlive(obj->range_sensor) &&
+                   !RangeSensor_IsRearAlive(obj->range_sensor);
+  if (!blind_now) {
+    obj->auto_stop_blind_pending = false;
+    obj->auto_stop_blind = false;
+  } else if (!obj->auto_stop_blind_pending) {
+    obj->auto_stop_blind_pending = true;
+    obj->auto_stop_blind_start_us = Micros();
+  } else if ((uint32_t)(Micros() - obj->auto_stop_blind_start_us) >=
+             (uint32_t)(VEHICLE_AUTO_STOP_BLIND_DELAY_S * 1000000.0f)) {
+    obj->auto_stop_blind = true;
+  }
+}
+
 void Vehicle_Update(Vehicle* obj) {
   UpdateInner(obj);
+  UpdateAutoStopBlind(obj);
   NotifyArmChange(obj);
 }
 
@@ -570,6 +635,12 @@ uint8_t Vehicle_GetMode(const Vehicle* obj) { return obj->mode; }
 float Vehicle_GetAppliedSteerRad(const Vehicle* obj) { return obj->applied_steer_rad; }
 
 bool Vehicle_IsAutoStopActive(const Vehicle* obj) { return obj->auto_stop_active; }
+
+bool Vehicle_IsHeartbeatMissing(const Vehicle* obj) {
+  return !Heartbeat_HasEverBeenSeen(obj->heartbeat);
+}
+
+bool Vehicle_IsAutoStopBlind(const Vehicle* obj) { return obj->auto_stop_blind; }
 
 LightingWinkerState Vehicle_GetWinkerRequest(const Vehicle* obj) { return obj->winker_request; }
 

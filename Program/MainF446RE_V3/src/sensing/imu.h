@@ -59,6 +59,8 @@ typedef struct {
   float gyro_bias_y;
   float gyro_bias_z;
   uint32_t stationary_count;
+  // 車速が 0 付近か (Imu_SetVehicleStill)。偽の間はジャイロのバイアスを学習しない
+  bool vehicle_still;
 
   float yaw_offset;  // [deg] Imu_ResetYaw() で与える yaw の原点
 
@@ -113,6 +115,12 @@ bool Imu_IsReady(const Imu *obj);
  * 前提としていない他モジュールの誤動作を避ける用途に使うこと。
  */
 bool Imu_ConsumeRecoveryBlocked(Imu *obj);
+
+/**
+ * @brief 車速から見て静止しているかを伝える。毎周期呼ぶこと。偽の間は (ジャイロ・加速度が
+ * 静かに見えても) ジャイロのバイアス追従を止める。呼ばれるまでは偽 (追従しない)。
+ */
+void Imu_SetVehicleStill(Imu *obj, bool still);
 
 /**
  * @brief 現在の向きを yaw = 0 とし直す。

@@ -65,8 +65,15 @@ float Steering_GetAngleRad(const Steering* obj);
 /**
  * @brief モータ角 → 路面舵角の換算 (路面舵角 = gain*x + cubic*x^3、x = モータ角×リンク比) を設定する。
  * 以後の指令・報告・可動範囲のすべてに効く。ステアは1つしか無いのでモジュールで1組だけ持つ。
+ * @return 実際に使う cubic (傾きの下限を割る値は引き上げられるので、渡した値と異なりうる)
  */
-void Steering_SetLinkage(float gain, float cubic);
+float Steering_SetLinkage(float gain, float cubic);
+
+/**
+ * @brief gain に対して傾きの下限を割らない cubic (下限を割る値は引き上げた値) を返す。
+ * Steering_SetLinkage が実際に使う値。設定せずに確かめたい (CONFIG_ACK に丸めた値を返す) ときに使う。
+ */
+float Steering_ClampLinkageCubic(float gain, float cubic);
 
 /**
  * @brief 路面舵角 [rad] (反時計回り = 左旋回が正) を指令する。
