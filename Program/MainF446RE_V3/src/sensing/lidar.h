@@ -99,6 +99,11 @@ typedef struct {
   // 自動停止などの安全判定がテレメトリ送信の消費タイミングに左右されないようにするために持つ
   uint16_t point_distance_mm[360];              // 0 = 無効
   uint32_t sector_update_us[LIDAR_SECTOR_NUM];  // 各セクタの最終更新時刻
+  // パケット・各セクタが途絶していないか。途絶を一度検出したら次に届くまで偽のまま保つ
+  // (経過時間だけで判定すると、Micros() が一周する約71.6分後に古い点群が LIDAR_TIMEOUT_US の間
+  // だけ「新しい」扱いに戻る)
+  bool packet_alive;
+  bool sector_alive[LIDAR_SECTOR_NUM];
 } Lidar;
 
 typedef struct {

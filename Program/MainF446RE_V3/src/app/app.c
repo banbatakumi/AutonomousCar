@@ -116,6 +116,9 @@ static void PlayStartupIndication() {
 void Setup() {
   // 上位との通信が使う単調なマイクロ秒時計。他のどの初期化よりも先に立ち上げる
   Micros_Init();
+  // ウォッチドッグでリセットされて起動し直したか (フラグは次のリセットまで残るので読んだら消す)
+  bool watchdog_reset = __HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != RESET;
+  __HAL_RCC_CLEAR_RESET_FLAGS();
   printf("Setup started\n");
   DigitalOut_Init(&led1, LED1_GPIO_Port, LED1_Pin);
   DigitalOut_Init(&led2, LED2_GPIO_Port, LED2_Pin);
@@ -161,8 +164,12 @@ void Setup() {
   // ブザー配線はラズパイと共有しているため、鳴らしていない間はピンをラズパイへ明け渡す
   Buzzer_Init(&buzzer, &htim2, TIM_CHANNEL_3, 90000000U, 0U,
               BUZZER_GPIO_Port, BUZZER_Pin, GPIO_AF1_TIM2);
-  Buzzer_PlayStartupMelody(&buzzer);
-  PlayStartupIndication();
+  // ウォッチドッグからの復帰では起動の演出 (合計約2.5秒のブロッキング) を飛ばす。走行中のハングから
+  // 戻ったのかもしれず、メインループ (上位への報告・指令の受け付け) へ早く入る方が大事
+  if (!watchdog_reset) {
+    Buzzer_PlayStartupMelody(&buzzer);
+    PlayStartupIndication();
+  }
 
   // ボタン1を押しながら起動 → 現在のステアリング角度を直進中心点として記録・保存する。
   // 較正は MD からの状態フレーム受信が要るため、このときだけ駆動電源を入れて較正後に落とす。
@@ -190,6 +197,9 @@ void Setup() {
   Serial_Init(&ras_serial, &huart1, ras_serial_rx_buf, RAS_SERIAL_RX_BUF_SIZE);
   RasLink_Init(&ras_link, &ras_serial);
   Heartbeat_Init(&heartbeat, RAS_SIG_GPIO_Port, RAS_SIG_Pin);
+  if (watchdog_reset) {
+    RasLink_Log(&ras_link, RAS_LOG_ERROR, "restarted by watchdog reset (main loop had stopped)");
+  }
 
   Vehicle_Init(&vehicle, &ras_link, &drive, &motors, &steering, &lighting, &power, &heartbeat,
                &buzzer, &button2, &range_sensor, &lidar);
@@ -294,7 +304,7 @@ void MainApp() {
     // フェイルセーフへ落ちる基準 RasLink_IsCommandAlive() と同じ判定を流用)
     DigitalOut_Write(&led1, !RasLink_IsCommandAlive(&ras_link));
 
-    // LED2 の点灯幅が「処理を終えてから次の周期まで空いているアイドル待ち時間」になる
+    // 処理を終えてから次の周期まで待つ (周期はここの待ちで決まる)
     while (Timer_ReadUs(&control_interval_timer) < CONTROL_INTERVAL_US);
     Timer_Reset(&control_interval_timer);
   }

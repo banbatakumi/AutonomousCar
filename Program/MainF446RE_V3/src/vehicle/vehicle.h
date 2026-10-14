@@ -28,6 +28,7 @@
 //   1. 緊急停止がラッチ中          → フェイルセーフ
 //   2. COMMAND が生きている        → 上位の指令
 //   3. それ以外 (未接続・途絶)     → フェイルセーフ
+// フェイルセーフを一度通ったら、上位が ARM を下ろして立て直すまで走らせない (rearm_required)。
 //
 // 「止める」の約束 (上位・MD と意味を揃えてある):
 //   - 走行中に上位の ARM が外れても、すぐには駆動電源を切らない。電源を切ると MD ごと落ちて
@@ -46,6 +47,11 @@
 // 駆動電源を入れてから、3台の MD が使える状態 (Motors_IsReady) になるのを待つ時間の上限 [s]。
 // MD の起動は約1秒 (電流ゼロ点の校正を含む。惰行中の再 ARM ではやり直しで最大約4秒)
 #define VEHICLE_MD_BOOT_TIMEOUT_S 5.0f
+// 走行中に MD が「使えない」と読めてから md_fault をラッチするまでの継続時間 [s]。MD は状態を
+// 500us ごとに返すので 40 フレームぶん。状態フレームの CRC は 8bit で、化けたフレームの 1/256 は
+// 通る。1フレームで決めると、化けて異常ビットが立って見えただけ・電圧のサグが一瞬掛かっただけで
+// 走行中に最大制動へ入り、ARM を外すまで戻らない (通信断の判定は Motors 側が 100ms 掛けている)
+#define VEHICLE_MD_FAULT_DEBOUNCE_S 0.02f
 // COMMAND.steer_rate_limit が 0 (指定なし) のときの舵角速度の上限 [rad/s]
 #define VEHICLE_DEFAULT_STEER_RATE_RAD_S 0.5f
 
@@ -170,6 +176,12 @@ typedef struct {
   Timer brake_hold_timer;
   bool brake_hold;
 
+  // フェイルセーフ (緊急停止・COMMAND 途絶・未接続) を通ったあと、上位が ARM を一度下ろすまで
+  // ARM を受け付けない。ARM を立てたままの COMMAND が残っていても、緊急停止を解除した瞬間や
+  // 通信が戻った瞬間にそのまま走り出さないようにする (上位が明示的に ARM し直すまで動かさない)
+  bool rearm_required;
+  bool rearm_logged;  // 受け付けなかったことを上位へ知らせたか (1回の保留につき1回)
+
   // 走行中に ARM が外れたあと、停車を待って最大制動を続けているか (この間は駆動電源を切らない)
   bool arm_requested_prev;
   bool disarm_braking;
@@ -181,6 +193,9 @@ typedef struct {
   bool md_started;
   bool md_fault;
   Timer md_boot_timer;
+  // 起動後に「使えない」と読め始めてからの時間 (VEHICLE_MD_FAULT_DEBOUNCE_S)。md_unready が偽の間は無効
+  bool md_unready;
+  Timer md_unready_timer;
 
   // 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したか。
   // テレメトリの RAS_FLAG_AUTO_STOP_ACTIVE に使う
@@ -221,7 +236,7 @@ bool Vehicle_IsEstopLatched(const Vehicle* obj);
 /**
  * @brief 直近の周期で上位指令が ARM として適用されたか (= 上位の指令で走れる状態か) を取得する。
  * COMMAND 途絶・緊急停止のフェイルセーフ中、Pi 未接続・起動中、MD の起動待ち、ARM が外れた
- * あとの停止待ちは false。駆動電源が入っているかどうかとは別 (Power_IsDriveOn)。
+ * あとの停止待ち、フェイルセーフのあと上位が ARM を下ろすまでの間は false。駆動電源が入っているかどうかとは別 (Power_IsDriveOn)。
  */
 bool Vehicle_IsArmed(const Vehicle* obj);
 

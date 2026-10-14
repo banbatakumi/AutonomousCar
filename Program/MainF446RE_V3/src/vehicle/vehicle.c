@@ -215,6 +215,7 @@ static void UpdateMdHealth(Vehicle* obj) {
   if (!powered) {
     obj->md_started = false;
     obj->md_fault = false;
+    obj->md_unready = false;
   } else {
     if (!obj->drive_power_prev) Timer_Reset(&obj->md_boot_timer);
     bool ready = Motors_IsReady(obj->motors);
@@ -225,7 +226,12 @@ static void UpdateMdHealth(Vehicle* obj) {
         } else if (Timer_Read(&obj->md_boot_timer) >= VEHICLE_MD_BOOT_TIMEOUT_S) {
           LatchMdFault(obj, "did not start");
         }
-      } else if (!ready) {
+      } else if (ready) {
+        obj->md_unready = false;
+      } else if (!obj->md_unready) {
+        obj->md_unready = true;
+        Timer_Reset(&obj->md_unready_timer);
+      } else if (Timer_Read(&obj->md_unready_timer) >= VEHICLE_MD_FAULT_DEBOUNCE_S) {
         LatchMdFault(obj, "stopped");
       }
     }
@@ -250,6 +256,18 @@ static void ApplyRasCommand(Vehicle* obj) {
   if (command->mode != RAS_MODE_RESERVED) obj->mode = command->mode;
 
   bool arm_requested = (command->flags & RAS_CMD_FLAG_ARM) != 0;
+  // フェイルセーフのあとは ARM の立ち上がりを要求する (vehicle.h の rearm_required)。受け付けない間は
+  // ARM が外れているのと同じに扱うので、走っていれば下の UpdateDisarmBraking が停車まで制動する
+  if (!arm_requested) {
+    obj->rearm_required = false;
+    obj->rearm_logged = false;
+  } else if (obj->rearm_required) {
+    arm_requested = false;
+    if (!obj->rearm_logged) {
+      RasLink_Log(obj->ras_link, RAS_LOG_WARN, "ARM ignored: disarm once to re-arm (after e-stop / COMMAND loss)");
+      obj->rearm_logged = true;
+    }
+  }
   // 中心点が未較正だと舵角の絶対値が信用できないため走行させない。走らせない以上、
   // 駆動電源も入れない (MD に給電しなければ、どの経路の指令も届かない)
   bool center_valid = Steering_IsCenterValid(obj->steering);
@@ -284,8 +302,15 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 静止時の前後判定フォールバック用。torque_mode なら target_torque、そうでなければ
   // target_speed の符号を「これから進もうとしている方向」として使う
   float desired_direction = torque_mode ? command->target_torque_nm : command->target_speed_m_s;
+  // 一度作動したら、止まるまで解除しない。停止距離は車速とともに縮むので、判定だけで決めると
+  // 減速した途端に「範囲外」になって解除→再加速→再作動を繰り返しながら障害物へ寄っていく。
+  // 止まってからは毎周期判定し直すので、障害物が無くなれば (または上位が逆方向を指令すれば) 動ける
+  bool auto_stop_moving =
+      fabsf(Drive_GetVehicleSpeedForDirection(obj->drive)) > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S;
   obj->auto_stop_active =
-      armed && auto_stop_enabled && IsAutoStopObstacleAhead(obj, config, desired_direction);
+      armed && auto_stop_enabled &&
+      ((obj->auto_stop_active && auto_stop_moving) ||
+       IsAutoStopObstacleAhead(obj, config, desired_direction));
   bool braking = cmd_braking || obj->auto_stop_active || forced_braking;
 
   float target_speed_m_s = 0.0f;
@@ -367,7 +392,8 @@ static void ApplyRasCommand(Vehicle* obj) {
 // 危険」なときの処置で、緊急停止でやるべきなのは最短で止めることの方。
 //
 // 一度発動したらラッチし、人間が明示的に解除するまで復帰しない (原因が解消しないまま
-// 走り出さないため)。解除はハートビートが戻っている状態でボタン2を押す。
+// 走り出さないため)。解除はハートビートが戻っている状態でボタン2を押す。解除しても、上位が ARM を
+// 一度下ろすまでは走らせない (ApplyRasCommand の rearm_required)。
 // ---------------------------------------------------------------------------
 
 static void UpdateEstop(Vehicle* obj) {
@@ -414,6 +440,7 @@ static void ApplyFailsafe(Vehicle* obj) {
                      stopped && RasLink_GetConfig(obj->ras_link)->brake_hold_enabled);
   Steering_SetRoadWheelAngleRad(obj->steering, obj->applied_steer_rad);
   obj->armed = false;
+  obj->rearm_required = true;
   // 減速・クリープしている間は全光量のまま (後続への表示を弱めない)。Pi 未接続・起動中は
   // ずっとここを通るので、止まったら減光する (省電力。ブレーキホールドが無効でも)
   Lighting_SetBrakeDimmed(obj->lighting, stopped);
@@ -473,6 +500,8 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors,
   Timer_Init(&obj->brake_hold_timer);
   obj->brake_hold = false;
 
+  obj->rearm_required = true;
+  obj->rearm_logged = false;
   obj->arm_requested_prev = false;
   obj->disarm_braking = false;
   Timer_Init(&obj->disarm_brake_timer);
@@ -481,6 +510,8 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors,
   obj->md_started = false;
   obj->md_fault = false;
   Timer_Init(&obj->md_boot_timer);
+  obj->md_unready = false;
+  Timer_Init(&obj->md_unready_timer);
 }
 
 // armed が変化した周期に一度だけ通知音を鳴らす。緊急停止・通信途絶で落ちた場合も
@@ -489,6 +520,11 @@ static void NotifyArmChange(Vehicle* obj) {
   if (obj->armed == obj->prev_armed) return;
   obj->prev_armed = obj->armed;
   if (obj->armed) {
+    // ハートビートを一度も見ていなければ緊急停止 (UpdateEstop) は働かない。ベンチでの単体確認の
+    // ために走行は止めないが、配線の抜け・上位の出力忘れに気付けるよう上位へ知らせる
+    if (!Heartbeat_HasEverBeenSeen(obj->heartbeat)) {
+      RasLink_Log(obj->ras_link, RAS_LOG_WARN, "armed without heartbeat (RAS_SIG never seen): e-stop is inactive");
+    }
     Buzzer_Sweep(obj->buzzer, VEHICLE_ARM_SWEEP_LOW_HZ, VEHICLE_ARM_SWEEP_HIGH_HZ,
                  VEHICLE_ARM_SWEEP_DURATION_MS);
   } else {

@@ -30,6 +30,9 @@ typedef struct {
   int last_level;
   uint32_t last_edge_us;
   uint32_t edge_count;
+  // 途絶していないか。途絶を一度検出したら次のエッジまで偽のまま保つ (経過時間だけで判定すると、
+  // Micros() が一周する約71.6分後に古いエッジが HEARTBEAT_TIMEOUT_US の間だけ生き返る)
+  bool alive;
 } Heartbeat;
 
 /**

@@ -27,6 +27,7 @@ typedef struct {
   // 「本当に新しい値か」を判別する (トリガ間隔60msの間、Ultrasonic_GetDistanceCm()は
   // ずっと同じ値を返すため、値そのものの比較では区別できない)
   volatile uint32_t seq;
+  uint32_t seq_at_trigger;  // 前回トリガを出した時点の seq (その後に計測が確定したかの判定用)
 } Ultrasonic;
 
 static inline void Ultrasonic_Init(Ultrasonic *obj, GPIO_TypeDef *trig_port, uint16_t trig_pin,
@@ -37,6 +38,7 @@ static inline void Ultrasonic_Init(Ultrasonic *obj, GPIO_TypeDef *trig_port, uin
   obj->waiting_fall = 0;
   obj->distance_cm = ULTRASONIC_NO_ECHO;
   obj->seq = 0;
+  obj->seq_at_trigger = 0;
 }
 
 // 一定間隔でトリガパルスを送出する。ブロッキングしないので制御ループの毎ティック呼ぶこと。
@@ -56,10 +58,14 @@ static inline void Ultrasonic_Update(Ultrasonic *obj) {
     // 取りこぼさず処理される)
     uint32_t exti_line = obj->echo.pin;
     EXTI->IMR &= ~exti_line;
-    if (obj->waiting_fall) {
+    // 前回のトリガから計測が1つも確定していない場合も無効値にする。ECHO が立ち上がりすら
+    // 返さない (センサの断線・故障、トリガを止めていた間) と waiting_fall は立たず、何もしなければ
+    // 最後に測れた距離が「今の距離」として残り続ける
+    if (obj->waiting_fall || obj->seq == obj->seq_at_trigger) {
       obj->waiting_fall = 0;
       obj->distance_cm = ULTRASONIC_NO_ECHO;
     }
+    obj->seq_at_trigger = obj->seq;
     EXTI->IMR |= exti_line;
 
     DigitalOut_Write(&obj->trig, 1);

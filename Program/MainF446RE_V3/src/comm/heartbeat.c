@@ -8,19 +8,26 @@ void Heartbeat_Init(Heartbeat* obj, GPIO_TypeDef* port, uint16_t pin) {
   obj->last_level = DigitalIn_Read(&obj->pin);
   obj->last_edge_us = Micros();
   obj->edge_count = 0;
+  obj->alive = false;
 }
 
 void Heartbeat_Update(Heartbeat* obj) {
   int level = DigitalIn_Read(&obj->pin);
-  if (level == obj->last_level) return;
+  if (level == obj->last_level) {
+    if (obj->alive && (uint32_t)(Micros() - obj->last_edge_us) >= HEARTBEAT_TIMEOUT_US) {
+      obj->alive = false;
+    }
+    return;
+  }
 
   obj->last_level = level;
   obj->last_edge_us = Micros();
+  obj->alive = true;
   if (obj->edge_count < UINT32_MAX) obj->edge_count++;
 }
 
 bool Heartbeat_IsAlive(const Heartbeat* obj) {
-  if (obj->edge_count < HEARTBEAT_MIN_EDGES) return false;
+  if (obj->edge_count < HEARTBEAT_MIN_EDGES || !obj->alive) return false;
   return (uint32_t)(Micros() - obj->last_edge_us) < HEARTBEAT_TIMEOUT_US;
 }
 
@@ -33,5 +40,6 @@ uint32_t Heartbeat_GetEdgeCount(const Heartbeat* obj) {
 }
 
 void Heartbeat_ResetBaseline(Heartbeat* obj) {
+  // 途絶を検出済み (alive が偽) なら生き返らせない。次の本物のエッジを待つ
   obj->last_edge_us = Micros();
 }

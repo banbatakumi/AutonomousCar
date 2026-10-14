@@ -42,6 +42,7 @@ static void FinishSector(Lidar* obj) {
     obj->point_distance_mm[sector_idx * LIDAR_POINTS_PER_SECTOR + i] = obj->building.distance_mm[i];
   }
   obj->sector_update_us[sector_idx] = obj->building_last_us;
+  obj->sector_alive[sector_idx] = true;
 }
 
 // 1点をビンへ置く。同じビンに既に点があれば、ビン中心に近い方を残す
@@ -154,6 +155,7 @@ void Lidar_Update(Lidar* obj) {
   // 溜まっている分を取りこぼさないよう、無くなるまで繰り返す
   while (LD06_Update(&obj->ld06)) {
     obj->last_packet_us = obj->ld06.rx_time_us;
+    obj->packet_alive = true;
 
     // パケット末尾を受け取った時刻から、回転速度で各点の取得時刻を遡って求める。
     // 12点は 10Hz 回転で約2.7msにわたって取得されているため、まとめて同じ時刻として
@@ -175,6 +177,17 @@ void Lidar_Update(Lidar* obj) {
       PlaceInterpolated(obj, point->angle, point->distance, point->confidence, t_us);
     }
   }
+
+  // 途絶の検出 (lidar.h の packet_alive / sector_alive)
+  uint32_t now = Micros();
+  if (obj->packet_alive && (uint32_t)(now - obj->last_packet_us) >= LIDAR_TIMEOUT_US) {
+    obj->packet_alive = false;
+  }
+  for (int i = 0; i < LIDAR_SECTOR_NUM; i++) {
+    if (obj->sector_alive[i] && (uint32_t)(now - obj->sector_update_us[i]) >= LIDAR_TIMEOUT_US) {
+      obj->sector_alive[i] = false;
+    }
+  }
 }
 
 const LidarSector* Lidar_TakeReadySector(Lidar* obj) {
@@ -184,7 +197,7 @@ const LidarSector* Lidar_TakeReadySector(Lidar* obj) {
 }
 
 bool Lidar_IsOk(const Lidar* obj) {
-  if (obj->ld06.rx_count == 0) return false;
+  if (obj->ld06.rx_count == 0 || !obj->packet_alive) return false;
   return (uint32_t)(Micros() - obj->last_packet_us) < LIDAR_TIMEOUT_US;
 }
 
@@ -197,6 +210,7 @@ LidarRoiResult Lidar_QueryRoi(const Lidar* obj, float center_deg, float half_wid
   for (int offset = -half; offset <= half; offset++) {
     int bin = (center + offset + 360) % 360;
     uint8_t sector_idx = (uint8_t)(bin / LIDAR_DEG_PER_SECTOR);
+    if (!obj->sector_alive[sector_idx]) continue;
     if ((uint32_t)(now - obj->sector_update_us[sector_idx]) >= LIDAR_TIMEOUT_US) continue;
     result.fresh_count++;
     uint16_t mm = obj->point_distance_mm[bin];

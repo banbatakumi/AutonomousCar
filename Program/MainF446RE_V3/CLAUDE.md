@@ -21,21 +21,22 @@ make run      # make -j12 後、SWDFlash.sh (ST-Link, STM32_Programmer_CLI) で 
 
 ## 現在の状態
 
-- プロトコル: `RAS_PROTOCOL_VERSION` = 0x0017 (v0.23)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.22_delta.md`。
+- プロトコル: `RAS_PROTOCOL_VERSION` = 0x0017 (v0.23)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.23_delta.md`。
 - STM32 は v0.23 を書き込み済み (上位が `protocol_version` 0x0017 を確認)。**MD 側に v0.19 以降 (ARM の「止める」約束・ブレーキホールド・ローンチ・車速PIの加速度FF・ランプ上限廃止) の対応版を書き込んだかは未確認**。
 - **実機未検証の機能**: トルクベクタリング (荷重比例の配分)、ステアのリンク換算 (v0.18)、自動停止 (LiDAR 主・超音波補助)、LIMITS パケット、ブレーキホールドの移行条件、ローンチ、加速度FF、省電力化 (超音波/LiDAR PWM 停止)。ABS・TC・片輪浮き対策のしきい値/ゲインは机上値 (上位側の車両モデルで最適化した初期値)。ESS ブレーキ灯のしきい値・自動停止の遅延見積り (`VEHICLE_AUTO_STOP_DELAY_S`) は未実測。
+- **作業ツリーにあって未書き込み・実機未検証**: フェイルセーフ後の ARM の立ち上がり要求 (`rearm_required`)、MD 異常のデバウンス、自動停止を止まるまで保持、brake/torque_mode 中の目標車速の追従、I2C BUSY 時の IMU 読み出しの見送り、超音波の途絶の無効化、ウォッチドッグ復帰時の演出の省略。ワイヤ形式は変えていないので `protocol_version` は 0x0017 のまま。
 - 実機確認済み: LiDAR 給電の ARM 連動、後輪の位置保持。
 
 ## 走行制御・安全の要点
 
 - 起動直後と **Pi 未接続/DISARM の間は `DRIVE_POWER`・`LIDAR_POWER` とも OFF が既定**。ボタン1を押しながら起動したときだけステア原点較正のため `Setup()` で一時的に駆動電源を入れ、較正後に切る。ステア中心が未較正の間は駆動電源を入れず、`Steering_SetAngleRad` も何も送らない。
-- 優先順位 (`src/vehicle/vehicle.c`): ①緊急停止ラッチ中 → ②COMMAND 生存中は上位指令 → ③それ以外はフェイルセーフ (`ApplyFailsafe`: 最大制動で停車保持。ホーン・パッシング・ウィンカーも解除)。
+- 優先順位 (`src/vehicle/vehicle.c`): ①緊急停止ラッチ中 → ②COMMAND 生存中は上位指令 → ③それ以外はフェイルセーフ (`ApplyFailsafe`: 最大制動で停車保持。ホーン・パッシング・ウィンカーも解除)。**フェイルセーフを一度通ったら (緊急停止・COMMAND 途絶・起動直後)、上位が ARM を一度下ろして立て直すまで `armed` にしない** (`rearm_required`。ARM を立てたままの COMMAND で、解除・復帰した瞬間に走り出さないため。受け付けなかったら LOG で知らせる)。
 - 安全層: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 (ラッチ。**ハートビートが戻った状態でボタン2を押すまで解除しない**。駆動電源は切らない: 切ると MD が制動できず惰行するため) → ④COMMAND 途絶 100ms で自動ブレーキ。
-- 「止める」: `Coast()` は送信停止ではなくトルク0を送り続ける (`BldcMotor_Stop` を止める手段に使わない)。走行中に ARM が外れたら、停車 (`DRIVE_STANDSTILL_SPEED_M_S`) まで駆動電源を切らず最大制動 (`UpdateDisarmBraking`、上限 `VEHICLE_DISARM_BRAKE_TIMEOUT_S`)。3台の MD の健全性を毎周期監視し (`UpdateMdHealth`)、揃うまで `armed` にしない・走行中に崩れたら両後輪を最大制動して `md_fault` をラッチ。
+- 「止める」: `Coast()` は送信停止ではなくトルク0を送り続ける (`BldcMotor_Stop` を止める手段に使わない)。走行中に ARM が外れたら、停車 (`DRIVE_STANDSTILL_SPEED_M_S`) まで駆動電源を切らず最大制動 (`UpdateDisarmBraking`、上限 `VEHICLE_DISARM_BRAKE_TIMEOUT_S`)。3台の MD の健全性を毎周期監視し (`UpdateMdHealth`)、揃うまで `armed` にしない・走行中に `VEHICLE_MD_FAULT_DEBOUNCE_S` 続けて崩れたら両後輪を最大制動して `md_fault` をラッチ。
 - ブレーキホールド: 制動して |車速| が `VEHICLE_BRAKE_HOLD_SPEED_M_S` 未満の状態が `VEHICLE_BRAKE_HOLD_DELAY_S` 続いたら後輪の位置保持へ (`UpdateBrakeHold`)。サイドブレーキ (`flags2` bit0) は速度に関わらず即座に位置保持し、brake・torque_mode・速度より優先。
-- 駆動 (`src/control/drive.c`): 車速 PI (+加速度FF) → 左右配分 (等配分 + TV の差) → スリップ制限 (TC/ABS/片輪浮き対策) → MD へトルク指令。車速の真値は非駆動輪の前輪エンコーダ。brake は車速PIを迂回して MD の制動モードへトルクを直接渡す。torque_mode も PI を迂回するが TC/TV は掛かる。brake と torque_mode が同時なら brake が勝つ。ABS は制動モードのみ、TC は負トルク (PI の減速) にも掛かる。詳細・定数は `drive.h` のコメント。
+- 駆動 (`src/control/drive.c`): 車速 PI (+加速度FF) → 左右配分 (等配分 + TV の差) → スリップ制限 (TC/ABS/片輪浮き対策) → MD へトルク指令。brake・torque_mode の間は目標車速を実車速に合わせ続け、車速指令へ戻ったら今の車速からランプで詰める。車速の真値は非駆動輪の前輪エンコーダ。brake は車速PIを迂回して MD の制動モードへトルクを直接渡す。torque_mode も PI を迂回するが TC/TV は掛かる。brake と torque_mode が同時なら brake が勝つ。ABS は制動モードのみ、TC は負トルク (PI の減速) にも掛かる。詳細・定数は `drive.h` のコメント。
 - 調整パラメータは `src/control/control_params.h` の `CONTROL_PARAM_TABLE` が唯一の定義 (名前・`param_id`・既定値・範囲)。Flash には保存せず、上位が接続のたびに `CONFIG_SET` で送る。
-- 自動停止 (`COMMAND.flags` bit7): 動的停止距離 `d_stop = v・遅延 + v²/(2a) + margin` 以内の LiDAR 点が3点以上、または超音波 (フォールバック/至近の独立トリガー) で作動。しきい値は車体先端基準 (取付オフセット加算)。静止時の前後判定は上位が指令した方向へフォールバック (デッドロック回避)。緊急停止ラッチは LiDAR を使わない。判定は `AutoStopDistanceCm()` / `IsAutoStopObstacleAhead()`。
+- 自動停止 (`COMMAND.flags` bit7): 動的停止距離 `d_stop = v・遅延 + v²/(2a) + margin` 以内の LiDAR 点が3点以上、または超音波 (フォールバック/至近の独立トリガー) で作動。しきい値は車体先端基準 (取付オフセット加算)。静止時の前後判定は上位が指令した方向へフォールバック (デッドロック回避)。一度作動したら止まるまで解除しない (停止距離は車速で縮むので、判定だけだと解除と再作動を繰り返す)。緊急停止ラッチは LiDAR を使わない。判定は `AutoStopDistanceCm()` / `IsAutoStopObstacleAhead()`。
 - 灯火: ウィンカー要求は `Vehicle` が `winker_request` として保持するだけで、`Lighting_SetWinker()` を呼ぶのは `Indicator_Update()` (`src/hmi/indicator.c`) のみ (フォールト時のハザードを優先するため調停を一箇所に集約)。ブレーキ灯は制動モードまたは実減速度で点灯、高速点滅 (ESS) は制動モードかつ急減速のとき (`ApplyBrakeLight()`)。
 - 上位の最大速度・最大舵角は固定定数 (`DRIVE_MAX_SPEED_M_S`、`Steering_GetMaxRoadWheelAngleRad()`)。最大加速度は上位が `COMMAND.accel_limit` で決める (0 なら `DRIVE_DEFAULT_ACCEL_M_S2`)。固定上限は `LIMITS` (0x0A) パケットで上位へ通知。
 
@@ -64,13 +65,14 @@ docs/        README.md を参照
 - `lib/crc8` は MD リポジトリ (`ProgramV4/lib/crc8/crc8.h`) とバイト単位で同一に保つ (多項式を変えると HD が落ちる)。`lib/crc16` は Pi 用 (CCITT-FALSE、LiDAR/テレメトリの長いフレームに必要)。
 - `Serial_Write` は進行中の DMA を中断するので、Pi 向けは `Serial_WriteAsync` を使う。MD 向け 1回の送信 (6バイト=60us@1Mbps) は次の送信までに完了させる。
 - Flash 書き込みは `lib/flash/flash.h` 経由 (Sector 7 ユーザー、Sector 6 MPU6050 較正)。
-- `lib/watchdog` (IWDG) は一度起動すると止められないので、ブロッキング初期化が全部終わってから起動する。
+- `lib/watchdog` (IWDG) は一度起動すると止められないので、ブロッキング初期化が全部終わってから起動する。ウォッチドッグのリセットで起動し直したときは起動の演出を飛ばし、LOG で上位へ知らせる (`Setup()`)。
+- 割り込みの中から HAL のブロッキング待ちに入らないこと。MPU6050 の DATA_RDY 割り込みは、I2C が BUSY なら読み出しを始めずに捨てる (`Mpu6050_OnDataReady`。`HAL_I2C_Mem_Read_IT` は BUSY を約17ms 空回りで待ち、5ms 周期の割り込みの中ではメインループが止まる)。
 - `lib/ld06` の `LD06_Update()` は1パケットごとに返す。呼び出し側は false が返るまで繰り返す。
 - LiDAR の左右鏡像補正は STM32 側では行わない (PlacePoint の角度を 360-angle にすると上位で通信エラーが増発する不具合が出た。原因未解明)。センサ基準の角度のまま送り、上位が `real_angle_deg = (360 - (sector_idx*30 + point_index)) % 360` で解釈する。1度ビンに複数点があるときはビン中心に最も近い点を採る。
 
 ## 通信
 
-- **Pi**: USART1 1000000bps。フレームは SYNC(2)/TYPE/SEQ/LEN/PAYLOAD/CRC16。仕様は `src/comm/ras_link.h` (flags・param_id・型)、`ras_link.c` (LEN・レイアウト)、`docs/pi_uart_protocol_v0.19〜v0.22_delta.md`。ベース仕様と v0.5〜v0.18 の差分は `docs/archive/`。送信は優先度つきキュー (PONG > TELEMETRY > LIDAR > CONFIG_ACK 等 > LOG)。USART1 の NVIC と `USART1_IRQHandler` は RasLink が持つ (CubeMX で USART1 割り込みを有効にすると多重定義になる)。
+- **Pi**: USART1 1000000bps。フレームは SYNC(2)/TYPE/SEQ/LEN/PAYLOAD/CRC16。仕様は `src/comm/ras_link.h` (flags・param_id・型)、`ras_link.c` (LEN・レイアウト)、`docs/pi_uart_protocol_v0.19〜v0.23_delta.md`。ベース仕様と v0.5〜v0.18 の差分は `docs/archive/`。送信は優先度つきキュー (PONG > TELEMETRY > LIDAR > CONFIG_ACK 等 > LOG)。USART1 の NVIC と `USART1_IRQHandler` は RasLink が持つ (CubeMX で USART1 割り込みを有効にすると多重定義になる)。
 - **RAS_SIG (PB12) と ECHO_FRONT (PA12) は同じ EXTI ライン12** のため外部割り込みが使えず、RAS_SIG はポーリング。
 - **MD**: USART2 (ステア) / USART3 (左後輪) / UART4 (右後輪)、1000000bps。**ボーレートは MD 側と同時に変えること** (片側だけだと全フレームが化ける)。指令 6バイト (モード・指令値・トルク上限、CRC-8)、状態 11バイト (トルク上限をエコーバック)。CRC 不一致は破棄して前回値を保持。トルク上限 0 は「無制限」ではなく「動かない」。速度上限は持たない。指令は毎周期 (2kHz)、MD は状態を 500us ごとに返す。MD の通信監視 (`COMM_OK`、100ms 無応答) は Motors が持つ。
 
@@ -81,7 +83,7 @@ docs/        README.md を参照
 | I2C1_SCL/SDA | PB8/PB9 | MPU6050 (400kHz) |
 | INT | PC5 | MPU6050 DATA_RDY (EXTI9_5) |
 | CURRENT_P/S, VOLTAGE_S/P | PC0/PC1, PC2/PC3 | 電流・電圧 ADC |
-| ENCODER_LEFT/RIGHT | PA5/PA4 | 前輪エンコーダ (アナログ絶対角, ADC2 DMA) |
+| ENCODER_LEFT/RIGHT | PA5/PA4 | 前輪エンコーダ (アナログ絶対角, ADC2 DMA)。**ラベルは実配線と左右が逆**: PA5 が右前輪、PA4 が左前輪 (`src/sensing/encoder.h` の並びが正) |
 | FRONT_LED/REAR_LED | PA6/PB0 | 前照灯・尾灯 |
 | LW_LED/RW_LED | PA7/PB1 | 左右ウィンカー |
 | TRIG/ECHO_FRONT | PA11/PA12 | 前方超音波 |

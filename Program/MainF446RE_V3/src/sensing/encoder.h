@@ -4,10 +4,14 @@
 #include "adc_dma.h"
 #include "timer.h"
 
-// ADC2 の Rank 順 (Core/Src/adc.c の MX_ADC2_Init() のチャンネル設定順と一致させること)
+// ADC2 の Rank 順 (Core/Src/adc.c の MX_ADC2_Init(): Rank1 = IN5 (PA5)、Rank2 = IN4 (PA4))。
+// **実機では PA5 に右前輪、PA4 に左前輪のエンコーダが繋がっている** (右の車輪を回すと index 0 が
+// 動くことを確認済み)。CubeMX のピンラベル (PA5 = ENCODER_LEFT、PA4 = ENCODER_RIGHT。main.h の
+// ENCODER_LEFT_Pin / ENCODER_RIGHT_Pin) は実配線と左右が逆で、正しいのはこの並びの方。
+// ラベルはピンをアナログ入力にするのに使われているだけなので、読みには影響しない
 typedef enum {
-  ENCODER_ADC2_CH_RIGHT = 0,
-  ENCODER_ADC2_CH_LEFT,
+  ENCODER_ADC2_CH_RIGHT = 0,  // Rank1 = IN5 (PA5)
+  ENCODER_ADC2_CH_LEFT,       // Rank2 = IN4 (PA4)
   ENCODER_ADC2_NUM_CH,
 } EncoderAdc2Channel;
 

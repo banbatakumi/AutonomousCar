@@ -9,7 +9,8 @@
 | `pi_uart_protocol_v0.19_delta.md` | 「止める」の約束 (ARM 解除時の停車まで制動・MD 健全性・ブレーキホールド)、`flags` bit22/23 |
 | `pi_uart_protocol_v0.20_delta.md` | ローンチコントロール |
 | `pi_uart_protocol_v0.21_delta.md` | 車速PIの加速度フィードフォワード |
-| `pi_uart_protocol_v0.22_delta.md` | 目標車速ランプの固定上限の廃止 (現行版 0x0016) |
+| `pi_uart_protocol_v0.22_delta.md` | 目標車速ランプの固定上限の廃止 |
+| `pi_uart_protocol_v0.23_delta.md` | 調整パラメータの既定値をファームに持たない・車速PIのゲインを調整パラメータに (現行版 0x0017) |
 
 各 delta は直前の版からの差分だけを書く。プロトコルを変えたら `RAS_PROTOCOL_VERSION` を上げて delta を足す。
 

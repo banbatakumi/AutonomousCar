@@ -53,10 +53,11 @@ void Steering_SetLinkage(float gain, float cubic) {
 static void LoadFromFlash(Steering* obj) {
   SteeringCalibData calib;
   Flash_ReadData(FLASH_USER_START_ADDR, &calib, sizeof(calib));
-  if (calib.magic == STEERING_CALIB_MAGIC) {
+  // 値そのものも確かめる (機械角は 0〜2π。書き込みが途中で切れた・化けた値を中心点にしない)
+  if (calib.magic == STEERING_CALIB_MAGIC && calib.center_rad >= 0.0f && calib.center_rad < TWO_PI + 0.01f) {
     obj->center_rad = calib.center_rad;
     obj->center_valid = true;
-    printf("Steering: loaded center_rad=%.3f\n", obj->center_rad);
+    printf("Steering: loaded center_rad=%.3f\n", (double)obj->center_rad);
   } else {
     obj->center_rad = 0.0f;
     obj->center_valid = false;
@@ -101,8 +102,11 @@ static bool Calibrate(Steering* obj) {
   obj->center_rad = NormalizeRadians(first_rad + diff_sum_rad / (float)STEERING_CALIB_FRAMES);
 
   SteeringCalibData calib = {STEERING_CALIB_MAGIC, obj->center_rad};
-  Flash_WriteData(FLASH_USER_START_ADDR, &calib, sizeof(calib));
-  printf("Steering calibrated: center_rad=%.3f\n", obj->center_rad);
+  // 保存に失敗しても今回の起動では測った値を使う (次の起動では前の値に戻る)
+  if (Flash_WriteData(FLASH_USER_START_ADDR, &calib, sizeof(calib)) != HAL_OK) {
+    printf("Steering: failed to save calibration to flash\n");
+  }
+  printf("Steering calibrated: center_rad=%.3f\n", (double)obj->center_rad);
   return true;
 }
 

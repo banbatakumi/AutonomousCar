@@ -10,7 +10,7 @@
 
 // ===========================================================================
 // Raspberry Pi (上位) との UART 通信。レイアウトは ras_link.c、近年の変更点は
-// docs/pi_uart_protocol_v0.19_delta.md 〜 v0.22_delta.md (旧版は docs/archive/)。
+// docs/pi_uart_protocol_v0.19_delta.md 〜 v0.23_delta.md (旧版は docs/archive/)。
 //
 // 物理層: USART1, 1000000bps 8N1 (分周誤差0%。2026-09-26 に 250000bps から変更)。
 //
@@ -96,8 +96,8 @@ typedef enum {
 // (d_stop = v・t_delay + v²/2a_max + マージン。マージンは RAS_PARAM_AUTO_STOP_MARGIN_CM で
 // cm単位で直接指定) を下回ったら最大制動トルクで自動停止する (src/vehicle/vehicle.c)。判定は前後LiDARの
 // セーフティゾーン(角度×距離のROI内点数)を主に用い、超音波は LiDAR が死角・欠測のときの
-// フォールバックと至近距離の独立トリガーの2役を担う。下りている間は従来通り上位の指令のみに
-// 従う
+// フォールバックと至近距離の独立トリガーの2役を担う。一度作動したら止まるまで制動を続け、
+// 止まってから判定し直す。下りている間は従来通り上位の指令のみに従う
 #define RAS_CMD_FLAG_AUTO_STOP (1u << 7)
 
 // COMMAND.flags2 (flags が8bit使い切ったための拡張バイト)

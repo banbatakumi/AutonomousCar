@@ -217,6 +217,8 @@ static inline int NormalizeDegrees(int deg) {
 }
 
 static inline float NormalizeRadians(float rad) {
+      // 非数・無限大・桁外れの値は 0 にする (無限大だと下のループが終わらない)
+      if (!(rad > -1.0e4f && rad < 1.0e4f)) return 0.0f;
       while (rad < 0) rad += TWO_PI;
       while (rad >= TWO_PI) rad -= TWO_PI;
       return rad;

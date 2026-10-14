@@ -276,6 +276,15 @@ void Mpu6050_OnDataReady(Mpu6050 *obj) {
     obj->dropped_count++;
     return;
   }
+  // バスが BUSY のまま (ノイズでの誤 START・転送エラー後に MPU6050 が SDA を握ったまま) なら
+  // HAL を呼ばない。HAL_I2C_Mem_Read_IT は BUSY が解けるのを空回りで待ち (180MHz で約17ms)、
+  // ここは DATA_RDY (5ms 周期) の割り込みの中なので、戻った瞬間に次の割り込みへ再突入して
+  // メインループが一切回らなくなる (バスを解放する復旧もメインループ側なので進まない)。
+  // 捨てておけばサンプルの途絶として上位 (Imu_Update) が復旧を始める
+  if (__HAL_I2C_GET_FLAG(obj->i2c, I2C_FLAG_BUSY) != RESET) {
+    obj->dropped_count++;
+    return;
+  }
   obj->reading = true;
   if (HAL_I2C_Mem_Read_IT(obj->i2c, (uint16_t)(obj->i2c_addr << 1),
                           MPU6050_REG_ACCEL_XOUT_H, I2C_MEMADD_SIZE_8BIT,

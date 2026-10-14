@@ -379,6 +379,15 @@ static bool UpdateLaunch(Drive* obj, float dt_s) {
   return obj->launching;
 }
 
+// 車速PIを迂回している間 (制動・torque_mode)、目標車速を実車速に合わせ続ける。車速指令へ戻った
+// とき、PIは「今の車速から残りをランプで詰める」形で始まる。止まっていれば起点は 0 なので、
+// 古い目標から急発進することは無い。0 に固定すると、走っているうちに離したとき (短い制動・
+// 自動停止の解除・torque_mode からの復帰) に目標が 0 から数え直しになり、ランプが実車速へ
+// 追いつくまで PI が減速させ続ける
+static void TrackVehicleSpeed(Drive* obj) {
+  obj->target_speed_m_s = Constrain(obj->vehicle_speed_m_s, -DRIVE_MAX_SPEED_M_S, DRIVE_MAX_SPEED_M_S);
+}
+
 // ---------------------------------------------------------------------------
 
 void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering, Imu* imu) {
@@ -477,9 +486,9 @@ void Drive_Update(Drive* obj) {
   }
   // ブレーキは車速制御より優先する。PIに「目標0」を与えるだけでは制動力がゲイン任せになり、
   // 上位が指定した制動トルクどおりに効かないため、指令中はPIごと迂回する。
-  // 離脱時に停止中の目標車速から急発進しないよう、ここでも目標車速をレート制限の起点0へ戻す
+  // 目標車速 (レート制限の起点) は実車速に合わせ続ける (TrackVehicleSpeed)
   if (obj->brake_active) {
-    obj->target_speed_m_s = 0.0f;
+    TrackVehicleSpeed(obj);
     obj->torque_request_left_nm = -obj->brake_torque_nm;
     obj->torque_request_right_nm = -obj->brake_torque_nm;
     SendBrake(obj, obj->abs_enabled ? ApplyAbs(obj, obj->brake_torque_nm, dt_s) : obj->brake_torque_nm);
@@ -490,8 +499,8 @@ void Drive_Update(Drive* obj) {
   bool launching = false;
   if (obj->torque_mode_active) {
     // 車速PIを迂回して指令トルクをそのまま使う。離脱時に積分が溜まったまま復帰しないよう
-    // SendBrake と同様に毎周期リセットしておく。目標車速もブレーキ同様0へ戻す
-    obj->target_speed_m_s = 0.0f;
+    // SendBrake と同様に毎周期リセットしておく。目標車速はブレーキ同様、実車速に合わせ続ける
+    TrackVehicleSpeed(obj);
     PID_Reset(&obj->speed_pid);
     requested_total_nm = obj->manual_torque_nm * 2.0f;
   } else {
