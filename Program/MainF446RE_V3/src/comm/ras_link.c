@@ -210,7 +210,7 @@ static bool SendFrame(RasLink* obj, RasTxPriority priority, uint8_t type,
   frame[0] = RAS_SYNC1;
   frame[1] = RAS_SYNC2;
   frame[2] = type;
-  frame[3] = obj->tx_seq++;
+  frame[3] = 0;  // SEQ は送信の直前 (PumpTx) に振る。ここで振ると優先度順の送出で番号が前後する
   frame[4] = len;
   if (len > 0) memcpy(&frame[5], payload, len);
   WriteFrameCrc(frame, len);
@@ -229,11 +229,16 @@ static void PumpTx(RasLink* obj) {
   }
   if (len == 0) return;
 
+  // SEQ はキューに積むときではなく、DMA を起動する直前に振る。優先度順に送るので、
+  // 積んだ順に振ると後から積んだ PONG・TELEMETRY が LiDAR・INFO を追い越して SEQ が
+  // 前後し、上位が正常時でも「順序入れ替わり」と数えてしまう。送出順に振れば単調に増える。
+  // SEQ は CRC の対象なので、振ったあとに計算し直す (PONG の T3 と同じ場所で1回だけ)。
+  obj->tx_frame[3] = obj->tx_seq++;
   if (flags & RAS_TXFLAG_PATCH_PONG_TIME) {
     uint16_t pos = 5 + RAS_PONG_TX_TIME_OFFSET;
     PutU32(obj->tx_frame, &pos, Micros());
-    WriteFrameCrc(obj->tx_frame, obj->tx_frame[4]);
   }
+  WriteFrameCrc(obj->tx_frame, obj->tx_frame[4]);
 
   Serial_WriteAsync(obj->serial, obj->tx_frame, len);
 }
