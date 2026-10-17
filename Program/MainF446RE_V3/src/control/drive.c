@@ -11,11 +11,13 @@
 
 // 前輪の各輪の周速 (上位への報告用)。車体の速度は走行距離と加速度計のカルマンフィルタ (speed_kf.h) が出す。
 // 生の角速度は微分ノイズで静止中も ±12m/s 振れるため、各輪の周速は LPF (τ≈10ms) を通した値を報告する
-static void UpdateFrontWheelSpeeds(Drive* obj) {
-  float omega_left = LPF_Update(&obj->lpf_front_left,
-                                Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR);
-  float omega_right = LPF_Update(&obj->lpf_front_right,
-                                 Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR);
+static void UpdateFrontWheelSpeeds(Drive* obj, float dt_s) {
+  float omega_left = LPF_UpdateTau(&obj->lpf_front_left,
+                                   Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR,
+                                   DRIVE_LPF_TAU_FRONT_S, dt_s);
+  float omega_right = LPF_UpdateTau(&obj->lpf_front_right,
+                                    Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR,
+                                    DRIVE_LPF_TAU_FRONT_S, dt_s);
   obj->front_speed_left_m_s = omega_left * DRIVE_FRONT_WHEEL_RADIUS_M;
   obj->front_speed_right_m_s = omega_right * DRIVE_FRONT_WHEEL_RADIUS_M;
 }
@@ -78,16 +80,19 @@ static void UpdateSpeedKf(Drive* obj) {
   }
 }
 
-static void UpdateObservations(Drive* obj) {
-  UpdateFrontWheelSpeeds(obj);
+// dt_s は前回からの実際の経過時間 (呼び出しが飛んだ周期も含む。ローパスの係数に使う)
+static void UpdateObservations(Drive* obj, float dt_s) {
+  UpdateFrontWheelSpeeds(obj, dt_s);
   UpdateSpeedKf(obj);
   // 車体の車速 = カルマンフィルタ。PID・TC のスリップの基準・自動停止の前後判定のすべてがこれを使う
   obj->vehicle_speed_m_s = SpeedKf_GetSpeed(&obj->speed_kf);
 
-  float omega_left = LPF_Update(&obj->lpf_rear_left,
-                                BldcMotor_GetAngularSpeed(&obj->motors->rear_left) * DRIVE_REAR_LEFT_DIR);
-  float omega_right = LPF_Update(&obj->lpf_rear_right,
-                                 BldcMotor_GetAngularSpeed(&obj->motors->rear_right) * DRIVE_REAR_RIGHT_DIR);
+  float omega_left = LPF_UpdateTau(&obj->lpf_rear_left,
+                                   BldcMotor_GetAngularSpeed(&obj->motors->rear_left) * DRIVE_REAR_LEFT_DIR,
+                                   DRIVE_LPF_TAU_REAR_S, dt_s);
+  float omega_right = LPF_UpdateTau(&obj->lpf_rear_right,
+                                    BldcMotor_GetAngularSpeed(&obj->motors->rear_right) * DRIVE_REAR_RIGHT_DIR,
+                                    DRIVE_LPF_TAU_REAR_S, dt_s);
   obj->rear_speed_left_m_s = omega_left * DRIVE_REAR_WHEEL_RADIUS_M;
   obj->rear_speed_right_m_s = omega_right * DRIVE_REAR_WHEEL_RADIUS_M;
 
@@ -417,10 +422,10 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   PID_Init(&obj->speed_pid, obj->params.speed_kp, obj->params.speed_ki, DRIVE_SPEED_KD,
            -DRIVE_MAX_TOTAL_TORQUE_NM, DRIVE_MAX_TOTAL_TORQUE_NM);
   TorqueVectoring_Init(&obj->tv, &obj->params, DRIVE_REAR_TRACK_M, DRIVE_REAR_WHEEL_RADIUS_M);
-  LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0f);
-  LPF_Init(&obj->lpf_front_right, DRIVE_LPF_K_FRONT, 0.0f);
-  LPF_Init(&obj->lpf_rear_left, DRIVE_LPF_K_REAR, 0.0f);
-  LPF_Init(&obj->lpf_rear_right, DRIVE_LPF_K_REAR, 0.0f);
+  LPF_Init(&obj->lpf_front_left, 0.0f, 0.0f);
+  LPF_Init(&obj->lpf_front_right, 0.0f, 0.0f);
+  LPF_Init(&obj->lpf_rear_left, 0.0f, 0.0f);
+  LPF_Init(&obj->lpf_rear_right, 0.0f, 0.0f);
   Timer_Init(&obj->timer);
   SpeedKf_Init(&obj->speed_kf);
   obj->kf_encoder_seq = Encoder_GetUpdateSeq(encoder);  // 起動前の更新は取り込まない
@@ -467,12 +472,14 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
 }
 
 void Drive_Update(Drive* obj) {
-  float dt_s = Timer_Read(&obj->timer);
+  const float elapsed_s = Timer_Read(&obj->timer);
   Timer_Reset(&obj->timer);
+  float dt_s = elapsed_s;
   if (dt_s <= 0.0f || dt_s > 0.1f) dt_s = 0.0f;  // 初回・呼び出しが飛んだ周期では時間積分をしない
 
-  // 観測量は無効時も更新しておく (惰行中の車速をそのまま使って再発進できるようにするため)
-  UpdateObservations(obj);
+  // 観測量は無効時も更新しておく (惰行中の車速をそのまま使って再発進できるようにするため)。
+  // ローパスは長く空いた後は新しい値をそのまま採るのが正しいので、丸める前の経過時間を渡す
+  UpdateObservations(obj, elapsed_s);
 
   // ABSの状態は制動モードの間だけ持ち越す。離したら次の制動を全量から始め、フォールバックも解く
   if (!(obj->enabled && !obj->side_brake_active && obj->brake_active && obj->abs_enabled)) {

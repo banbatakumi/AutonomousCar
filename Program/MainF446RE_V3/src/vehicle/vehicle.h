@@ -40,10 +40,35 @@
 //     どの制動でも同じ。上位から ON/OFF できる (RasConfig.brake_hold_enabled、既定は有効)
 // ===========================================================================
 
+// ===========================================================================
+// 車体の寸法・センサの取付位置 [m] (実測確定値。Pi 側 config/vehicle.toml の footprint と
+// [sensors.*] が正。base_link = 後輪車軸の中心、x = 前。上位の tools/ctrl_tune のテストが突き合わせる)
+// ===========================================================================
+#define VEHICLE_BODY_FRONT_X_M 0.30f       // 車体前端 (バンパー)
+#define VEHICLE_BODY_REAR_X_M (-0.07f)     // 車体後端
+#define VEHICLE_BODY_HALF_WIDTH_M 0.09f    // 車体の半幅 (footprint の |y| の最大)
+#define VEHICLE_LIDAR_X_M 0.07f            // LiDAR (y 方向の取付オフセットは 0)
+#define VEHICLE_ULTRASONIC_FRONT_X_M 0.26f
+#define VEHICLE_ULTRASONIC_REAR_X_M (-0.04f)
+
+// ===========================================================================
+// 制動の物理量 (システム同定の値。Pi 側 config/vehicle.toml が正で、測り直したらここも直す。
+// 上位の tools/ctrl_tune のテストが突き合わせる)
+// ===========================================================================
+// 制動モード (ABS 込み) で出る減速度 [m/s²]。[dynamics] brake_decel_m_s2 (前後運動試験。フローリング)。
+// 路面で変わる (グリップで決まる) ので、滑る路面ではこれより小さい
+#define VEHICLE_BRAKE_DECEL_M_S2 2.47f
+// MD のトルクの立ち上がりの時定数 [s]。[control.plant] md_tau_s (制御の同定)
+#define VEHICLE_MD_TORQUE_TAU_S 0.0045f
+// 「止まり切るはずの時間」に掛ける余裕。低速では MD の制動が tanh で弱まり (20rad/s = 0.6m/s 以下)、
+// 減速度が VEHICLE_BRAKE_DECEL_M_S2 を下回るぶん
+#define VEHICLE_STOP_TIME_MARGIN 1.5f
+
 // 走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの時間の上限 [s]。最高速
-// (DRIVE_MAX_SPEED_M_S) からの最大制動でも止まり切れる長さにしてある (減速度 2.5m/s² で 2秒)。
+// (DRIVE_MAX_SPEED_M_S) からの最大制動で止まり切れる時間に余裕を掛けたもの (5m/s ÷ 2.47m/s² × 1.5 ≒ 3.0s)。
 // 前輪エンコーダの異常で車速が 0 に落ちなくても、これを過ぎたら電源を切る
-#define VEHICLE_DISARM_BRAKE_TIMEOUT_S 3.0f
+#define VEHICLE_DISARM_BRAKE_TIMEOUT_S \
+  (DRIVE_MAX_SPEED_M_S / VEHICLE_BRAKE_DECEL_M_S2 * VEHICLE_STOP_TIME_MARGIN)
 // 緊急停止・COMMAND 途絶で停車を保持しているとき、止まってからこの時間が経ったら駆動電源を切る [s]。
 // 電源を入れたまま位置保持を続けると、据え切りと同様にモータが過熱し、電池も減り続ける。
 // 切ると坂では転がりうるが、30秒止まっていれば人が気づく時間は十分にあるとみなす。
@@ -86,11 +111,13 @@
 #define VEHICLE_BRAKE_HOLD_DELAY_S 0.3f
 // 自動停止 (RAS_CMD_FLAG_AUTO_STOP) の動的停止距離
 // d_stop = v・VEHICLE_AUTO_STOP_DELAY_S + v²/(2・VEHICLE_AUTO_STOP_DECEL_M_S2) + マージン
-// のうち、通信・処理・制動応答の遅延見積り [s] (未実測プレースホルダー。実測後に更新すること)
-#define VEHICLE_AUTO_STOP_DELAY_S 0.1f
-// 上式の減速度 [m/s^2]。★実測の制動は ABS 込みで約2.5m/s² (上位側の同定、フローリング) なので
-// 少し楽観的。測り直したら更新すること
-#define VEHICLE_AUTO_STOP_DECEL_M_S2 3.0f
+// のうち、障害物が見えてから制動が効くまでの遅れ [s] = LiDAR の点の古さ (最悪 1回転) + MD のトルクの
+// 立ち上がり。判定と指令はこのマイコンの中で閉じる (上位の通信を通らない) ので、2kHz の周期は無視できる。
+// 超音波だけで判定するとき (LiDAR が使えない) の計測間隔 (約60ms) はこれより短い
+#define VEHICLE_AUTO_STOP_DELAY_S (1.0f / LIDAR_SCAN_FREQ_HZ + VEHICLE_MD_TORQUE_TAU_S)
+// 上式の減速度 [m/s^2]。自動停止は制動モード (ABS 込み) で止めるので、同定した制動の減速度そのもの。
+// 低速で MD の制動が弱まるぶんの延び (0.33m/s 以下、合わせて約 2cm) は上位のマージンが持つ
+#define VEHICLE_AUTO_STOP_DECEL_M_S2 VEHICLE_BRAKE_DECEL_M_S2
 // 安全マージンは上位が RasConfig.auto_stop_margin_cm (CONFIG_SET param_id = 0x0060) で
 // cm単位の連続値として直接指定する (段階的なレベルではない。既定値・範囲は ras_link.h の
 // RAS_AUTO_STOP_MARGIN_* 参照)
@@ -98,11 +125,12 @@
 // 使う。静止中は実車速の符号が定まらず常に前方判定に固定されてしまうため
 #define VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S 0.05f
 // LiDAR のセーフティゾーンは、前方 (0度) か後方 (180度) へ伸ばした矩形で見る。
-// 奥行きは動的停止距離 (+ LiDAR の取付オフセット)、片側の幅は次の値。扇形にすると遠方ほど
-// 幅が広がり、コースの壁を拾って走行中に誤って止まるため、車体が通る幅だけを見る。
-// 半車幅 9cm (surge_mk2/config/vehicle.toml の footprint、y=±0.09m) に余裕 6cm を足した値。
-// (LiDAR の y 取付オフセットは 0)
-#define VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_CM 15.0f
+// 奥行きは動的停止距離 (+ LiDAR の取付オフセット)、片側の幅は車体の半幅に余裕を足した値。扇形に
+// すると遠方ほど幅が広がり、コースの壁を拾って走行中に誤って止まるため、車体が通る幅だけを見る。
+// 余裕は、止まるまでに舵で横へずれる分と自己の横揺れのぶん (広げるほど壁際で誤って止まる)
+#define VEHICLE_AUTO_STOP_LATERAL_MARGIN_M 0.06f
+#define VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_CM \
+  ((VEHICLE_BODY_HALF_WIDTH_M + VEHICLE_AUTO_STOP_LATERAL_MARGIN_M) * 100.0f)
 // 上の矩形内で、停止距離以内の点がこの数以上あれば障害物ありと確定する。単発ノイズは
 // 1点しか占めないため、時間方向のデバウンスではなく空間方向の点密度で誤検知を弾く
 #define VEHICLE_AUTO_STOP_LIDAR_MIN_POINTS 3
@@ -110,16 +138,17 @@
 // LiDARの最短測距距離や取付高さの死角を補う) [cm]
 #define VEHICLE_AUTO_STOP_ULTRASONIC_NEAR_CM 5.0f
 
-// 各センサの車体先端(バンパー)からの後退量 [cm]。上位 (Raspberry Pi) 側の
-// raspi/config/vehicle.toml (base_link = 後輪車軸中心、実測確定) の
-// footprint (前端 x=+30cm、後端 x=-7cm) とセンサ取付座標から算出した固定値。
+// 各センサの車体先端(バンパー)からの後退量 [cm]。車体の寸法・センサの取付位置 (上の VEHICLE_BODY_*・
+// VEHICLE_*_X_M) から求める。
 // センサはいずれも車体先端より内側に付いているため、実測距離はそのままだと
 // 「車体先端から障害物まで」より長く出る。しきい値側にこの分を足して補正する
 // (実測距離 - オフセット = 車体先端から障害物までの真の距離、と同値の変形)
-#define VEHICLE_AUTO_STOP_LIDAR_FRONT_OFFSET_CM 23.0f       // LiDAR(x=7cm) → 前端(x=30cm)
-#define VEHICLE_AUTO_STOP_LIDAR_REAR_OFFSET_CM 14.0f        // LiDAR(x=7cm) → 後端(x=-7cm)
-#define VEHICLE_AUTO_STOP_ULTRASONIC_FRONT_OFFSET_CM 4.0f   // 前方超音波(x=26cm) → 前端(x=30cm)
-#define VEHICLE_AUTO_STOP_ULTRASONIC_REAR_OFFSET_CM 3.0f    // 後方超音波(x=-4cm) → 後端(x=-7cm)
+#define VEHICLE_AUTO_STOP_LIDAR_FRONT_OFFSET_CM ((VEHICLE_BODY_FRONT_X_M - VEHICLE_LIDAR_X_M) * 100.0f)
+#define VEHICLE_AUTO_STOP_LIDAR_REAR_OFFSET_CM ((VEHICLE_LIDAR_X_M - VEHICLE_BODY_REAR_X_M) * 100.0f)
+#define VEHICLE_AUTO_STOP_ULTRASONIC_FRONT_OFFSET_CM \
+  ((VEHICLE_BODY_FRONT_X_M - VEHICLE_ULTRASONIC_FRONT_X_M) * 100.0f)
+#define VEHICLE_AUTO_STOP_ULTRASONIC_REAR_OFFSET_CM \
+  ((VEHICLE_ULTRASONIC_REAR_X_M - VEHICLE_BODY_REAR_X_M) * 100.0f)
 // 緊急制動表示 (ESS, Emergency Stop Signal)。実車 (UN-ECE R48 / 保安基準) と同じく、
 // 制動トルクの指令値ではなく「実際に一定車速以上から強く減速しているか」で点滅させる。
 // 実車の規定は 50km/h 超かつ減速度 6m/s² 超で作動、2.5m/s² 未満で解除。ミニカーの制動性能に

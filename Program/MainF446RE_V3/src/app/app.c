@@ -29,8 +29,8 @@
 #include "vehicle.h"
 #include "watchdog.h"
 
-// メインループの周期 [us]。Drive のフィルタ係数がこの周期を前提にしているため、
-// 変更したら DRIVE_LPF_K_* も見直すこと
+// メインループの周期 [us]。Drive のローパスは実際の経過時間から係数を求めるので、変えても
+// 時定数は変わらない (DRIVE_LPF_TAU_*)。ほかのモジュールの LPF の係数 (*_LPF_K) はそれぞれの更新周期が前提
 #define CONTROL_INTERVAL_US 500
 
 // 独立ウォッチドッグのタイムアウト [ms]。メインループは 500us 周期なので3桁の余裕がある。

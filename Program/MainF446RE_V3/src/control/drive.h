@@ -103,15 +103,18 @@
 // 「その加速に要るトルク」= 傾き × speed_ff_nm_per_m_s2 と、転がり抵抗ぶん speed_ff_rr_nm
 // (進む向き) を PI の出力に先に足す。PI は残ったずれ (モデルの誤差・勾配・TC の介入) だけを直す。
 //
-//   - 傾きは「この周期に目標車速を動かした量 ÷ dt」。上位は 50Hz で目標を刻むので、目標に届いた
-//     周期は 0、届く前は accel_limit、と周期ごとに跳ぶ。DRIVE_SPEED_FF_TAU_S の 1 次ローパスで
-//     ならす (上位はこの時定数ぶん先の速度を送る。Pi 側 raspi/nav/speedctl.py の FW_FF_TAU_S と
-//     sim/vehicle.py の SpeedController.FF_TAU_S も同じ値にすること)
+//   - 傾きは「この周期に目標車速を動かした量 ÷ dt」。上位は DRIVE_HOST_COMMAND_PERIOD_S ごとに目標を
+//     刻むので、目標に届いた周期は 0、届く前は accel_limit、と周期ごとに跳ぶ。その刻みの周期を時定数に
+//     した 1 次ローパスでならす (刻みの周期より短いと跳びが残り、長いと傾きの変化に遅れる)。
+//     上位はこの時定数ぶん先の速度を送る (Pi 側 config/vehicle.toml の [dynamics] speed_ff_filter_s
+//     が同じ値を持つ。上位の tools/ctrl_tune のテストがこのヘッダと突き合わせる)
 //   - 足した後の合計を ±最大トルクに収める。TC・リミッタで削られた分の積分の巻き戻し
 //     (UnwindIntegral) は、足した後の要求と実際に出したトルクの差で行う
 //   - 制動・トルク指令・ローンチコントロール・停車の惰行の間は足さない (傾きの記憶も 0 に戻す)
 //   - 2 つの値とも 0 (既定) なら何も足さない (FF なしの車速PIと同じ動き)
-#define DRIVE_SPEED_FF_TAU_S 0.02f
+// 上位 (Pi) が COMMAND を送る周期 [s] = 50Hz (Pi 側 raspi/auto/base.py の CMD_HZ)
+#define DRIVE_HOST_COMMAND_PERIOD_S 0.02f
+#define DRIVE_SPEED_FF_TAU_S DRIVE_HOST_COMMAND_PERIOD_S
 
 // ===========================================================================
 // ローンチコントロール (発進の加速。Drive_SetLaunch)
@@ -207,13 +210,17 @@
 #define DRIVE_ABS_FALLBACK_TIME_S 0.2f
 
 // ===========================================================================
-// フィルタ係数 (Drive_Update の呼び出し周期 500us = 2kHz に依存する。τ=-dt/ln(k))
-// 車体の車速は走行距離と加速度計のカルマンフィルタ (speed_kf.h) が出す。ここは各輪の周速の報告用だけ。
-// 前輪は Encoder 側で ADC を32サンプル平均して角度ノイズを下げたのに合わせた k=0.951 (τ≈10ms)。
-// 静止時の実測で生の前輪角速度の標準偏差は約2.2〜3.4rad/s の白色ノイズ
+// 各輪の周速のローパスの時定数 [s]
+// 係数は毎周期、実際の周期 dt から k = exp(-dt/τ) で求める (LPF_UpdateTau)。係数を定数で持つと
+// メインループの周期 (app.c の CONTROL_INTERVAL_US) を変えたときに時定数が黙って変わるため。
+// 車体の車速は走行距離と加速度計のカルマンフィルタ (speed_kf.h) が出す。ここは各輪の周速の報告用と
+// TC の後輪周速だけ。
+// 前輪は Encoder 側で ADC を32サンプル平均して角度ノイズを下げたのに合わせた約10ms (2kHz で係数 0.951)。
+// 静止時の実測で生の前輪角速度の標準偏差は約2.2〜3.4rad/s の白色ノイズ。
+// Pi 側 config/vehicle.toml の [dynamics] speed_filter_s がこの前輪の値を持つ
 // ===========================================================================
-#define DRIVE_LPF_K_FRONT 0.951f  // 前輪の各輪の周速 (上位報告用)。τ≈10ms
-#define DRIVE_LPF_K_REAR 0.90f    // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め)。τ≈4.75ms
+#define DRIVE_LPF_TAU_FRONT_S 0.00995f  // 前輪の各輪の周速 (上位報告用)
+#define DRIVE_LPF_TAU_REAR_S 0.00475f   // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め。2kHz で係数 0.90)
 
 // スリップ制限1つぶんの状態 (TC は各輪、ABS は左右共通で1つ)
 typedef struct {
