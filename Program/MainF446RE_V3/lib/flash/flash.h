@@ -83,16 +83,20 @@ static inline HAL_StatusTypeDef Flash_WriteData(uint32_t address,
 }
 
 static inline void Flash_ReadData(uint32_t address, void* buffer, size_t size) {
+  // 呼び出し側は構造体 (int16_t のフィールドなど) へ読むので、バッファを uint32_t* に型替えして書いてはいけない。
+  // 厳密なエイリアシング規則に反し、-O2 ではコンパイラが「uint32_t の書き込みは int16_t のフィールドに届かない」と
+  // みなして、呼び出し側の初期値 (ゼロ初期化) をそのまま読む。IMU の較正レコード (imu.c LoadCalibration) の
+  // オフセットがすべて 0 に読まれてチェックサム不一致になり、較正が捨てられていた (2026-10-16、record = {0} を
+  // 足した e3e40bf 以降)。memcpy はエイリアシングの対象外なので、ワード単位で読んだ値を memcpy で書き込む
   uint8_t* bytes = (uint8_t*)buffer;
-  uint32_t* p = (uint32_t*)buffer;
   size_t full_words = size / 4;
   for (size_t i = 0; i < full_words; i++) {
-    p[i] = *(volatile uint32_t*)(address + i * 4);
+    uint32_t word = *(volatile uint32_t*)(address + i * 4);
+    memcpy(bytes + i * 4, &word, sizeof(word));
   }
 
-  // size が4の倍数でない端数分。p[full_words] へそのまま書くと呼び出し元バッファの
-  // 末尾を最大3バイト超えて書き込むことになるため、一旦ワード単位で読んでから
-  // 端数バイトだけをバッファへコピーする
+  // size が4の倍数でない端数分は、一旦ワード単位で読んでから端数バイトだけをバッファへコピーする
+  // (バッファの末尾を最大3バイト超えて書き込まないため)
   size_t remainder = size - full_words * 4;
   if (remainder > 0) {
     uint32_t last_word = *(volatile uint32_t*)(address + full_words * 4);

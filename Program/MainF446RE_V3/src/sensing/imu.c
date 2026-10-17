@@ -6,10 +6,12 @@
 
 #include "flash.h"
 
-// サンプリング設定。制御には使わない (高周期より精度優先) ので、
-// DLPF を 21Hz まで絞ってノイズを落とし、その 10 倍弱の 200Hz で取り込む。
+// サンプリング設定。ジャイロは TC・TV の制御に、加速度は車速のカルマンフィルタに使うので、
+// 遅れの少ない DLPF 94Hz (遅れ約3ms。21Hz だと約8.5ms) で 200Hz で取り込む。
+// 静止ノイズの実測では 21Hz → 94Hz でジャイロ z が 0.029 → 0.042 deg/s、加速度 x が
+// 0.011 → 0.020 m/s² と、制御に対して無視できる増え方だった
 #define IMU_SAMPLE_RATE_HZ 200
-#define IMU_DLPF MPU6050_DLPF_BW_21HZ
+#define IMU_DLPF MPU6050_DLPF_BW_94HZ
 
 // Mahony フィルタのゲイン。Kp を小さめにして加減速の影響を受けにくくし、
 // Ki で残留バイアスをゆっくり吸収する。
@@ -260,6 +262,9 @@ static void ProcessSample(Imu *obj, const Mpu6050Sample *sample, float dt) {
   obj->data.gyro_x = gx;
   obj->data.gyro_y = gy;
   obj->data.gyro_z = gz;
+
+  obj->data.accel_x_raw = ax;
+  obj->data.sample_seq++;
 
   obj->data.accel_x = (float)LPF_Update(&obj->lpf_accel_x, ax);
   obj->data.accel_y = (float)LPF_Update(&obj->lpf_accel_y, ay);

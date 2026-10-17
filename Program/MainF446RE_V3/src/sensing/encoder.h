@@ -23,7 +23,9 @@ typedef enum {
 
 typedef struct {
   AdcDma* adc2;
-  Timer timer;
+  // 前回、角度を読んだ瞬間の DWT サイクルカウンタ。角速度・回転量の dt は「角度を読む瞬間どうし」の差で求める
+  // (Timer を関数の最後でリセットすると、関数内の処理時間 (約9us) が dt から抜け、車速が約1.8%速く出た)
+  uint32_t last_cycles;
   float angle_left_rad;
   float angle_right_rad;
   float angular_velocity_left_rad_s;
@@ -37,6 +39,14 @@ typedef struct {
   int32_t accum_angle_right_mrad;
   float accum_carry_left_mrad;
   float accum_carry_right_mrad;
+
+  // 直近の Encoder_Update での回転量 [rad] と、その間の経過時間。車速のカルマンフィルタが走行距離の
+  // 測定値として使う。角速度と違い、長く空いた周期でも (半周以内なら) 正しい値が入っている。
+  // update_seq は成功した更新ごとに進むので、利用側は前回と違うときだけ取り込む
+  float last_gap_left_rad;
+  float last_gap_right_rad;
+  float last_dt_s;
+  uint32_t update_seq;
 } Encoder;
 
 /**
@@ -70,6 +80,15 @@ float Encoder_GetAngularVelocityLeft(Encoder* obj);
  * @brief 右ホイールの角速度 [rad/s] を取得する。
  */
 float Encoder_GetAngularVelocityRight(Encoder* obj);
+
+/**
+ * @brief 直近の Encoder_Update での左右の回転量 [rad]・その間の経過時間 [s]・更新番号を取得する。
+ * 取付向きの符号のまま (角速度と同じ)。
+ */
+float Encoder_GetLastGapLeft(const Encoder* obj);
+float Encoder_GetLastGapRight(const Encoder* obj);
+float Encoder_GetLastDt(const Encoder* obj);
+uint32_t Encoder_GetUpdateSeq(const Encoder* obj);
 
 /**
  * @brief 起動時を0とする左ホイールの累積回転角 [1e-3 rad] を取得する (逆転で減る)。

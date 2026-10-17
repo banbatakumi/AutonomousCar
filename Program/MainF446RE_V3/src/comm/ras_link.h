@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x0017u
+#define RAS_PROTOCOL_VERSION 0x001Au
 // COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
 // (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
 #define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
@@ -317,6 +317,21 @@ typedef struct {
   float us_distance_m[2];   // [前方, 後方] 計測不能は負値を渡すこと (0 として送る)
 
   uint8_t md_status[3];  // RAS_MD_STATUS_* [RL, RR, ST]
+
+  // --- 車速のカルマンフィルタの診断 (v0.24 で追加、v0.25 で前輪 LPF を廃止。src/control/speed_kf.h)。speed_m_s がこのフィルタの車速 ---
+  float accel_kf_m_s2;          // カルマンフィルタの加速度
+  float accel_bias_kf_m_s2;     // カルマンフィルタの加速度計バイアス (重力の傾き成分を含む)
+  uint16_t kf_gated_count;      // 測定を弱めた累積回数 (16bit で巻き戻る。前輪のロック・衝撃の目安)
+  // 前回のスナップショットからの一貫性の診断 (v0.26。src/control/speed_kf.h)。
+  // NIS (平均 z²。前提が合っていれば 1) は静止で 1e-3 まで小さくなり、そのまま量子化すると潰れるので、
+  // 平方根 (z の RMS) と、隣り合う残差の相関係数 ρ = (平均 z_k z_{k-1}) / NIS で送る。0 = その間に測定が無かった
+  float kf_z_rms_dist;          // 走行距離の残差の z の RMS (= √NIS)。1 が理想
+  float kf_z_rms_accel;         // 加速度の残差の z の RMS
+  float kf_rho_dist;            // 走行距離の残差の隣り合う相関係数 (-1〜1)。0 が理想
+  float kf_rho_accel;           // 加速度の残差の相関係数
+  // 前輪エンコーダの絶対角 [rad、0〜2π。取付向きの符号のまま = 速度の符号を直す前]。[FL, FR] (v0.26)。
+  // 周期誤差 (角度の関数) の同定に使う (上位の tools/sysid)。Encoder_Update が読んだ最新の値
+  float front_angle_rad[2];
 } RasTelemetry;
 
 // 送信キューの優先度 (小さいほど優先)

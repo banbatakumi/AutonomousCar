@@ -1,5 +1,7 @@
 #include "telemetry.h"
 
+#include <math.h>
+
 #include "mymath.h"
 
 // index は [左後輪, 右後輪, ステアリング] の順 (プロトコルの配列の並び = MotorsIndex)
@@ -102,6 +104,15 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
   Timer_Init(&obj->update_timer);
 }
 
+// 隣り合う残差の相関係数 ρ = 自己相関 / NIS。測定が無かった (NIS=0) 窓は 0
+static float KfCorrelation(float nis, float autocorr) {
+  if (!(nis > 0.0f)) return 0.0f;
+  float rho = autocorr / nis;
+  if (rho > 1.0f) rho = 1.0f;
+  if (rho < -1.0f) rho = -1.0f;
+  return rho;
+}
+
 void Telemetry_Update(Telemetry* obj) {
   // RasLink 側の実送信自体が100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれるので、ここでの組み立ても同じ周期に間引く
   // (ADC読み・MD状態集計・BuildFlags()の全モジュール問い合わせを2kHzで回す必要はない)
@@ -125,7 +136,7 @@ void Telemetry_Update(Telemetry* obj) {
   // スナップショットの時刻。送信時刻ではなくこれを TELEMETRY の t_us に載せる (RasTelemetry.t_us)
   telemetry.t_us = Micros();
   telemetry.flags = BuildFlags(obj);
-  telemetry.speed_m_s = Drive_GetVehicleSpeed(obj->drive);  // Drive 側で車体中心線方向へ射影済み
+  telemetry.speed_m_s = Drive_GetVehicleSpeed(obj->drive);  // カルマンフィルタの車速 (車体中心線方向へ射影済み)
   telemetry.yaw_rate_rad_s = Radians(imu_data->gyro_z);
   telemetry.steer_actual_rad = Steering_GetRoadWheelAngleRad(obj->steering);
   telemetry.steer_cmd_rad = Vehicle_GetAppliedSteerRad(obj->vehicle);
@@ -169,6 +180,20 @@ void Telemetry_Update(Telemetry* obj) {
   telemetry.abs_limit_nm = Drive_GetAbsLimit(obj->drive);
   telemetry.tv_ratio = Drive_GetTvRatio(obj->drive);
   telemetry.tv_moment_nm = Drive_GetTvYawMoment(obj->drive);
+
+  telemetry.accel_kf_m_s2 = Drive_GetAccelKf(obj->drive);
+  telemetry.accel_bias_kf_m_s2 = Drive_GetAccelBiasKf(obj->drive);
+  telemetry.kf_gated_count = (uint16_t)Drive_GetKfGatedCount(obj->drive);
+  {
+    float nis[SPEED_KF_DIAG_COUNT], ac[SPEED_KF_DIAG_COUNT];
+    Drive_TakeKfDiag(obj->drive, nis, ac);
+    telemetry.kf_z_rms_dist = sqrtf(nis[SPEED_KF_DIAG_DISTANCE]);
+    telemetry.kf_z_rms_accel = sqrtf(nis[SPEED_KF_DIAG_ACCEL]);
+    telemetry.kf_rho_dist = KfCorrelation(nis[SPEED_KF_DIAG_DISTANCE], ac[SPEED_KF_DIAG_DISTANCE]);
+    telemetry.kf_rho_accel = KfCorrelation(nis[SPEED_KF_DIAG_ACCEL], ac[SPEED_KF_DIAG_ACCEL]);
+  }
+  telemetry.front_angle_rad[0] = Encoder_GetAngleLeft(obj->encoder);
+  telemetry.front_angle_rad[1] = Encoder_GetAngleRight(obj->encoder);
 
   telemetry.batt_voltage_v[0] = Power_GetVoltageDriveFiltered(obj->power);
   telemetry.batt_voltage_v[1] = Power_GetVoltageSignalFiltered(obj->power);

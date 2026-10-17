@@ -21,8 +21,8 @@ make run      # make -j12 後、SWDFlash.sh (ST-Link, STM32_Programmer_CLI) で 
 
 ## 現在の状態
 
-- プロトコル: `RAS_PROTOCOL_VERSION` = 0x0017 (v0.23)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.23_delta.md`。
-- STM32 は v0.23 を書き込み済み (上位が `protocol_version` 0x0017 を確認)。**MD 側に v0.19 以降 (ARM の「止める」約束・ブレーキホールド・ローンチ・車速PIの加速度FF・ランプ上限廃止) の対応版を書き込んだかは未確認**。
+- プロトコル: `RAS_PROTOCOL_VERSION` = 0x001A (v0.26)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.26_delta.md` (v0.24〜v0.26 は車速のカルマンフィルタ。1つの文書にまとめてある)。
+- STM32 は v0.26 (車速のカルマンフィルタ入り、2026-10-17) を書き込み済み (上位が `protocol_version` 0x001A を確認)。**車速は前輪の微分+LPF ではなく走行距離と加速度計のカルマンフィルタ** (`src/control/speed_kf.c`。調整値は経験値を含む。検定は上位の `raspi/tools/kf_consistency.py`、TELEMETRY の `kf_z_rms_*`・`kf_rho_*`)。**MD 側に v0.19 以降 (ARM の「止める」約束・ブレーキホールド・ローンチ・車速PIの加速度FF・ランプ上限廃止) の対応版を書き込んだかは未確認**。
 - **実機未検証の機能**: トルクベクタリング (荷重比例の配分)、ステアのリンク換算 (v0.18)、自動停止 (LiDAR 主・超音波補助)、LIMITS パケット、ブレーキホールドの移行条件、ローンチ、加速度FF、省電力化 (超音波/LiDAR PWM 停止)。ABS・TC・片輪浮き対策のしきい値/ゲインは机上値 (上位側の車両モデルで最適化した初期値)。ESS ブレーキ灯のしきい値・自動停止の遅延見積り (`VEHICLE_AUTO_STOP_DELAY_S`) は未実測。
 - **作業ツリーにあって未書き込み・実機未検証**: フェイルセーフ後の ARM の立ち上がり要求 (`rearm_required`)、MD 異常のデバウンス、自動停止を止まるまで保持、brake/torque_mode 中の目標車速の追従、I2C BUSY 時の IMU 読み出しの見送り、超音波の途絶の無効化、ウォッチドッグ復帰時の演出の省略。ワイヤ形式は変えていないので `protocol_version` は 0x0017 のまま。
 - 実機確認済み: LiDAR 給電の ARM 連動、後輪の位置保持。
@@ -34,7 +34,7 @@ make run      # make -j12 後、SWDFlash.sh (ST-Link, STM32_Programmer_CLI) で 
 - 安全層: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 (ラッチ。**ハートビートが戻った状態でボタン2を押すまで解除しない**。駆動電源は切らない: 切ると MD が制動できず惰行するため。ただし停車して `VEHICLE_FAILSAFE_POWER_OFF_S` (30秒) 経ったら過熱・電池消耗の防止に切る。ARM で戻る) → ④COMMAND 途絶 100ms で自動ブレーキ。ハートビートを一度も検出していない間は ③が働かないので、`TELEMETRY.flags` の `NO_HEARTBEAT` (bit25) を立てる (上位は ARM を通さない)。
 - 「止める」: `Coast()` は送信停止ではなくトルク0を送り続ける (`BldcMotor_Stop` を止める手段に使わない)。走行中に ARM が外れたら、停車 (`DRIVE_STANDSTILL_SPEED_M_S`) まで駆動電源を切らず最大制動 (`UpdateDisarmBraking`、上限 `VEHICLE_DISARM_BRAKE_TIMEOUT_S`)。3台の MD の健全性を毎周期監視し (`UpdateMdHealth`)、揃うまで `armed` にしない・走行中に `VEHICLE_MD_FAULT_DEBOUNCE_S` 続けて崩れたら両後輪を最大制動して `md_fault` をラッチ。
 - ブレーキホールド: 制動して |車速| が `VEHICLE_BRAKE_HOLD_SPEED_M_S` 未満の状態が `VEHICLE_BRAKE_HOLD_DELAY_S` 続いたら後輪の位置保持へ (`UpdateBrakeHold`)。サイドブレーキ (`flags2` bit0) は速度に関わらず即座に位置保持し、brake・torque_mode・速度より優先。
-- 駆動 (`src/control/drive.c`): 車速 PI (+加速度FF) → 左右配分 (等配分 + TV の差) → スリップ制限 (TC/ABS/片輪浮き対策) → MD へトルク指令。brake・torque_mode の間は目標車速を実車速に合わせ続け、車速指令へ戻ったら今の車速からランプで詰める。車速の真値は非駆動輪の前輪エンコーダ。brake は車速PIを迂回して MD の制動モードへトルクを直接渡す。torque_mode も PI を迂回するが TC/TV は掛かる。brake と torque_mode が同時なら brake が勝つ。ABS は制動モードのみ、TC は負トルク (PI の減速) にも掛かる。詳細・定数は `drive.h` のコメント。
+- 駆動 (`src/control/drive.c`): 車速 PI (+加速度FF) → 左右配分 (等配分 + TV の差) → スリップ制限 (TC/ABS/片輪浮き対策) → MD へトルク指令。brake・torque_mode の間は目標車速を実車速に合わせ続け、車速指令へ戻ったら今の車速からランプで詰める。車速は前輪エンコーダの走行距離 (非駆動輪) と加速度計のカルマンフィルタ (`speed_kf.c`)。brake は車速PIを迂回して MD の制動モードへトルクを直接渡す。torque_mode も PI を迂回するが TC/TV は掛かる。brake と torque_mode が同時なら brake が勝つ。ABS は制動モードのみ、TC は負トルク (PI の減速) にも掛かる。詳細・定数は `drive.h` のコメント。
 - 調整パラメータは `src/control/control_params.h` の `CONTROL_PARAM_TABLE` が唯一の定義 (名前・`param_id`・既定値・範囲)。Flash には保存せず、上位が接続のたびに `CONFIG_SET` で送る。
 - 自動停止 (`COMMAND.flags` bit7): 動的停止距離 `d_stop = v・遅延 + v²/(2a) + margin` 以内、左右 ±15cm (半車幅+余裕。扇形だと遠方でコースの壁を拾う) の矩形に LiDAR 点が3点以上 (`Lidar_QueryCorridor`)、または超音波 (フォールバック/至近の独立トリガー) で作動。しきい値は車体先端基準 (取付オフセット加算)。静止時の前後判定は上位が指令した方向へフォールバック (デッドロック回避)。一度作動したら止まるまで解除しない (停止距離は車速で縮むので、判定だけだと解除と再作動を繰り返す)。緊急停止ラッチは LiDAR を使わない。ARM 中に LiDAR も前後の超音波も使えない状態が3秒続くと `AUTO_STOP_BLIND` (bit26)。超音波は生値の方が近ければ生値で判定 (LPF の遅れ対策)。判定は `AutoStopDistanceCm()` / `IsAutoStopObstacleAhead()`。
 - 灯火: ウィンカー要求は `Vehicle` が `winker_request` として保持するだけで、`Lighting_SetWinker()` を呼ぶのは `Indicator_Update()` (`src/hmi/indicator.c`) のみ (フォールト時のハザードを優先するため調停を一箇所に集約)。ブレーキ灯は制動モードまたは実減速度で点灯、高速点滅 (ESS) は制動モードかつ急減速のとき (`ApplyBrakeLight()`)。
