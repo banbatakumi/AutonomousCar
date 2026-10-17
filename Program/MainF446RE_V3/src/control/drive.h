@@ -9,6 +9,7 @@
 #include "lpf.h"
 #include "motors.h"
 #include "pid.h"
+#include "speed_kf.h"
 #include "steering.h"
 #include "timer.h"
 #include "torque_vectoring.h"
@@ -207,21 +208,12 @@
 
 // ===========================================================================
 // フィルタ係数 (Drive_Update の呼び出し周期 500us = 2kHz に依存する。τ=-dt/ln(k))
-// 前輪の2つは、Encoder 側で ADC を32サンプル平均して角度ノイズを下げたのに合わせ、
-// 平均化前 (PID用 k=0.995 τ≈100ms / TC用 k=0.98 τ≈25ms) から縮めたもの。
-// 静止時 (駆動電源OFF) の実測で生の前輪角速度の標準偏差は約2.2rad/s (周速0.065m/s) の白色ノイズで、
-// 車速のノイズは σ ≈ 0.046 × (1-k) [m/s] でよく予測できる (k=0.951 で約0.002m/s、k=0.905 で約0.004m/s)。
-// ★未実測: 駆動電源ON時 (MDのPWMノイズ)・定速走行時 (エンコーダの1回転周期の誤差) のノイズは未確認★
+// 車体の車速は走行距離と加速度計のカルマンフィルタ (speed_kf.h) が出す。ここは各輪の周速の報告用だけ。
+// 前輪は Encoder 側で ADC を32サンプル平均して角度ノイズを下げたのに合わせた k=0.951 (τ≈10ms)。
+// 静止時の実測で生の前輪角速度の標準偏差は約2.2〜3.4rad/s の白色ノイズ
 // ===========================================================================
-#define DRIVE_LPF_K_FRONT 0.951f  // 前輪エンコーダ速度。τ≈10ms。PIDフィードバック・上位報告用
+#define DRIVE_LPF_K_FRONT 0.951f  // 前輪の各輪の周速 (上位報告用)。τ≈10ms
 #define DRIVE_LPF_K_REAR 0.90f    // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め)。τ≈4.75ms
-// TCのスリップ判定専用の前輪速度フィルタ。DRIVE_LPF_K_FRONT (τ≈10ms) をそのまま基準速度に
-// 使うと、フル加速のようなランプ入力で τ×加速度 ぶん (最大加速度3.0m/s²なら約0.03m/s) 基準速度が
-// 実速度より系統的に遅れ、後輪 (τ≈4.75ms、ほぼ遅れ無し) との差が「常時空転している」という
-// 誤ったスリップ率を生む (低速ほど基準速度に対する遅れの比率が大きく致命的)。この遅れバイアスを
-// 縮めるため、PID用より軽い τ≈5ms のフィルタをスリップ判定専用に別途持つ
-// (ノイズは残りやすくなるが、スリップ制限は偏差に比例して絞るだけなので小さなノイズは効かない)
-#define DRIVE_LPF_K_FRONT_TC 0.905f
 
 // スリップ制限1つぶんの状態 (TC は各輪、ABS は左右共通で1つ)
 typedef struct {
@@ -241,11 +233,12 @@ typedef struct {
   TorqueVectoring tv;
   LPF lpf_front_left;
   LPF lpf_front_right;
-  LPF lpf_front_left_tc;   // スリップ判定専用 (DRIVE_LPF_K_FRONT_TC)
-  LPF lpf_front_right_tc;  // スリップ判定専用 (DRIVE_LPF_K_FRONT_TC)
   LPF lpf_rear_left;
   LPF lpf_rear_right;
   Timer timer;
+  SpeedKf speed_kf;           // 走行距離+加速度計の車速推定 (制御の車速)
+  uint32_t kf_encoder_seq;    // 取り込み済みの Encoder 更新番号 (同じ更新を二重に使わない)
+  uint32_t kf_imu_seq;        // 取り込み済みの IMU サンプル番号
 
   bool enabled;
   bool tc_enabled;                // 既定は無効 (上位が送る)
@@ -275,14 +268,10 @@ typedef struct {
   float side_brake_target_right_rad;
 
   // --- 以下は Drive_Update が更新する観測量 (デバッグ・上位への報告用) ---
-  // 周速はすべて LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
+  // 前輪・後輪の各輪の周速は LPF 後の値。前輪の生の角速度は使わないこと。12bit ADC で 1回転を測るため
   // 1LSB = 2pi/4095 = 1.53mrad で、これを 500us で微分すると 1LSB あたり 3.07rad/s
   // (= 0.09m/s) に化ける。実測ではノイズが ±100mV 程度あり、静止中でも生値は ±12m/s 振れる
-  float vehicle_speed_m_s;  // 前輪から推定した車体前後方向の速度 (舵角で射影済み)
-  // 前後方向判定用の応答が速い車速 (EstimateVehicleSpeedForSlip 由来、τ≈5ms)。
-  // vehicle_speed_m_s (τ≈10ms) では急減速時の符号反転検出が遅れるため、
-  // 自動停止の前後判定 (vehicle.c) 向けに分けて保持する
-  float vehicle_speed_for_direction_m_s;
+  float vehicle_speed_m_s;  // 車体前後方向の速度 (走行距離+加速度計のカルマンフィルタ。舵角で射影済み)
   float yaw_rate_rad_s;         // スリップ率の基準速度を作るのに使ったヨーレート
   bool yaw_rate_measured;       // 上がIMUの実測値か (偽 = 舵角からの幾何計算で代用中)
   float front_speed_left_m_s;   // 左前輪の周速 (射影前。車体速度ではなく車輪自身の軌跡上の速度)
@@ -466,19 +455,23 @@ void Drive_Disable(Drive* obj);
 bool Drive_IsEnabled(const Drive* obj);
 
 /**
- * @brief 前輪エンコーダから推定した車速 [m/s] を取得する。
+ * @brief 車体前後方向の車速 [m/s] を取得する (走行距離+加速度計のカルマンフィルタ。speed_kf.h)。
+ * 車速PI・TC/ABS のスリップの基準・自動停止の前後判定のすべてがこれを使う。
  */
 float Drive_GetVehicleSpeed(const Drive* obj);
 
 /**
- * @brief 前後方向判定用の応答が速い車速 [m/s] を取得する。
- *
- * vehicle_speed_m_s (DRIVE_LPF_K_FRONT, τ≈10ms) と同じ前輪エンコーダ由来だが、
- * TCのスリップ判定専用フィルタ (DRIVE_LPF_K_FRONT_TC, τ≈5ms) を共用しており、
- * 急減速時の符号反転への追従が速い。PID/上位報告用の Drive_GetVehicleSpeed とは
- * 用途が異なるため混同しないこと (自動停止の前後方向判定向け)。
+ * @brief カルマンフィルタの加速度 [m/s²]・加速度計バイアス [m/s²]・測定を弱めた累積回数 (TELEMETRY で上位に出す)。
  */
-float Drive_GetVehicleSpeedForDirection(const Drive* obj);
+float Drive_GetAccelKf(const Drive* obj);
+
+/**
+ * @brief KF の一貫性の診断 (NIS と自己相関。speed_kf.h) を取り出し、集計をやり直す。[0]=走行距離、[1]=加速度。
+ * TELEMETRY のスナップショットごとに1回だけ呼ぶ (呼ぶたびに前回からの分が消える)。
+ */
+void Drive_TakeKfDiag(Drive* obj, float nis[SPEED_KF_DIAG_COUNT], float autocorr[SPEED_KF_DIAG_COUNT]);
+float Drive_GetAccelBiasKf(const Drive* obj);
+uint32_t Drive_GetKfGatedCount(const Drive* obj);
 
 /**
  * @brief 左後輪のスリップ率を取得する (正 = 空転、負 = ロック傾向)。

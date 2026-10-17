@@ -40,7 +40,13 @@ void Encoder_Init(Encoder* obj, AdcDma* adc2) {
   obj->accum_angle_right_mrad = 0;
   obj->accum_carry_left_mrad = 0.0f;
   obj->accum_carry_right_mrad = 0.0f;
-  Timer_Init(&obj->timer);
+  obj->last_gap_left_rad = 0.0f;
+  obj->last_gap_right_rad = 0.0f;
+  obj->last_dt_s = 0.0f;
+  obj->update_seq = 0;
+  Timer enable_cycle_counter;
+  Timer_Init(&enable_cycle_counter);  // DWT のサイクルカウンタを有効にする
+  obj->last_cycles = DWT->CYCCNT;
 }
 
 // 角度差を累積値へ足し込む。1e-3 rad に満たない端数を毎回切り捨てると、微小な回転が
@@ -58,7 +64,11 @@ static void Accumulate(int32_t* accum_mrad, float* carry_mrad, float gap_rad) {
 #define ENCODER_MAX_DT_S 0.015f
 
 void Encoder_Update(Encoder* obj) {
-  float dt_s = (float)Timer_ReadUs(&obj->timer) / 1000000.0f;
+  // 角度を読む瞬間の時刻。dt は前回の「角度を読んだ瞬間」との差で、関数の処理時間も含めて正しい間隔になる。
+  // 以前は Timer を関数の最後でリセットしていたため、dt が処理時間 (約9us) ぶん短く、車速が約1.8% (500/491.5)
+  // 速く出ていた (記録の odom_dist・後輪周速との比、SLAM との比で確認)。us への切り捨ても無くした
+  uint32_t now_cycles = DWT->CYCCNT;
+  float dt_s = (float)(now_cycles - obj->last_cycles) / (float)(Timer_GetCyclesPerUs() * 1000000U);
   if (dt_s <= 0.0f) return;
 
   float new_angle_left_rad = ReadAveragedAngleRad(obj->adc2, ENCODER_ADC2_CH_LEFT);
@@ -77,9 +87,30 @@ void Encoder_Update(Encoder* obj) {
   Accumulate(&obj->accum_angle_left_mrad, &obj->accum_carry_left_mrad, gap_left_rad);
   Accumulate(&obj->accum_angle_right_mrad, &obj->accum_carry_right_mrad, gap_right_rad);
 
+  obj->last_gap_left_rad = gap_left_rad;
+  obj->last_gap_right_rad = gap_right_rad;
+  obj->last_dt_s = dt_s;
+  obj->update_seq++;
+
   obj->angle_left_rad = new_angle_left_rad;
   obj->angle_right_rad = new_angle_right_rad;
-  Timer_Reset(&obj->timer);
+  obj->last_cycles = now_cycles;
+}
+
+float Encoder_GetLastGapLeft(const Encoder* obj) {
+  return obj->last_gap_left_rad;
+}
+
+float Encoder_GetLastGapRight(const Encoder* obj) {
+  return obj->last_gap_right_rad;
+}
+
+float Encoder_GetLastDt(const Encoder* obj) {
+  return obj->last_dt_s;
+}
+
+uint32_t Encoder_GetUpdateSeq(const Encoder* obj) {
+  return obj->update_seq;
 }
 
 float Encoder_GetAngleLeft(Encoder* obj) {

@@ -127,7 +127,7 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
                                     float desired_direction) {
   // 前後判定は符号反転への追従速度が重要なため、PID/上位報告用の重いLPF
   // (Drive_GetVehicleSpeed, τ≈10ms) ではなく応答の速い方 (τ≈5ms) を使う
-  float speed = Drive_GetVehicleSpeedForDirection(obj->drive);
+  float speed = Drive_GetVehicleSpeed(obj->drive);
   float abs_speed = (speed >= 0.0f) ? speed : -speed;
   bool forward = (abs_speed > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S)
                      ? (speed >= 0.0f)
@@ -313,7 +313,7 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 減速した途端に「範囲外」になって解除→再加速→再作動を繰り返しながら障害物へ寄っていく。
   // 止まってからは毎周期判定し直すので、障害物が無くなれば (または上位が逆方向を指令すれば) 動ける
   bool auto_stop_moving =
-      fabsf(Drive_GetVehicleSpeedForDirection(obj->drive)) > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S;
+      fabsf(Drive_GetVehicleSpeed(obj->drive)) > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S;
   obj->auto_stop_active =
       armed && auto_stop_enabled &&
       ((obj->auto_stop_active && auto_stop_moving) ||

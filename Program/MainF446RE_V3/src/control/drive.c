@@ -9,37 +9,15 @@
 // 観測量の更新
 // ---------------------------------------------------------------------------
 
-// 前輪は操舵されているため、その転がり速度は車体前後方向速度そのものではなく v/cos(delta) になる。
-// 逆に cos(delta) を掛けて車体前後方向の速度へ戻す。左右の平均を取ることで、旋回による
-// 左右の速度差 (前輪トレッド分) は相殺される。
-static float EstimateVehicleSpeed(Drive* obj) {
+// 前輪の各輪の周速 (上位への報告用)。車体の速度は走行距離と加速度計のカルマンフィルタ (speed_kf.h) が出す。
+// 生の角速度は微分ノイズで静止中も ±12m/s 振れるため、各輪の周速は LPF (τ≈10ms) を通した値を報告する
+static void UpdateFrontWheelSpeeds(Drive* obj) {
   float omega_left = LPF_Update(&obj->lpf_front_left,
                                 Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR);
   float omega_right = LPF_Update(&obj->lpf_front_right,
                                  Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR);
-
-  // フィルタ後の各輪周速も残す。生の角速度は微分ノイズで静止中も ±12m/s 振れるため、
-  // 上位へ報告する車輪速はここで作った値を使うこと
   obj->front_speed_left_m_s = omega_left * DRIVE_FRONT_WHEEL_RADIUS_M;
   obj->front_speed_right_m_s = omega_right * DRIVE_FRONT_WHEEL_RADIUS_M;
-
-  // 射影に使うのはモータ機械角ではなく路面舵角。リンク比が1でない機体では別物になる
-  float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
-  return (obj->front_speed_left_m_s + obj->front_speed_right_m_s) * 0.5f * cosf(steer_rad);
-}
-
-// TCのスリップ判定専用の車体速度推定。EstimateVehicleSpeed() と同じ計算だが、
-// DRIVE_LPF_K_FRONT (τ≈10ms) ではなく軽い DRIVE_LPF_K_FRONT_TC (τ≈5ms) を使う。
-// フル加速のようなランプ入力では前者の遅れが τ×加速度 ぶん基準速度を系統的に低く見せ、
-// 遅れのほぼ無い後輪速度との差が「常時空転」という誤ったスリップ率を生むため、
-// PID用の値とは別に用意する (詳細は DRIVE_LPF_K_FRONT_TC のコメント参照)
-static float EstimateVehicleSpeedForSlip(Drive* obj) {
-  float omega_left = LPF_Update(&obj->lpf_front_left_tc,
-                                Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR);
-  float omega_right = LPF_Update(&obj->lpf_front_right_tc,
-                                 Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR);
-  float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
-  return (omega_left + omega_right) * 0.5f * DRIVE_FRONT_WHEEL_RADIUS_M * cosf(steer_rad);
 }
 
 // ヨーレートは IMU の実測値を優先する。舵角からの幾何計算 (自転車モデル) は前輪が滑ると
@@ -68,10 +46,43 @@ static float SlipRatio(float wheel_speed_m_s, float reference_speed_m_s, float f
   return (wheel_speed_m_s - reference_speed_m_s) * dir / denominator;
 }
 
+// 走行距離と加速度計の車速推定 (speed_kf.h) を1周期ぶん進める。Encoder の更新ごとに1回だけ
+static void UpdateSpeedKf(Drive* obj) {
+  uint32_t encoder_seq = Encoder_GetUpdateSeq(obj->encoder);
+  if (encoder_seq == obj->kf_encoder_seq) return;
+  obj->kf_encoder_seq = encoder_seq;
+
+  // 前輪の回転量の左右平均 → 走行距離。舵角で車体前後方向へ射影するのは LPF の車速と同じ
+  float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
+  const float cos_steer = cosf(steer_rad);
+  SpeedKf_Predict(&obj->speed_kf, Encoder_GetLastDt(obj->encoder));
+
+  // 制御ループが長く止まると、エンコーダの角度差 (±半周に畳んである) は 1 回転ぶん折り返す。予測が見込む回転量に
+  // 最も近い側へ、各輪の増分に 1 回転の整数倍を足して戻す (止まっていなければ何も変わらない)
+  const float expected_rad = SpeedKf_ExpectedDistanceStep(&obj->speed_kf) / (DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
+  float gap_left = Encoder_GetLastGapLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR;
+  float gap_right = Encoder_GetLastGapRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR;
+  gap_left += TWO_PI * roundf((expected_rad - gap_left) / TWO_PI);
+  gap_right += TWO_PI * roundf((expected_rad - gap_right) / TWO_PI);
+  SpeedKf_UpdateDistance(&obj->speed_kf, 0.5f * (gap_left + gap_right) * DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
+
+  // 加速度は IMU のサンプル (約200Hz) が新しいときだけ。IMU が使えない間は走行距離だけで推定する
+  if (obj->imu != NULL && Imu_IsReady(obj->imu)) {
+    const ImuData* imu = Imu_GetData(obj->imu);
+    if (imu->sample_seq != obj->kf_imu_seq) {
+      obj->kf_imu_seq = imu->sample_seq;
+      // 旋回で乗る -k·ω² を補正してから使う (speed_kf.h の SPEED_KF_LEVER_ARM_M)
+      const float gz_rad_s = Radians(imu->gyro_z);
+      SpeedKf_UpdateAccel(&obj->speed_kf, imu->accel_x_raw + SPEED_KF_LEVER_ARM_M * gz_rad_s * gz_rad_s);
+    }
+  }
+}
+
 static void UpdateObservations(Drive* obj) {
-  obj->vehicle_speed_m_s = EstimateVehicleSpeed(obj);
-  float vehicle_speed_for_slip_m_s = EstimateVehicleSpeedForSlip(obj);
-  obj->vehicle_speed_for_direction_m_s = vehicle_speed_for_slip_m_s;
+  UpdateFrontWheelSpeeds(obj);
+  UpdateSpeedKf(obj);
+  // 車体の車速 = カルマンフィルタ。PID・TC のスリップの基準・自動停止の前後判定のすべてがこれを使う
+  obj->vehicle_speed_m_s = SpeedKf_GetSpeed(&obj->speed_kf);
 
   float omega_left = LPF_Update(&obj->lpf_rear_left,
                                 BldcMotor_GetAngularSpeed(&obj->motors->rear_left) * DRIVE_REAR_LEFT_DIR);
@@ -84,11 +95,11 @@ static void UpdateObservations(Drive* obj) {
 
   // 旋回中は内輪と外輪で本来の速度が違う。ここを車体速度で共通化すると外輪が常時「空転」と
   // 判定されてTCが誤介入するため、ヨーレートから各輪の基準速度を作る。
-  // 基準速度は PID フィードバック用 (vehicle_speed_m_s) ではなく、遅れの少ない
-  // vehicle_speed_for_slip_m_s (EstimateVehicleSpeedForSlip 参照) を使う
+  // 基準速度はカルマンフィルタの車速 (遅れがほぼ無い。以前の前輪LPFは τ10ms の遅れが加速で基準を低く見せ、
+  // スリップ率に偏りを入れていた)
   float half_track = DRIVE_REAR_TRACK_M * 0.5f;
-  obj->slip_ref_left_m_s = vehicle_speed_for_slip_m_s - obj->yaw_rate_rad_s * half_track;
-  obj->slip_ref_right_m_s = vehicle_speed_for_slip_m_s + obj->yaw_rate_rad_s * half_track;
+  obj->slip_ref_left_m_s = obj->vehicle_speed_m_s - obj->yaw_rate_rad_s * half_track;
+  obj->slip_ref_right_m_s = obj->vehicle_speed_m_s + obj->yaw_rate_rad_s * half_track;
   float floor_m_s = obj->params.slip_speed_floor_m_s;
   obj->slip_left = SlipRatio(obj->rear_speed_left_m_s, obj->slip_ref_left_m_s, floor_m_s);
   obj->slip_right = SlipRatio(obj->rear_speed_right_m_s, obj->slip_ref_right_m_s, floor_m_s);
@@ -408,11 +419,12 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   TorqueVectoring_Init(&obj->tv, &obj->params, DRIVE_REAR_TRACK_M, DRIVE_REAR_WHEEL_RADIUS_M);
   LPF_Init(&obj->lpf_front_left, DRIVE_LPF_K_FRONT, 0.0f);
   LPF_Init(&obj->lpf_front_right, DRIVE_LPF_K_FRONT, 0.0f);
-  LPF_Init(&obj->lpf_front_left_tc, DRIVE_LPF_K_FRONT_TC, 0.0f);
-  LPF_Init(&obj->lpf_front_right_tc, DRIVE_LPF_K_FRONT_TC, 0.0f);
   LPF_Init(&obj->lpf_rear_left, DRIVE_LPF_K_REAR, 0.0f);
   LPF_Init(&obj->lpf_rear_right, DRIVE_LPF_K_REAR, 0.0f);
   Timer_Init(&obj->timer);
+  SpeedKf_Init(&obj->speed_kf);
+  obj->kf_encoder_seq = Encoder_GetUpdateSeq(encoder);  // 起動前の更新は取り込まない
+  obj->kf_imu_seq = 0;
 
   obj->enabled = false;
   obj->tc_enabled = false;  // 上位が送る (ras_link.c と同じ。毎周期 Drive_SetTractionControlEnabled で上書きされる)
@@ -435,7 +447,6 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->side_brake_target_right_rad = 0.0f;
 
   obj->vehicle_speed_m_s = 0.0f;
-  obj->vehicle_speed_for_direction_m_s = 0.0f;
   obj->yaw_rate_rad_s = 0.0f;
   obj->yaw_rate_measured = false;
   obj->front_speed_left_m_s = 0.0f;
@@ -701,8 +712,22 @@ float Drive_GetVehicleSpeed(const Drive* obj) {
   return obj->vehicle_speed_m_s;
 }
 
-float Drive_GetVehicleSpeedForDirection(const Drive* obj) {
-  return obj->vehicle_speed_for_direction_m_s;
+float Drive_GetAccelKf(const Drive* obj) {
+  return SpeedKf_GetAccel(&obj->speed_kf);
+}
+
+void Drive_TakeKfDiag(Drive* obj, float nis[SPEED_KF_DIAG_COUNT], float autocorr[SPEED_KF_DIAG_COUNT]) {
+  for (int c = 0; c < SPEED_KF_DIAG_COUNT; c++) {
+    SpeedKf_TakeDiag(&obj->speed_kf, (SpeedKfDiagChannel)c, &nis[c], &autocorr[c]);
+  }
+}
+
+float Drive_GetAccelBiasKf(const Drive* obj) {
+  return SpeedKf_GetAccelBias(&obj->speed_kf);
+}
+
+uint32_t Drive_GetKfGatedCount(const Drive* obj) {
+  return obj->speed_kf.gated_count;
 }
 
 float Drive_GetSlipLeft(const Drive* obj) {

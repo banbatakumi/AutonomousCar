@@ -11,7 +11,7 @@
 
 #include "drive.h"
 
-#define HOST_SIM_ABI 4
+#define HOST_SIM_ABI 8
 
 // 入力 (1制御周期ごと) の列
 enum {
@@ -43,7 +43,7 @@ enum {
   OUT_TC_LIMIT_RIGHT,
   OUT_ABS_LIMIT,
   OUT_YAW_TARGET,   // 車両モデルの「舵で決まる定常のヨーレート」(左右の力の差が無いときの値)
-  OUT_FW_SPEED,     // ファームが推定した車速
+  OUT_FW_SPEED,     // ファームが推定した車速 (カルマンフィルタ。古いファームでは前輪の微分+LPF)
   OUT_FW_SLIP_LEFT,
   OUT_FW_SLIP_RIGHT,
   OUT_FLAGS,        // bit0=TC bit1=ABS bit2=TV bit3=片輪浮き対策 が介入中 bit4=ローンチコントロールで発進中
@@ -55,6 +55,12 @@ enum {
   OUT_FW_REAR_RIGHT,
   OUT_FW_YAW_RATE,    // ファームが見ているヨーレート (TELEMETRY の yaw_rate)
   OUT_FRONT_ODOM,     // 前輪の累積走行距離 (TELEMETRY の odom_dist。射影なし)
+  OUT_FW_ACCEL_BIAS,  // カルマンフィルタの加速度計バイアス。同上
+  OUT_FW_KF_GATED,    // カルマンフィルタが測定を弱めた累積回数。同上
+  OUT_FW_NIS_DIST,    // カルマンフィルタの一貫性の診断 (その行で取り込んだ残差。測定が無かった行は NaN)。
+  OUT_FW_NIS_ACCEL,   //   NIS = z²、AC = 直前の残差との積。加速度は IMU のサンプル (10行に1回) のときだけ値が入る。
+  OUT_FW_AC_DIST,     //   平均を取るなら nanmean (tools/ctrl_tune/tests/test_speed_kf.py)
+  OUT_FW_AC_ACCEL,
   OUT_COUNT,
 };
 
@@ -94,6 +100,10 @@ typedef struct {
   double front_scale_error;     // 前輪の速度の倍率誤差 (タイヤ径の誤差。-0.03 = 3%遅く読む)
   double front_ripple;          // 前輪エンコーダの1回転周期の誤差 (速度に対する振幅の割合)
   uint32_t seed;
+  // bit1 = 前輪の周期誤差 (front_ripple) の周期。0 = 1回転に1周期 (従来)、1 = 2周期
+  // bit0 = 前輪エンコーダの測り方。0 = 角速度に白色ノイズ (従来)、1 = 角度に白色の量子化ノイズが乗り、
+  // その差分が回転量になる (実機の静止実測と同じ: 隣り合う周期の相関 -0.5。front_noise_rad_s は
+  // 角速度の標準偏差のまま、角度のノイズ = それ × dt / √2 に換算する)
   uint32_t reserved;
 } HostPlant;
 
@@ -112,6 +122,25 @@ typedef struct {
   uint16_t id;
   float value;
 } HostParam;
+
+// 加速度計 (車速のカルマンフィルタ用)。実機の静止実測は標準偏差 0.02m/s²、取付・傾きで平均 0.7m/s² ほどずれる。
+// 走行中は振動が乗るので、静止実測より大きい値を置く (駆動中の実測が取れたら見直す)
+// テストが -D で上書きできる (加速度計の質が悪い場合の頑健性の検証)
+#define HOST_ACCEL_PERIOD_S 0.005
+#ifndef HOST_ACCEL_NOISE_M_S2
+#define HOST_ACCEL_NOISE_M_S2 0.15
+#endif
+#ifndef HOST_ACCEL_BIAS_M_S2
+#define HOST_ACCEL_BIAS_M_S2 0.7
+#endif
+#ifndef HOST_ACCEL_LEVER_ARM_M
+// 旋回で加速度計の前後軸に乗る -k·ω² (k=0.15m。実機の走行ログ 2026-10-16 23:11 で ax − dv/dt を ω² に回帰: -0.153、
+// 速度域別 -0.155/-0.147/-0.139)。IMU が回転中心より前にあるのと、横滑りの角速度との積 (-vy·ω) の和
+#define HOST_ACCEL_LEVER_ARM_M 0.15
+#endif
+#ifndef HOST_ACCEL_SCALE
+#define HOST_ACCEL_SCALE 1.0  // 加速度計の倍率誤差 (実機は 0.97〜1.02)
+#endif
 
 double g_host_now_s = 0.0;
 static float g_steer_rad = 0.0f;
@@ -212,6 +241,9 @@ typedef struct {
   double md_speed[2];
   double gyro;
   double front_angle; // 前輪の回転角 (周期誤差の位相)
+  double front_theta_noise[2];  // 角度ノイズの前回値 (reserved bit0 のとき、差分が回転量のノイズになる)
+  Rng rng_imu;        // 加速度計用。従来の乱数列 (rng) を乱さないよう別にする
+  int imu_tick;       // 加速度の標本化 (約200Hz) の周期カウント
   MdModel md[2];
 } HostSim;
 
@@ -244,18 +276,46 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   }
   double front_omega = front_true * front_scale * (1.0 + p->front_scale_error);
   // 左右で位相の違う周期誤差 (絶対角エンコーダの取付偏心)。左右の平均には半分ほど残る
-  s->encoder.angular_velocity_left =
-      (float)((front_omega * (1.0 + p->front_ripple * sin(s->front_angle)) +
-               p->front_noise_rad_s * RngNormal(&s->rng)) * DRIVE_FRONT_LEFT_DIR);
-  s->encoder.angular_velocity_right =
-      (float)((front_omega * (1.0 + p->front_ripple * sin(s->front_angle + 1.3)) +
-               p->front_noise_rad_s * RngNormal(&s->rng)) * DRIVE_FRONT_RIGHT_DIR);
+  // 周期誤差は 1回転に1周期 (従来)。reserved bit1 で 2周期にする (実機の記録では位相別の速度が 1回転に2周期で揺れていた)
+  const double ripple_h = (p->reserved & 2u) != 0 ? 2.0 : 1.0;
+  double front_omega_true[2] = {front_omega * (1.0 + p->front_ripple * sin(ripple_h * s->front_angle)),
+                                front_omega * (1.0 + p->front_ripple * sin(ripple_h * s->front_angle + 1.3))};
+  const double front_dir[2] = {DRIVE_FRONT_LEFT_DIR, DRIVE_FRONT_RIGHT_DIR};
+  float* front_omega_out[2] = {&s->encoder.angular_velocity_left, &s->encoder.angular_velocity_right};
+  float* front_gap_out[2] = {&s->encoder.last_gap_left_rad, &s->encoder.last_gap_right_rad};
+  for (int i = 0; i < 2; i++) {
+    double omega_meas;
+    double gap;
+    if ((p->reserved & 1u) != 0) {
+      // 実機の測り方: 角度に白色ノイズ → 回転量 = 真の回転量 + (今回のノイズ − 前回のノイズ)
+      double noise = p->front_noise_rad_s * cfg->dt_s / 1.4142135623730951 * RngNormal(&s->rng);
+      gap = front_omega_true[i] * cfg->dt_s + (noise - s->front_theta_noise[i]);
+      s->front_theta_noise[i] = noise;
+      omega_meas = gap / cfg->dt_s;
+    } else {
+      omega_meas = front_omega_true[i] + p->front_noise_rad_s * RngNormal(&s->rng);
+      gap = omega_meas * cfg->dt_s;
+    }
+    *front_omega_out[i] = (float)(omega_meas * front_dir[i]);
+    *front_gap_out[i] = (float)(gap * front_dir[i]);
+  }
+  s->encoder.last_dt_s = (float)cfg->dt_s;
+  s->encoder.update_seq++;
   s->motors.rear_left.speed_rad_s =
       (float)((s->md_speed[0] + p->rear_noise_rad_s * RngNormal(&s->rng)) * DRIVE_REAR_LEFT_DIR);
   s->motors.rear_right.speed_rad_s =
       (float)((s->md_speed[1] + p->rear_noise_rad_s * RngNormal(&s->rng)) * DRIVE_REAR_RIGHT_DIR);
   s->imu.data.gyro_z =
       (float)((s->gyro + p->gyro_bias_rad_s + p->gyro_noise_rad_s * RngNormal(&s->rng)) * 57.29577951308232);
+  // 加速度計: 約200Hz で標本化 (実機は DATA_RDY 割り込み)。真の前後加速度 (s->accel_x は 5ms の遅れ付き)
+  // に取付ずれのバイアスとノイズ
+  if (++s->imu_tick >= (int)(HOST_ACCEL_PERIOD_S / cfg->dt_s + 0.5)) {
+    s->imu_tick = 0;
+    s->imu.data.accel_x_raw =
+        (float)(s->accel_x * HOST_ACCEL_SCALE + HOST_ACCEL_BIAS_M_S2 - HOST_ACCEL_LEVER_ARM_M * s->gyro * s->gyro +
+                HOST_ACCEL_NOISE_M_S2 * RngNormal(&s->rng_imu));
+    s->imu.data.sample_seq++;
+  }
 
   // --- ファーム ---
   // Timer・舵角はファイル内の共有変数なので、呼ぶたびにこのシミュレーションのものへ差し替える
@@ -390,6 +450,23 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   o[OUT_FW_REAR_RIGHT] = d->rear_speed_right_m_s;
   o[OUT_FW_YAW_RATE] = d->yaw_rate_rad_s;
   o[OUT_FRONT_ODOM] = s->front_odom;
+#ifdef HOST_FW_HAS_SPEED_KF
+  o[OUT_FW_ACCEL_BIAS] = Drive_GetAccelBiasKf(d);
+  o[OUT_FW_KF_GATED] = (double)Drive_GetKfGatedCount(d);
+  {
+    float nis[SPEED_KF_DIAG_COUNT], ac[SPEED_KF_DIAG_COUNT];
+    Drive_TakeKfDiag(&s->drive, nis, ac);  // 取り出すと集計がやり直される (d は const)
+    const double none = NAN;
+    o[OUT_FW_NIS_DIST] = nis[SPEED_KF_DIAG_DISTANCE] > 0.0f ? (double)nis[SPEED_KF_DIAG_DISTANCE] : none;
+    o[OUT_FW_NIS_ACCEL] = nis[SPEED_KF_DIAG_ACCEL] > 0.0f ? (double)nis[SPEED_KF_DIAG_ACCEL] : none;
+    o[OUT_FW_AC_DIST] = nis[SPEED_KF_DIAG_DISTANCE] > 0.0f ? (double)ac[SPEED_KF_DIAG_DISTANCE] : none;
+    o[OUT_FW_AC_ACCEL] = nis[SPEED_KF_DIAG_ACCEL] > 0.0f ? (double)ac[SPEED_KF_DIAG_ACCEL] : none;
+  }
+#else
+  o[OUT_FW_ACCEL_BIAS] = 0.0;
+  o[OUT_FW_KF_GATED] = 0.0;
+  o[OUT_FW_NIS_DIST] = o[OUT_FW_NIS_ACCEL] = o[OUT_FW_AC_DIST] = o[OUT_FW_AC_ACCEL] = NAN;
+#endif
 }
 
 /**
@@ -431,6 +508,7 @@ HostSim* host_sim_create(const HostPlant* p, const HostConfig* cfg, const HostPa
   ApplyEnables(s);
 
   s->rng.s = 0x9E3779B97F4A7C15ULL ^ ((uint64_t)p->seed * 0xD1B54A32D192ED03ULL + 1ULL);
+  s->rng_imu.s = 0xC2B2AE3D27D4EB4FULL ^ ((uint64_t)p->seed * 0x9E3779B97F4A7C15ULL + 7ULL);
   s->v = cfg->initial_speed_m_s;
   s->omega[0] = s->omega[1] = s->v / DRIVE_REAR_WHEEL_RADIUS_M;
   s->md_speed[0] = s->md_speed[1] = s->omega[0];

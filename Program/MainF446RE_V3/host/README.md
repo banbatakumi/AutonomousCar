@@ -52,6 +52,15 @@ cc -O2 -shared -fPIC -DHOST_FW_HAS_CONTROL_PARAMS -DHOST_FW_HAS_LAUNCH \
 
 パラメータの値・出どころは上位側 `tools/ctrl_tune/plant.py`。
 
+## 車速のカルマンフィルタ (`speed_kf`)
+
+`Drive` の車速は走行距離と加速度計のカルマンフィルタ (`src/control/speed_kf.c`) だけ (v0.25 で前輪の微分+LPF は廃止。前輪の周速は報告用の LPF のみ)。
+shim の `Encoder` は直近の回転量・経過時間・更新番号、`Imu` は生の加速度 X・サンプル番号を持つ。
+`HostPlant.reserved` の bit0 = 前輪エンコーダを実機と同じ測り方 (角度に白色の量子化ノイズ、その差分が回転量) にする
+(上位の `Plant.front_position_noise`)。0 のときは従来どおり角速度に白色ノイズで、出力は変わらない。
+加速度計のノイズ・バイアスは `host_sim.c` の定数 (`HOST_ACCEL_*`)。出力列 `OUT_FW_ACCEL_BIAS`・`OUT_FW_KF_GATED`・`OUT_FW_NIS_*`/`OUT_FW_AC_*` (一貫性の診断。測定の無い行は NaN) は
+`speed_kf` を持つファームだけ値が入る (`HOST_FW_HAS_SPEED_KF`)。
+
 ## 変えるときの約束
 
 - `HostPlant`・`HostConfig`・入出力の列を変えたら `HOST_SIM_ABI` を上げ、上位側

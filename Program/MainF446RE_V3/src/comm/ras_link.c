@@ -16,7 +16,7 @@
 // PONG ペイロード内の t_pong_tx_us の位置 → フレーム先頭からは +5 (ヘッダ長)
 #define RAS_PONG_TX_TIME_OFFSET 8
 
-#define RAS_LEN_TELEMETRY 84
+#define RAS_LEN_TELEMETRY 102
 #define RAS_LEN_PONG 12
 #define RAS_LEN_VERSION 10
 #define RAS_LEN_LIMITS 16
@@ -115,6 +115,13 @@ static int16_t QuantizeI16(float value, float scale) {
   if (raw >= 32767.0f) return 32767;
   if (raw <= -32768.0f) return -32768;
   return (int16_t)(raw >= 0.0f ? raw + 0.5f : raw - 0.5f);
+}
+
+static uint16_t QuantizeU16(float value, float scale) {
+  if (!IsFinite(value) || value <= 0.0f) return 0;
+  float raw = value / scale;
+  if (raw >= 65535.0f) return 65535;
+  return (uint16_t)(raw + 0.5f);
 }
 
 static uint8_t QuantizeU8(float value, float scale) {
@@ -284,6 +291,15 @@ static void SendTelemetry(RasLink* obj) {
   // cmd_seq_echo はスナップショットの時点ではなく**送信時点**で最後に受けた COMMAND の SEQ
   // (他のフィールドより最大1周期新しい)。上位の往復時間 (cmd_rtt_ms) の測定にはこの方が正しい
   PutU8(p, &pos, obj->has_command ? obj->command.seq : 0);
+  // v0.24〜v0.26: 車速のカルマンフィルタの診断と前輪の絶対角 (末尾に追加。既存フィールドの位置は変えていない)
+  PutI16(p, &pos, QuantizeI16(t->accel_kf_m_s2, 0.001f));
+  PutI16(p, &pos, QuantizeI16(t->accel_bias_kf_m_s2, 0.001f));
+  PutU16(p, &pos, t->kf_gated_count);
+  PutU16(p, &pos, QuantizeU16(t->kf_z_rms_dist, 0.001f));
+  PutU16(p, &pos, QuantizeU16(t->kf_z_rms_accel, 0.001f));
+  PutI16(p, &pos, QuantizeI16(t->kf_rho_dist, 0.0001f));
+  PutI16(p, &pos, QuantizeI16(t->kf_rho_accel, 0.0001f));
+  for (int i = 0; i < 2; i++) PutU16(p, &pos, QuantizeU16(t->front_angle_rad[i], 0.0001f));
 
   SendFrame(obj, RAS_TXQ_TELEMETRY, RAS_TYPE_TELEMETRY, p, RAS_LEN_TELEMETRY, 0);
 }

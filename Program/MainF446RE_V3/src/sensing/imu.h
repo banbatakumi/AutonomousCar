@@ -42,6 +42,11 @@ typedef struct {
   float linear_accel_y;
   float linear_accel_z;
 
+  // ローパス前の生の加速度 X [m/s^2] (機体座標系・重力込み)。車速のカルマンフィルタ用。
+  // sample_seq は取り込んだサンプルごとに進む (利用側は前回と違うときだけ取り込む)
+  float accel_x_raw;
+  uint32_t sample_seq;
+
   float temp;       // [degC] センサ内部温度
   bool stationary;  // 静止と判定されているか (ジャイロバイアス追従中)
 } ImuData;
