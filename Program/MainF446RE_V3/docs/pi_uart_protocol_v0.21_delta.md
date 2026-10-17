@@ -46,8 +46,8 @@ T_ff     = speed_ff_nm_per_m_s2 × a_ref
 ```
 
 - ローパスは、上位が 50Hz で目標を刻むので `step/dt` が「届く前は `accel_limit`、届いた周期は 0」と跳ぶのを
-  ならすため。**上位はこの時定数ぶん先の速度を送る** (Pi 側 `raspi/nav/speedctl.py` の `FW_FF_TAU_S`、シムの
-  `sim/vehicle.py` の `SpeedController.FF_TAU_S` と同じ値にすること)
+  ならすため。**上位はこの時定数ぶん先の速度を送る** (Pi 側は `config/vehicle.toml` の `[dynamics] speed_ff_filter_s`
+  が同じ値を持ち、planner とシムが読む。一致は上位の `tools/ctrl_tune/tests/test_fw_constants.py` が確かめる)
 - 車速PIを通らない周期は `a_ref` を 0 に戻す (制動を解いた直後に古い傾きのトルクを出さない)
 - TC・リミッタで削られた分の積分の巻き戻し (`UnwindIntegral`) は、足した後の要求と実際に出したトルクの差で
   行う (従来どおり)。フィードフォワードがグリップを超える要求になっても TC が絞り、積分は巻き戻る

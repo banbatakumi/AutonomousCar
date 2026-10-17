@@ -57,6 +57,9 @@
 #define LIDAR_PWM_FREQ_HZ 15000U
 #define LIDAR_PWM_PERIOD (LIDAR_PWM_TIMER_CLOCK_HZ / LIDAR_PWM_FREQ_HZ - 1U)
 #define LIDAR_PWM_DUTY 0.4f  // ★実機で回転数を見ながら詰めること (10Hz 回転が目標)
+// 回転の目標周波数 [Hz] (LD06 のデータシートの標準値 10Hz。可変範囲 5〜13Hz)。点群の各ビンは
+// 1回転に1回しか更新されないので、障害物は最悪この周期の逆数だけ遅れて見える
+#define LIDAR_SCAN_FREQ_HZ 10.0f
 
 // この時間パケットを受信できなければ異常とみなす [us]
 #define LIDAR_TIMEOUT_US 300000u
