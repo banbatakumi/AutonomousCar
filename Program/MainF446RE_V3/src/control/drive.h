@@ -40,14 +40,15 @@
 // 後輪は減速機を挟まないダイレクトドライブのため、モータ角速度がそのまま車輪角速度になる。
 // 減速比の定数を置いていないのはこのため (減速機を入れたら車輪速の換算に比を掛けること)。
 // ===========================================================================
-#define DRIVE_FRONT_WHEEL_RADIUS_M 0.030f  // 前輪 (非駆動輪) の有効転がり半径 [m] (直径60mm)
-#define DRIVE_REAR_WHEEL_RADIUS_M 0.030f   // 後輪 (駆動輪) の有効転がり半径 [m] (直径60mm)
+#define DRIVE_FRONT_WHEEL_RADIUS_M 0.030f  // 前輪 (非駆動輪) の名目の半径 [m] (直径60mm)
+#define DRIVE_REAR_WHEEL_RADIUS_M 0.030f   // 後輪 (駆動輪) の名目の半径 [m] (直径60mm)
 #define DRIVE_WHEELBASE_M 0.230f           // 前後車軸間距離 [m]
 #define DRIVE_REAR_TRACK_M 0.155f          // 後輪左右間距離 (トレッド) [m]
 
-// 半径は幾何寸法 (直径60mm) から入れてある。ゴムタイヤは荷重で潰れるぶん実際の転がり半径が
-// 数%小さくなり、その誤差はそのまま車速とオドメトリの倍率誤差になる。精度が要るなら
-// メジャーで測った距離を転がして Encoder_GetAccumAngleLeftMrad() の累積値から逆算すること。
+// 名目の半径は幾何寸法 (直径60mm)。ゴムタイヤは荷重で潰れるぶん実際の転がり半径が数%小さく、その誤差は
+// そのまま車速とオドメトリの倍率誤差になるので、車速・走行距離・スリップ率は**校正した有効半径**
+// (control_params.h の front_radius_*・rear_radius_*。上位のエンコーダ校正試験が決めて送る) を使う。
+// 名目の値が残るのはトルクベクタリングのモーメントの換算だけ (左右の比で効くので数%の差は効かない)
 
 // 各センサ・アクチュエータの符号。左右のモータ/エンコーダは鏡像に取り付くため、
 // 「車体前進方向を正」に揃えるための符号をここで吸収する。
@@ -466,6 +467,12 @@ bool Drive_IsEnabled(const Drive* obj);
  * 車速PI・TC/ABS のスリップの基準・自動停止の前後判定のすべてがこれを使う。
  */
 float Drive_GetVehicleSpeed(const Drive* obj);
+
+/**
+ * @brief 前輪 (左・右) の有効転がり半径 [m] (control_params.h の front_radius_*。走行距離の換算に使う)。
+ */
+float Drive_GetFrontRadiusLeft(const Drive* obj);
+float Drive_GetFrontRadiusRight(const Drive* obj);
 
 /**
  * @brief カルマンフィルタの加速度 [m/s²]・加速度計バイアス [m/s²]・測定を弱めた累積回数 (TELEMETRY で上位に出す)。

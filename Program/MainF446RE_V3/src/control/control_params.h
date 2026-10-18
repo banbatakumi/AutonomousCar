@@ -18,6 +18,11 @@
 // このファームの src/control をホストでコンパイルしたものを閉ループにして最適化する)。
 //
 // 表の列: X(フィールド名, param_id, 仮置き, 下限, 上限)
+//
+// 校正値 (前輪エンコーダ・車輪の有効半径) と車速のカルマンフィルタの調整値だけは、仮置きが「何もしない値」
+// ではなく**今までの固定値** (校正なし・名目の半径・speed_kf.h の既定) にしてある。上位が送る前でも車速と
+// 走行距離は今までどおりに出るようにするため (KF の仮置きは speed_kf.h の SPEED_KF_* と同じ値。上位の
+// tools/ctrl_tune/tests/test_fw_constants.py が突き合わせる)
 // ===========================================================================
 #define CONTROL_PARAM_TABLE(X)                                                                  \
   /* --- スリップの測り方 (TC・ABS 共通) --- */                                                 \
@@ -61,7 +66,36 @@
   /* 0 で無し (既定)。上位がシステム同定の結果 (speed_plant_gain) から決めて送る */               \
   X(speed_ff_nm_per_m_s2, 0x00B1, 0.0f, 0.0f, 0.2f)                                             \
   /* 同じく「これ × 進む向き」を足す [Nm] = 転がり抵抗ぶんのトルク (その車速を保つのに要る) */   \
-  X(speed_ff_rr_nm, 0x00B2, 0.0f, 0.0f, 0.05f)
+  X(speed_ff_rr_nm, 0x00B2, 0.0f, 0.0f, 0.05f)                                                  \
+  /* --- 前輪エンコーダの校正 (lib/encoder_cal。左右別。上位のエンコーダ校正試験が決める) --- */      \
+  /* lo・hi: 角度 0・2π に当たる ADC の読み (フルスケールに対する比) */                            \
+  X(enc_left_lo, 0x00C1, 0.0f, 0.0f, 0.2f)                                                      \
+  X(enc_left_hi, 0x00C2, 1.0f, 0.8f, 1.0f)                                                      \
+  /* 1回転の周期誤差 e(θ) = h1s sinθ + h1c cosθ + h2s sin2θ + h2c cos2θ [rad] (θ は取付向きの符号のまま) */ \
+  X(enc_left_h1s, 0x00C3, 0.0f, -0.1f, 0.1f)                                                    \
+  X(enc_left_h1c, 0x00C4, 0.0f, -0.1f, 0.1f)                                                    \
+  X(enc_left_h2s, 0x00C5, 0.0f, -0.1f, 0.1f)                                                    \
+  X(enc_left_h2c, 0x00C6, 0.0f, -0.1f, 0.1f)                                                    \
+  X(enc_right_lo, 0x00C9, 0.0f, 0.0f, 0.2f)                                                     \
+  X(enc_right_hi, 0x00CA, 1.0f, 0.8f, 1.0f)                                                     \
+  X(enc_right_h1s, 0x00CB, 0.0f, -0.1f, 0.1f)                                                   \
+  X(enc_right_h1c, 0x00CC, 0.0f, -0.1f, 0.1f)                                                   \
+  X(enc_right_h2s, 0x00CD, 0.0f, -0.1f, 0.1f)                                                   \
+  X(enc_right_h2c, 0x00CE, 0.0f, -0.1f, 0.1f)                                                   \
+  /* --- 車輪の有効転がり半径 [m] (荷重でつぶれたぶん名目の 30mm より小さい。上位の校正試験が決める) --- */ \
+  /* 前輪は車速・走行距離 (オドメトリ) の倍率、後輪はスリップ率の基準 (前輪との比) を決める */       \
+  X(front_radius_left_m, 0x00D1, 0.030f, 0.025f, 0.035f)                                        \
+  X(front_radius_right_m, 0x00D2, 0.030f, 0.025f, 0.035f)                                       \
+  X(rear_radius_left_m, 0x00D3, 0.030f, 0.025f, 0.035f)                                         \
+  X(rear_radius_right_m, 0x00D4, 0.030f, 0.025f, 0.035f)                                        \
+  /* --- 車速のカルマンフィルタ (speed_kf.h。上位が記録から推定して送る) --- */                     \
+  X(kf_sigma_s_m, 0x00E1, 0.0008f, 0.00001f, 0.005f)    /* 走行距離の測定ノイズ [m] */     \
+  /* 加速度の測定ノイズ [m/s^2] = kf_sigma_a_m_s2 + kf_sigma_a_per_m_s × |車速| (振動は速度とともに増える) */ \
+  X(kf_sigma_a_m_s2, 0x00E2, 0.6f, 0.01f, 5.0f)                                \
+  X(kf_sigma_a_per_m_s, 0x00E3, 0.0f, 0.0f, 2.0f)                                               \
+  X(kf_jerk_psd, 0x00E4, 100.0f, 1.0f, 10000.0f)        /* [m^2/s^5] */                \
+  X(kf_bias_walk_psd, 0x00E5, 0.05f, 0.00001f, 10.0f) /* [(m/s^2)^2/s] */        \
+  X(kf_lever_arm_m, 0x00E6, 0.15f, -0.5f, 0.5f)     /* 旋回の -k·ω² の補正 [m] */
 
 typedef struct {
 #define CONTROL_PARAM_FIELD(name, id, def, lo, hi) float name;

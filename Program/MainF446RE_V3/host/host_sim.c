@@ -11,6 +11,8 @@
 
 #include "drive.h"
 
+#define HOST_PI 3.14159265358979323846
+
 #define HOST_SIM_ABI 8
 
 // 入力 (1制御周期ごと) の列
@@ -100,6 +102,9 @@ typedef struct {
   double front_scale_error;     // 前輪の速度の倍率誤差 (タイヤ径の誤差。-0.03 = 3%遅く読む)
   double front_ripple;          // 前輪エンコーダの1回転周期の誤差 (速度に対する振幅の割合)
   uint32_t seed;
+  // bit2 = 前輪の周期誤差を**角度の読みの誤差**として作る (実機と同じ)。読み θm = θ + (front_ripple/h)·sin(hθ + φ)
+  //        (θ は取付向きの符号のままの角度、φ は左 0・右 1.3) を、ファームと同じ校正の式 (lib/encoder_cal。
+  //        Drive が Encoder_SetCalibration で入れた値) で直してから回転量にする。0 = 角速度に掛ける (従来)
   // bit1 = 前輪の周期誤差 (front_ripple) の周期。0 = 1回転に1周期 (従来)、1 = 2周期
   // bit0 = 前輪エンコーダの測り方。0 = 角速度に白色ノイズ (従来)、1 = 角度に白色の量子化ノイズが乗り、
   // その差分が回転量になる (実機の静止実測と同じ: 隣り合う周期の相関 -0.5。front_noise_rad_s は
@@ -242,6 +247,9 @@ typedef struct {
   double gyro;
   double front_angle; // 前輪の回転角 (周期誤差の位相)
   double front_theta_noise[2];  // 角度ノイズの前回値 (reserved bit0 のとき、差分が回転量のノイズになる)
+  double front_wheel_angle;     // 前輪の実際の回転角 (reserved bit2。タイヤ径の誤差を含む)
+  double front_cal_prev[2];     // 校正後の角度の前回値 (reserved bit2)
+  int front_cal_started;
   Rng rng_imu;        // 加速度計用。従来の乱数列 (rng) を乱さないよう別にする
   int imu_tick;       // 加速度の標本化 (約200Hz) の周期カウント
   MdModel md[2];
@@ -283,7 +291,27 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   const double front_dir[2] = {DRIVE_FRONT_LEFT_DIR, DRIVE_FRONT_RIGHT_DIR};
   float* front_omega_out[2] = {&s->encoder.angular_velocity_left, &s->encoder.angular_velocity_right};
   float* front_gap_out[2] = {&s->encoder.last_gap_left_rad, &s->encoder.last_gap_right_rad};
-  for (int i = 0; i < 2; i++) {
+  const EncoderCal* front_cal[2] = {&s->encoder.cal_left, &s->encoder.cal_right};
+  // 助走 (advance が偽) の間も車輪は回す (下の従来の経路も助走中に初速ぶんの回転を出す)
+  if ((p->reserved & 4u) != 0) s->front_wheel_angle += front_omega * cfg->dt_s;
+  for (int i = 0; (p->reserved & 4u) != 0 && i < 2; i++) {
+    // 角度の読み: 真の角度 + 周期誤差 (+ 量子化ノイズ) を 0〜2π に畳み、ファームの校正の式で直す
+    const double theta = front_dir[i] * s->front_wheel_angle;
+    const double phase = (i == 0) ? 0.0 : 1.3;
+    double theta_m = theta + p->front_ripple / ripple_h * sin(ripple_h * theta + phase);
+    if ((p->reserved & 1u) != 0) theta_m += p->front_noise_rad_s * cfg->dt_s / 1.4142135623730951 * RngNormal(&s->rng);
+    double u = fmod(theta_m, 2.0 * HOST_PI) / (2.0 * HOST_PI);
+    if (u < 0.0) u += 1.0;
+    const double theta_c = EncoderCal_Angle(front_cal[i], (float)u);
+    if (!s->front_cal_started) s->front_cal_prev[i] = theta_c;
+    double gap = theta_c - s->front_cal_prev[i];
+    gap -= 2.0 * HOST_PI * floor((gap + HOST_PI) / (2.0 * HOST_PI));  // ±半周に畳む (ファームの GapRadians と同じ)
+    s->front_cal_prev[i] = theta_c;
+    *front_omega_out[i] = (float)(gap / cfg->dt_s);
+    *front_gap_out[i] = (float)gap;
+  }
+  if ((p->reserved & 4u) != 0) s->front_cal_started = 1;
+  for (int i = 0; (p->reserved & 4u) == 0 && i < 2; i++) {
     double omega_meas;
     double gap;
     if ((p->reserved & 1u) != 0) {

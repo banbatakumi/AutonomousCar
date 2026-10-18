@@ -112,7 +112,17 @@ typedef enum {
   SPEED_KF_DIAG_COUNT
 } SpeedKfDiagChannel;
 
+// 実行時の調整値 (上位が CONFIG_SET で送る。control_params.h の kf_*)。SpeedKf_Init が上の SPEED_KF_* で埋める
 typedef struct {
+  float sigma_s_m;          // 走行距離の測定ノイズ [m]
+  float sigma_a_m_s2;       // 加速度の測定ノイズ [m/s²] (車速 0 のとき)
+  float sigma_a_per_m_s;    // 同 車速 1m/s あたりの増え方 [(m/s²)/(m/s)] (走行中の振動)
+  float jerk_psd;           // [m²/s⁵]
+  float bias_walk_psd;      // [(m/s²)²/s]
+} SpeedKfConfig;
+
+typedef struct {
+  SpeedKfConfig cfg;
   // 状態: 0=s (走行距離), 1=v, 2=a, 3=b。s を先頭に置くのは測定行列を単純にするため
   float x[4];
   float p[4][4];
@@ -124,6 +134,9 @@ typedef struct {
 } SpeedKf;
 
 void SpeedKf_Init(SpeedKf* kf);
+
+/** @brief 調整値を入れ替える (状態はそのまま。次の予測・測定から効く)。毎周期呼んでよい */
+void SpeedKf_SetConfig(SpeedKf* kf, const SpeedKfConfig* cfg);
 
 /** @brief 状態を dt [s] 進める。毎周期、測定の更新より先に呼ぶ。 */
 void SpeedKf_Predict(SpeedKf* kf, float dt_s);

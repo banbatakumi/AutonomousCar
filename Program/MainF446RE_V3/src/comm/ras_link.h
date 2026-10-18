@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x001Au
+#define RAS_PROTOCOL_VERSION 0x001Bu
 // COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
 // (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
 #define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
@@ -361,8 +361,9 @@ typedef struct {
   uint8_t tx_telemetry_storage[256];
   uint8_t tx_lidar_storage[512];
   // 上位は接続のたびに調整パラメータ (control_params.h の表) をまとめて CONFIG_SET してくる。
-  // CONFIG_ACK は1つ 14 バイトで、256 だと約 18 個で溢れていた (上位の再送で回復はする)
-  uint8_t tx_info_storage[512];
+  // CONFIG_ACK は1つ 14 バイトで、256 だと約 18 個で溢れていた (上位の再送で回復はする)。
+  // 調整パラメータと校正値で約 50 項目あるので、まとめて届いても溢れないだけ持つ
+  uint8_t tx_info_storage[1024];
   uint8_t tx_log_storage[512];
   uint8_t tx_frame[RAS_FRAME_MAX];  // 送信中のフレーム (DMA が読むので完了まで触らない)
   uint8_t build_buf[RAS_FRAME_MAX];

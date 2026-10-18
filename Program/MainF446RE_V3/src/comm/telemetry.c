@@ -80,10 +80,15 @@ static uint32_t BuildFlags(Telemetry* obj) {
   return flags;
 }
 
-// 前輪の累積回転角 [1e-3 rad] を走行距離 [0.1mm] へ換算する。
+// 前輪の累積回転角 [1e-3 rad] の前回からの増分を、有効半径で走行距離 [0.1mm] へ換算して足す。
 // 上位は舵角で射影してから使うこと (操舵輪なので車輪の軌跡長 = 車体中心線距離ではない)
-static int32_t AccumAngleToOdom(int32_t mrad, float direction) {
-  return (int32_t)((float)mrad * direction * DRIVE_FRONT_WHEEL_RADIUS_M * 10.0f);
+static void AccumulateOdom(Telemetry* obj, int side, int32_t mrad, float direction, float radius_m) {
+  int32_t d_mrad = mrad - obj->odom_mrad_prev[side];
+  obj->odom_mrad_prev[side] = mrad;
+  obj->odom_carry_0p1mm[side] += (float)d_mrad * direction * radius_m * 10.0f;
+  int32_t whole = (int32_t)obj->odom_carry_0p1mm[side];
+  obj->odom_0p1mm[side] += whole;
+  obj->odom_carry_0p1mm[side] -= (float)whole;
 }
 
 void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, Power* power,
@@ -100,6 +105,12 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
   obj->drive = drive;
   obj->range_sensor = range_sensor;
 
+  // 起動時を走行距離 0 とする (累積回転角も起動時が 0)
+  for (int i = 0; i < 2; i++) {
+    obj->odom_mrad_prev[i] = 0;
+    obj->odom_0p1mm[i] = 0;
+    obj->odom_carry_0p1mm[i] = 0.0f;
+  }
   obj->logged_faults = POWER_FAULT_NONE;
   Timer_Init(&obj->update_timer);
 }
@@ -148,10 +159,12 @@ void Telemetry_Update(Telemetry* obj) {
   telemetry.wheel_speed_m_s[2] = obj->drive->rear_speed_left_m_s;
   telemetry.wheel_speed_m_s[3] = obj->drive->rear_speed_right_m_s;
 
-  telemetry.odom_dist_0p1mm[0] =
-      AccumAngleToOdom(Encoder_GetAccumAngleLeftMrad(obj->encoder), DRIVE_FRONT_LEFT_DIR);
-  telemetry.odom_dist_0p1mm[1] =
-      AccumAngleToOdom(Encoder_GetAccumAngleRightMrad(obj->encoder), DRIVE_FRONT_RIGHT_DIR);
+  AccumulateOdom(obj, 0, Encoder_GetAccumAngleLeftMrad(obj->encoder), DRIVE_FRONT_LEFT_DIR,
+                 Drive_GetFrontRadiusLeft(obj->drive));
+  AccumulateOdom(obj, 1, Encoder_GetAccumAngleRightMrad(obj->encoder), DRIVE_FRONT_RIGHT_DIR,
+                 Drive_GetFrontRadiusRight(obj->drive));
+  telemetry.odom_dist_0p1mm[0] = obj->odom_0p1mm[0];
+  telemetry.odom_dist_0p1mm[1] = obj->odom_0p1mm[1];
 
   telemetry.accel_m_s2[0] = imu_data->accel_x;
   telemetry.accel_m_s2[1] = imu_data->accel_y;
@@ -192,8 +205,9 @@ void Telemetry_Update(Telemetry* obj) {
     telemetry.kf_rho_dist = KfCorrelation(nis[SPEED_KF_DIAG_DISTANCE], ac[SPEED_KF_DIAG_DISTANCE]);
     telemetry.kf_rho_accel = KfCorrelation(nis[SPEED_KF_DIAG_ACCEL], ac[SPEED_KF_DIAG_ACCEL]);
   }
-  telemetry.front_angle_rad[0] = Encoder_GetAngleLeft(obj->encoder);
-  telemetry.front_angle_rad[1] = Encoder_GetAngleRight(obj->encoder);
+  // 校正前の生の角度 (上位が周期誤差・出力の範囲を同定する。校正値に依らない)
+  telemetry.front_angle_rad[0] = Encoder_GetRawAngleLeft(obj->encoder);
+  telemetry.front_angle_rad[1] = Encoder_GetRawAngleRight(obj->encoder);
 
   telemetry.batt_voltage_v[0] = Power_GetVoltageDriveFiltered(obj->power);
   telemetry.batt_voltage_v[1] = Power_GetVoltageSignalFiltered(obj->power);

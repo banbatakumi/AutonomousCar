@@ -1,39 +1,39 @@
 #include "encoder.h"
 
+#include <stdbool.h>
+
 #include "mymath.h"
 
-#define ENCODER_VREF 3.3f  // エンコーダ電源電圧 (+3V3系、フルスケール=1回転分の電圧に相当)
-
 #define ENCODER_ADC_FULL_SCALE 4095.0f
-#define ENCODER_ADC_HALF_TURN_COUNTS 2048
 
-static float VoltageToAngleRad(float voltage) {
-  return NormalizeRadians(voltage / ENCODER_VREF * TWO_PI);
-}
-
-// 循環バッファ内の全サンプルを平均した角度 [rad]。生のカウントをそのまま平均すると、
-// 窓の途中で 0/2π の境界 (4095→0) を跨いだときに半周ずれた値になるため、
-// 先頭サンプルからの差分を ±半周に畳んでから平均する。1窓 (約444us) で半周も回ることはない
-static float ReadAveragedAngleRad(AdcDma* adc, uint32_t channel) {
+// 循環バッファ内の全サンプルを平均した、ADC のフルスケールに対する比 (1回転ぶんで 0〜1 を一周する)。
+// 生のカウントをそのまま平均すると、窓の途中で 0/2π の境界を跨いだときに半周ずれた値になるため、
+// 先頭サンプルからの差分を ±半周に畳んでから平均する。1回転に当たるカウントは校正値の範囲 (hi − lo) で、
+// 既定はフルスケール。1窓 (約444us) で半周も回ることはない
+static float ReadAveragedRaw(AdcDma* adc, uint32_t channel, const EncoderCal* cal) {
+  const float turn = EncoderCal_Span(cal) * ENCODER_ADC_FULL_SCALE;
   int32_t reference = AdcDma_GetRawAt(adc, 0, channel);
-  int32_t sum_diff = 0;
+  float sum_diff = 0.0f;
   for (uint32_t i = 0; i < adc->num_samples; i++) {
-    int32_t diff = (int32_t)AdcDma_GetRawAt(adc, i, channel) - reference;
-    if (diff > ENCODER_ADC_HALF_TURN_COUNTS) diff -= 2 * ENCODER_ADC_HALF_TURN_COUNTS;
-    if (diff < -ENCODER_ADC_HALF_TURN_COUNTS) diff += 2 * ENCODER_ADC_HALF_TURN_COUNTS;
+    float diff = (float)((int32_t)AdcDma_GetRawAt(adc, i, channel) - reference);
+    if (diff > 0.5f * turn) diff -= turn;
+    if (diff < -0.5f * turn) diff += turn;
     sum_diff += diff;
   }
-  float counts = (float)reference + (float)sum_diff / (float)adc->num_samples;
-  return VoltageToAngleRad(counts * ENCODER_VREF / ENCODER_ADC_FULL_SCALE);
+  return ((float)reference + sum_diff / (float)adc->num_samples) / ENCODER_ADC_FULL_SCALE;
 }
 
 void Encoder_Init(Encoder* obj, AdcDma* adc2) {
   obj->adc2 = adc2;
+  EncoderCal_SetIdentity(&obj->cal_left);
+  EncoderCal_SetIdentity(&obj->cal_right);
   // DMA 開始直後はバッファの大半が未書き込み (0) で、平均が 0 側へ引っ張られる。そのまま初期角度にすると
   // 初回 Update で偽の角度差が累積回転角 (オドメトリ) に入るため、一巡するまで待つ
   HAL_Delay(2);
-  obj->angle_left_rad = ReadAveragedAngleRad(adc2, ENCODER_ADC2_CH_LEFT);
-  obj->angle_right_rad = ReadAveragedAngleRad(adc2, ENCODER_ADC2_CH_RIGHT);
+  obj->raw_left = ReadAveragedRaw(adc2, ENCODER_ADC2_CH_LEFT, &obj->cal_left);
+  obj->raw_right = ReadAveragedRaw(adc2, ENCODER_ADC2_CH_RIGHT, &obj->cal_right);
+  obj->angle_left_rad = EncoderCal_Angle(&obj->cal_left, obj->raw_left);
+  obj->angle_right_rad = EncoderCal_Angle(&obj->cal_right, obj->raw_right);
   obj->angular_velocity_left_rad_s = 0.0f;
   obj->angular_velocity_right_rad_s = 0.0f;
   obj->accum_angle_left_mrad = 0;
@@ -71,8 +71,10 @@ void Encoder_Update(Encoder* obj) {
   float dt_s = (float)(now_cycles - obj->last_cycles) / (float)(Timer_GetCyclesPerUs() * 1000000U);
   if (dt_s <= 0.0f) return;
 
-  float new_angle_left_rad = ReadAveragedAngleRad(obj->adc2, ENCODER_ADC2_CH_LEFT);
-  float new_angle_right_rad = ReadAveragedAngleRad(obj->adc2, ENCODER_ADC2_CH_RIGHT);
+  obj->raw_left = ReadAveragedRaw(obj->adc2, ENCODER_ADC2_CH_LEFT, &obj->cal_left);
+  obj->raw_right = ReadAveragedRaw(obj->adc2, ENCODER_ADC2_CH_RIGHT, &obj->cal_right);
+  float new_angle_left_rad = EncoderCal_Angle(&obj->cal_left, obj->raw_left);
+  float new_angle_right_rad = EncoderCal_Angle(&obj->cal_right, obj->raw_right);
 
   float gap_left_rad = GapRadians(new_angle_left_rad, obj->angle_left_rad);
   float gap_right_rad = GapRadians(new_angle_right_rad, obj->angle_right_rad);
@@ -95,6 +97,30 @@ void Encoder_Update(Encoder* obj) {
   obj->angle_left_rad = new_angle_left_rad;
   obj->angle_right_rad = new_angle_right_rad;
   obj->last_cycles = now_cycles;
+}
+
+static bool CalEqual(const EncoderCal* a, const EncoderCal* b) {
+  return a->lo == b->lo && a->hi == b->hi && a->h1s == b->h1s && a->h1c == b->h1c && a->h2s == b->h2s &&
+         a->h2c == b->h2c;
+}
+
+void Encoder_SetCalibration(Encoder* obj, const EncoderCal* left, const EncoderCal* right) {
+  if (!CalEqual(&obj->cal_left, left)) {
+    obj->cal_left = *left;
+    obj->angle_left_rad = EncoderCal_Angle(&obj->cal_left, obj->raw_left);
+  }
+  if (!CalEqual(&obj->cal_right, right)) {
+    obj->cal_right = *right;
+    obj->angle_right_rad = EncoderCal_Angle(&obj->cal_right, obj->raw_right);
+  }
+}
+
+float Encoder_GetRawAngleLeft(const Encoder* obj) {
+  return EncoderCal_Wrap(obj->raw_left * ENCODER_CAL_TWO_PI);
+}
+
+float Encoder_GetRawAngleRight(const Encoder* obj) {
+  return EncoderCal_Wrap(obj->raw_right * ENCODER_CAL_TWO_PI);
 }
 
 float Encoder_GetLastGapLeft(const Encoder* obj) {

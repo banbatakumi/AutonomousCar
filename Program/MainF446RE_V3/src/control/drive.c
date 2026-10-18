@@ -5,6 +5,8 @@
 
 #define DRIVE_MAX_TOTAL_TORQUE_NM (DRIVE_MAX_TORQUE_NM * 2.0f)
 
+static void ApplySensorParams(Drive* obj);
+
 // ---------------------------------------------------------------------------
 // 観測量の更新
 // ---------------------------------------------------------------------------
@@ -18,8 +20,8 @@ static void UpdateFrontWheelSpeeds(Drive* obj, float dt_s) {
   float omega_right = LPF_UpdateTau(&obj->lpf_front_right,
                                     Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR,
                                     DRIVE_LPF_TAU_FRONT_S, dt_s);
-  obj->front_speed_left_m_s = omega_left * DRIVE_FRONT_WHEEL_RADIUS_M;
-  obj->front_speed_right_m_s = omega_right * DRIVE_FRONT_WHEEL_RADIUS_M;
+  obj->front_speed_left_m_s = omega_left * obj->params.front_radius_left_m;
+  obj->front_speed_right_m_s = omega_right * obj->params.front_radius_right_m;
 }
 
 // ヨーレートは IMU の実測値を優先する。舵角からの幾何計算 (自転車モデル) は前輪が滑ると
@@ -61,21 +63,22 @@ static void UpdateSpeedKf(Drive* obj) {
 
   // 制御ループが長く止まると、エンコーダの角度差 (±半周に畳んである) は 1 回転ぶん折り返す。予測が見込む回転量に
   // 最も近い側へ、各輪の増分に 1 回転の整数倍を足して戻す (止まっていなければ何も変わらない)
-  const float expected_rad = SpeedKf_ExpectedDistanceStep(&obj->speed_kf) / (DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
+  const float expected_m = SpeedKf_ExpectedDistanceStep(&obj->speed_kf) / cos_steer;
+  const float r_left = obj->params.front_radius_left_m, r_right = obj->params.front_radius_right_m;
   float gap_left = Encoder_GetLastGapLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR;
   float gap_right = Encoder_GetLastGapRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR;
-  gap_left += TWO_PI * roundf((expected_rad - gap_left) / TWO_PI);
-  gap_right += TWO_PI * roundf((expected_rad - gap_right) / TWO_PI);
-  SpeedKf_UpdateDistance(&obj->speed_kf, 0.5f * (gap_left + gap_right) * DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
+  gap_left += TWO_PI * roundf((expected_m / r_left - gap_left) / TWO_PI);
+  gap_right += TWO_PI * roundf((expected_m / r_right - gap_right) / TWO_PI);
+  SpeedKf_UpdateDistance(&obj->speed_kf, 0.5f * (gap_left * r_left + gap_right * r_right) * cos_steer);
 
   // 加速度は IMU のサンプル (約200Hz) が新しいときだけ。IMU が使えない間は走行距離だけで推定する
   if (obj->imu != NULL && Imu_IsReady(obj->imu)) {
     const ImuData* imu = Imu_GetData(obj->imu);
     if (imu->sample_seq != obj->kf_imu_seq) {
       obj->kf_imu_seq = imu->sample_seq;
-      // 旋回で乗る -k·ω² を補正してから使う (speed_kf.h の SPEED_KF_LEVER_ARM_M)
+      // 旋回で乗る -k·ω² を補正してから使う (control_params.h の kf_lever_arm_m。speed_kf.h の SPEED_KF_LEVER_ARM_M)
       const float gz_rad_s = Radians(imu->gyro_z);
-      SpeedKf_UpdateAccel(&obj->speed_kf, imu->accel_x_raw + SPEED_KF_LEVER_ARM_M * gz_rad_s * gz_rad_s);
+      SpeedKf_UpdateAccel(&obj->speed_kf, imu->accel_x_raw + obj->params.kf_lever_arm_m * gz_rad_s * gz_rad_s);
     }
   }
 }
@@ -93,8 +96,8 @@ static void UpdateObservations(Drive* obj, float dt_s) {
   float omega_right = LPF_UpdateTau(&obj->lpf_rear_right,
                                     BldcMotor_GetAngularSpeed(&obj->motors->rear_right) * DRIVE_REAR_RIGHT_DIR,
                                     DRIVE_LPF_TAU_REAR_S, dt_s);
-  obj->rear_speed_left_m_s = omega_left * DRIVE_REAR_WHEEL_RADIUS_M;
-  obj->rear_speed_right_m_s = omega_right * DRIVE_REAR_WHEEL_RADIUS_M;
+  obj->rear_speed_left_m_s = omega_left * obj->params.rear_radius_left_m;
+  obj->rear_speed_right_m_s = omega_right * obj->params.rear_radius_right_m;
 
   obj->yaw_rate_rad_s = EstimateYawRate(obj);
 
@@ -428,6 +431,7 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   LPF_Init(&obj->lpf_rear_right, 0.0f, 0.0f);
   Timer_Init(&obj->timer);
   SpeedKf_Init(&obj->speed_kf);
+  ApplySensorParams(obj);
   obj->kf_encoder_seq = Encoder_GetUpdateSeq(encoder);  // 起動前の更新は取り込まない
   obj->kf_imu_seq = 0;
 
@@ -622,11 +626,29 @@ void Drive_Update(Drive* obj) {
   SendTorque(obj, left_nm, right_nm);
 }
 
+// 調整パラメータのうち、エンコーダの校正と車速のカルマンフィルタの調整値を各モジュールへ渡す
+static void ApplySensorParams(Drive* obj) {
+  const ControlParams* p = &obj->params;
+  const EncoderCal left = {p->enc_left_lo, p->enc_left_hi, p->enc_left_h1s, p->enc_left_h1c, p->enc_left_h2s,
+                           p->enc_left_h2c};
+  const EncoderCal right = {p->enc_right_lo, p->enc_right_hi, p->enc_right_h1s, p->enc_right_h1c,
+                            p->enc_right_h2s, p->enc_right_h2c};
+  Encoder_SetCalibration(obj->encoder, &left, &right);
+  const SpeedKfConfig kf = {p->kf_sigma_s_m, p->kf_sigma_a_m_s2, p->kf_sigma_a_per_m_s, p->kf_jerk_psd,
+                            p->kf_bias_walk_psd};
+  SpeedKf_SetConfig(&obj->speed_kf, &kf);
+}
+
 void Drive_SetParams(Drive* obj, const ControlParams* params) {
   obj->params = *params;
   obj->speed_pid.kp = params->speed_kp;
   obj->speed_pid.ki = params->speed_ki;
+  ApplySensorParams(obj);
 }
+
+float Drive_GetFrontRadiusLeft(const Drive* obj) { return obj->params.front_radius_left_m; }
+
+float Drive_GetFrontRadiusRight(const Drive* obj) { return obj->params.front_radius_right_m; }
 
 void Drive_SetTargetSpeed(Drive* obj, float m_s, float accel_limit_m_s2) {
   obj->speed_setpoint_m_s = Constrain(m_s, -DRIVE_MAX_SPEED_M_S, DRIVE_MAX_SPEED_M_S);

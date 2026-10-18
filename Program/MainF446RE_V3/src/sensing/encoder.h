@@ -2,6 +2,7 @@
 #define ENCODER_H_
 
 #include "adc_dma.h"
+#include "encoder_cal.h"
 #include "timer.h"
 
 // ADC2 の Rank 順 (Core/Src/adc.c の MX_ADC2_Init(): Rank1 = IN5 (PA5)、Rank2 = IN4 (PA4))。
@@ -23,6 +24,12 @@ typedef enum {
 
 typedef struct {
   AdcDma* adc2;
+  // 校正値 (lib/encoder_cal。既定は恒等)。角度・角速度・回転量・累積回転角はすべて校正後の値
+  EncoderCal cal_left;
+  EncoderCal cal_right;
+  // 直近に読んだ ADC のフルスケールに対する比 (0〜1。校正前の生の読み)
+  float raw_left;
+  float raw_right;
   // 前回、角度を読んだ瞬間の DWT サイクルカウンタ。角速度・回転量の dt は「角度を読む瞬間どうし」の差で求める
   // (Timer を関数の最後でリセットすると、関数内の処理時間 (約9us) が dt から抜け、車速が約1.8%速く出た)
   uint32_t last_cycles;
@@ -57,12 +64,25 @@ typedef struct {
 void Encoder_Init(Encoder* obj, AdcDma* adc2);
 
 /**
+ * @brief 校正値を入れる (左右)。値が変わったときは、今の生の読みを新しい校正値で読み直したものを
+ * 前回の角度にする (校正値を入れ替えた瞬間に、回転量・累積回転角へ偽の段差が入らない)。毎周期呼んでよい。
+ */
+void Encoder_SetCalibration(Encoder* obj, const EncoderCal* left, const EncoderCal* right);
+
+/**
  * @brief ホイール角度・角速度を再計算する。制御周期ごとに呼ぶこと (前回呼び出しからの経過時間で角速度を微分計算する)。
  */
 void Encoder_Update(Encoder* obj);
 
 /**
- * @brief 左ホイールの角度 [rad] (0-2*PI) を取得する。
+ * @brief 校正前の生の角度 [rad] (0-2*PI。ADC の読み ÷ フルスケール × 2π) を取得する。上位の校正 (周期誤差・
+ * 出力の範囲の同定) 用。校正値に依らない
+ */
+float Encoder_GetRawAngleLeft(const Encoder* obj);
+float Encoder_GetRawAngleRight(const Encoder* obj);
+
+/**
+ * @brief 左ホイールの角度 [rad] (0-2*PI。校正後) を取得する。
  */
 float Encoder_GetAngleLeft(Encoder* obj);
 
