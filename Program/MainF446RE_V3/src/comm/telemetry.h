@@ -34,12 +34,6 @@ typedef struct {
   Drive* drive;
   RangeSensor* range_sensor;
 
-  // 前輪の走行距離 [0.1mm] (左・右)。累積回転角の増分に、そのときの有効半径 (校正値) を掛けて足していく。
-  // 累積回転角 × 半径にすると、校正値が入れ替わった瞬間に走行距離全体が段差になる
-  int32_t odom_mrad_prev[2];
-  int32_t odom_0p1mm[2];
-  float odom_carry_0p1mm[2];
-
   // 直近に RasLink_Log で通知済みの PowerFault ビット。新規に立ったビットだけを通知するのに使う
   uint32_t logged_faults;
 
