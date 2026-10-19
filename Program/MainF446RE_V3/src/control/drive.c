@@ -625,7 +625,7 @@ void Drive_Update(Drive* obj) {
   SendTorque(obj, left_nm, right_nm);
 }
 
-// 調整パラメータのうち、エンコーダの校正と車速のカルマンフィルタの調整値を各モジュールへ渡す
+// 調整パラメータのうち、エンコーダの校正・車速のカルマンフィルタの調整値・ジャイロの感度の補正を各モジュールへ渡す
 static void ApplySensorParams(Drive* obj) {
   const ControlParams* p = &obj->params;
   const EncoderCal left = {p->enc_left_lo, p->enc_left_hi, p->enc_left_h1s, p->enc_left_h1c, p->enc_left_h2s,
@@ -636,6 +636,7 @@ static void ApplySensorParams(Drive* obj) {
   const SpeedKfConfig kf = {p->kf_sigma_s_m, p->kf_sigma_a_m_s2, p->kf_sigma_a_per_m_s, p->kf_jerk_psd,
                             p->kf_bias_walk_psd};
   SpeedKf_SetConfig(&obj->speed_kf, &kf);
+  if (obj->imu != NULL) Imu_SetGyroZScale(obj->imu, p->imu_gyro_z_scale);
 }
 
 void Drive_SetParams(Drive* obj, const ControlParams* params) {

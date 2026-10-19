@@ -20,5 +20,7 @@ typedef struct {
 
 static inline const ImuData* Imu_GetData(const Imu* obj) { return &obj->data; }
 static inline bool Imu_IsReady(const Imu* obj) { return obj->ready; }
+// 感度の補正は実物の imu.c が読みに掛ける。ホストの車両モデルは真のヨーレートを直接入れるので何もしない
+static inline void Imu_SetGyroZScale(Imu* obj, float scale) { (void)obj; (void)scale; }
 
 #endif  // IMU_H_

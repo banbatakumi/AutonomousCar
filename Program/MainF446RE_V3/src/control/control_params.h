@@ -89,7 +89,10 @@
   X(kf_sigma_a_per_m_s, 0x00E3, 0.0f, 0.0f, 2.0f)                                               \
   X(kf_jerk_psd, 0x00E4, 100.0f, 1.0f, 10000.0f)        /* [m^2/s^5] */                \
   X(kf_bias_walk_psd, 0x00E5, 0.05f, 0.00001f, 10.0f) /* [(m/s^2)^2/s] */        \
-  X(kf_lever_arm_m, 0x00E6, 0.15f, -0.5f, 0.5f)     /* 旋回の -k·ω² の補正 [m] */
+  X(kf_lever_arm_m, 0x00E6, 0.15f, -0.5f, 0.5f)     /* 旋回の -k·ω² の補正 [m] */             \
+  /* --- ジャイロ z 軸の感度の補正 (imu.c。上位が vehicle.toml の値を送る。v0.28) --- */              \
+  /* バイアスを引いた後の z の角速度に掛ける倍率。既定 1 (データシートの感度のまま) */             \
+  X(imu_gyro_z_scale, 0x00F1, 1.0f, 0.9f, 1.1f)
 
 typedef struct {
 #define CONTROL_PARAM_FIELD(name, id, def, lo, hi) float name;

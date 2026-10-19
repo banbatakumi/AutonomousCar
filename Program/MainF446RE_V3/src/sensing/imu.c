@@ -247,10 +247,13 @@ static void ProcessSample(Imu *obj, const Mpu6050Sample *sample, float dt) {
   float az = accel.z;
   float gx = gyro.x - obj->gyro_bias_x;
   float gy = gyro.y - obj->gyro_bias_y;
-  float gz = gyro.z - obj->gyro_bias_z;
+  float gz_raw = gyro.z - obj->gyro_bias_z;
 
   float accel_norm = sqrtf(ax * ax + ay * ay + az * az);
-  TrackGyroBias(obj, gx, gy, gz, accel_norm);
+  // バイアスの学習は補正前の値で (バイアスはセンサの読みの単位で持つ)
+  TrackGyroBias(obj, gx, gy, gz_raw, accel_norm);
+  // 感度の補正 (上位が送る。既定 1)
+  float gz = gz_raw * obj->gyro_z_scale;
 
   Ahrs_Update(&obj->ahrs, gx, gy, gz, ax, ay, az, dt);
 
@@ -449,6 +452,7 @@ void Imu_Init(Imu *obj, I2C_HandleTypeDef *i2c, bool calibrate_on_boot) {
   if (obj == NULL || i2c == NULL) return;
   memset(obj, 0, sizeof(*obj));
   obj->i2c = i2c;
+  obj->gyro_z_scale = 1.0f;  // 上位が送るまでは感度の補正なし
 
   EnableDataReadyInterrupt(false);  // 初期化中はブロッキング I2C を使うので割り込みを止めておく
 
@@ -598,4 +602,8 @@ void Imu_OnI2cRxComplete(Imu *obj, I2C_HandleTypeDef *hi2c) {
 
 void Imu_OnI2cError(Imu *obj, I2C_HandleTypeDef *hi2c) {
   Mpu6050_OnI2cError(&obj->mpu, hi2c);
+}
+
+void Imu_SetGyroZScale(Imu *obj, float scale) {
+  obj->gyro_z_scale = (scale >= 0.9f && scale <= 1.1f) ? scale : 1.0f;
 }

@@ -68,6 +68,8 @@ typedef struct {
   bool vehicle_still;
 
   float yaw_offset;  // [deg] Imu_ResetYaw() で与える yaw の原点
+  // z 軸の感度の補正 (Imu_SetGyroZScale。上位が送る。既定 1)。バイアスを引いた後に掛ける
+  float gyro_z_scale;
 
   ImuData data;
   bool initialized;
@@ -151,5 +153,11 @@ void Imu_OnI2cRxComplete(Imu *obj, I2C_HandleTypeDef *hi2c);
  * @brief HAL_I2C_ErrorCallback / HAL_I2C_AbortCpltCallback から呼ぶこと。
  */
 void Imu_OnI2cError(Imu *obj, I2C_HandleTypeDef *hi2c);
+
+/**
+ * @brief z 軸の角速度の感度の補正 (倍率) を入れる。バイアスを引いた後の z に掛け、ヨーレート・姿勢推定・
+ * TC/TV のすべてに効く。範囲外 (0.9〜1.1 の外・非数) は 1 にする。毎周期呼んでよい。
+ */
+void Imu_SetGyroZScale(Imu *obj, float scale);
 
 #endif  // IMU_H_
