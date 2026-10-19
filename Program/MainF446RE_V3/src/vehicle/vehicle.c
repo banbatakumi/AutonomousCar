@@ -103,8 +103,9 @@ static void UpdateLidarPower(Vehicle* obj, bool want_on) {
 // 動的停止距離 [cm] を返す
 static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
   float v = (speed_m_s >= 0.0f) ? speed_m_s : -speed_m_s;
+  float delay_s = VEHICLE_AUTO_STOP_SENSOR_DELAY_S + config->control.md_torque_lag_s;
   float physical_cm =
-      (v * VEHICLE_AUTO_STOP_DELAY_S + (v * v) / (2.0f * VEHICLE_AUTO_STOP_DECEL_M_S2)) * 100.0f;
+      (v * delay_s + (v * v) / (2.0f * config->control.brake_decel_m_s2)) * 100.0f;
   return physical_cm + config->auto_stop_margin_cm;
 }
 
@@ -181,6 +182,11 @@ static bool UpdateBrakeHold(Vehicle* obj, bool braking) {
 // 走行中に上位の ARM が外れたら、停車するまで駆動電源を入れたまま最大制動を続ける。
 // ARM ビットでそのまま駆動電源を切ると MD ごと落ちて制動できず、惰行で止まるのを待つことになる
 // (上位は通信途絶・デッドマンで「安全側」として DISARM を送ってくる)
+// 走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの時間の上限 [s] (vehicle.h の説明)
+static float DisarmBrakeTimeoutS(const Vehicle* obj) {
+  return DRIVE_MAX_SPEED_M_S / obj->drive->params.brake_decel_m_s2 * VEHICLE_STOP_TIME_MARGIN;
+}
+
 static void UpdateDisarmBraking(Vehicle* obj, bool arm_requested) {
   if (arm_requested) {
     obj->disarm_braking = false;
@@ -193,7 +199,7 @@ static void UpdateDisarmBraking(Vehicle* obj, bool arm_requested) {
 
   if (obj->disarm_braking &&
       (fabsf(Drive_GetVehicleSpeed(obj->drive)) < DRIVE_STANDSTILL_SPEED_M_S ||
-       Timer_Read(&obj->disarm_brake_timer) >= VEHICLE_DISARM_BRAKE_TIMEOUT_S)) {
+       Timer_Read(&obj->disarm_brake_timer) >= DisarmBrakeTimeoutS(obj))) {
     obj->disarm_braking = false;
   }
 }

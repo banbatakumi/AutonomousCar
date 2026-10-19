@@ -52,23 +52,17 @@
 #define VEHICLE_ULTRASONIC_REAR_X_M (-0.04f)
 
 // ===========================================================================
-// 制動の物理量 (システム同定の値。Pi 側 config/vehicle.toml が正で、測り直したらここも直す。
-// 上位の tools/ctrl_tune のテストが突き合わせる)
+// 制動の減速度と MD のトルクの遅れは、上位が CONFIG_SET で送る実行時パラメータ (control_params.h の
+// brake_decel_m_s2・md_torque_lag_s、v0.29)。Pi 側 config/vehicle.toml が唯一の定義で、ここには持たない
 // ===========================================================================
-// 制動モード (ABS 込み) で出る減速度 [m/s²]。[dynamics] brake_decel_m_s2 (前後運動試験。フローリング)。
-// 路面で変わる (グリップで決まる) ので、滑る路面ではこれより小さい
-#define VEHICLE_BRAKE_DECEL_M_S2 2.47f
-// MD のトルクの立ち上がりの時定数 [s]。[control.plant] md_tau_s (制御の同定)
-#define VEHICLE_MD_TORQUE_TAU_S 0.0045f
 // 「止まり切るはずの時間」に掛ける余裕。低速では MD の制動が tanh で弱まり (20rad/s = 0.6m/s 以下)、
-// 減速度が VEHICLE_BRAKE_DECEL_M_S2 を下回るぶん
+// 減速度が brake_decel_m_s2 を下回るぶん
 #define VEHICLE_STOP_TIME_MARGIN 1.5f
 
-// 走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの時間の上限 [s]。最高速
-// (DRIVE_MAX_SPEED_M_S) からの最大制動で止まり切れる時間に余裕を掛けたもの (5m/s ÷ 2.47m/s² × 1.5 ≒ 3.0s)。
-// 前輪エンコーダの異常で車速が 0 に落ちなくても、これを過ぎたら電源を切る
-#define VEHICLE_DISARM_BRAKE_TIMEOUT_S \
-  (DRIVE_MAX_SPEED_M_S / VEHICLE_BRAKE_DECEL_M_S2 * VEHICLE_STOP_TIME_MARGIN)
+// 走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの時間の上限 [s] は、最高速
+// (DRIVE_MAX_SPEED_M_S) からの最大制動 (brake_decel_m_s2) で止まり切れる時間に余裕を掛けたもの
+// (5m/s ÷ 2.47m/s² × 1.5 ≒ 3.0s。vehicle.c の DisarmBrakeTimeoutS)。前輪エンコーダの異常で車速が 0 に
+// 落ちなくても、これを過ぎたら電源を切る
 // 緊急停止・COMMAND 途絶で停車を保持しているとき、止まってからこの時間が経ったら駆動電源を切る [s]。
 // 電源を入れたまま位置保持を続けると、据え切りと同様にモータが過熱し、電池も減り続ける。
 // 切ると坂では転がりうるが、30秒止まっていれば人が気づく時間は十分にあるとみなす。
@@ -110,14 +104,13 @@
 #define VEHICLE_BRAKE_HOLD_SPEED_M_S 0.2f
 #define VEHICLE_BRAKE_HOLD_DELAY_S 0.3f
 // 自動停止 (RAS_CMD_FLAG_AUTO_STOP) の動的停止距離
-// d_stop = v・VEHICLE_AUTO_STOP_DELAY_S + v²/(2・VEHICLE_AUTO_STOP_DECEL_M_S2) + マージン
-// のうち、障害物が見えてから制動が効くまでの遅れ [s] = LiDAR の点の古さ (最悪 1回転) + MD のトルクの
-// 立ち上がり。判定と指令はこのマイコンの中で閉じる (上位の通信を通らない) ので、2kHz の周期は無視できる。
-// 超音波だけで判定するとき (LiDAR が使えない) の計測間隔 (約60ms) はこれより短い
-#define VEHICLE_AUTO_STOP_DELAY_S (1.0f / LIDAR_SCAN_FREQ_HZ + VEHICLE_MD_TORQUE_TAU_S)
-// 上式の減速度 [m/s^2]。自動停止は制動モード (ABS 込み) で止めるので、同定した制動の減速度そのもの。
+// d_stop = v・遅れ + v²/(2・brake_decel_m_s2) + マージン (vehicle.c の AutoStopDistanceCm)
+// の遅れ [s] = LiDAR の点の古さ (最悪 1回転、下の定数) + MD のトルクの遅れ (md_torque_lag_s)。
+// 判定と指令はこのマイコンの中で閉じる (上位の通信を通らない) ので、2kHz の周期は無視できる。
+// 超音波だけで判定するとき (LiDAR が使えない) の計測間隔 (約60ms) はこれより短い。
+// 減速度は、自動停止は制動モード (ABS 込み) で止めるので同定した制動の減速度そのもの。
 // 低速で MD の制動が弱まるぶんの延び (0.33m/s 以下、合わせて約 2cm) は上位のマージンが持つ
-#define VEHICLE_AUTO_STOP_DECEL_M_S2 VEHICLE_BRAKE_DECEL_M_S2
+#define VEHICLE_AUTO_STOP_SENSOR_DELAY_S (1.0f / LIDAR_SCAN_FREQ_HZ)
 // 安全マージンは上位が RasConfig.auto_stop_margin_cm (CONFIG_SET param_id = 0x0060) で
 // cm単位の連続値として直接指定する (段階的なレベルではない。既定値・範囲は ras_link.h の
 // RAS_AUTO_STOP_MARGIN_* 参照)

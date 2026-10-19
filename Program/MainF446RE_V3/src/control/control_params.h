@@ -92,7 +92,13 @@
   X(kf_lever_arm_m, 0x00E6, 0.15f, -0.5f, 0.5f)     /* 旋回の -k·ω² の補正 [m] */             \
   /* --- ジャイロ z 軸の感度の補正 (imu.c。上位が vehicle.toml の値を送る。v0.28) --- */              \
   /* バイアスを引いた後の z の角速度に掛ける倍率。既定 1 (データシートの感度のまま) */             \
-  X(imu_gyro_z_scale, 0x00F1, 1.0f, 0.9f, 1.1f)
+  X(imu_gyro_z_scale, 0x00F1, 1.0f, 0.9f, 1.1f)                                                \
+  /* --- 自動停止・DISARM 後の制動の見積もり (src/vehicle/vehicle.c。v0.29) --- */                   \
+  /* 上位は vehicle.toml の値を送る (制動の減速度 = [limits] abs_brake_decel_m_s2、MD の遅れ = */        \
+  /* [control.plant] md_delay_s + md_tau_s。どちらも校正の結果)。ほかの項目と同じく仮置きは範囲の下限で、 */ \
+  /* 上位が送るまで ARM を通さないので走行には使われない */                                          \
+  X(brake_decel_m_s2, 0x0101, 0.5f, 0.5f, 10.0f) /* 制動モード (ABS 込み) の減速度 [m/s^2] */       \
+  X(md_torque_lag_s, 0x0102, 0.0f, 0.0f, 0.1f)   /* MD のトルクの遅れ [s] (自動停止の判断の遅れ) */
 
 typedef struct {
 #define CONTROL_PARAM_FIELD(name, id, def, lo, hi) float name;

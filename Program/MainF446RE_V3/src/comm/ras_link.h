@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x001Cu
+#define RAS_PROTOCOL_VERSION 0x001Du
 // COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
 // (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
 #define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
