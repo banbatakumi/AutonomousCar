@@ -13,7 +13,7 @@
 
 #define HOST_PI 3.14159265358979323846
 
-#define HOST_SIM_ABI 8
+#define HOST_SIM_ABI 9
 
 // 入力 (1制御周期ごと) の列
 enum {
@@ -63,6 +63,10 @@ enum {
   OUT_FW_NIS_ACCEL,   //   NIS = z²、AC = 直前の残差との積。加速度は IMU のサンプル (10行に1回) のときだけ値が入る。
   OUT_FW_AC_DIST,     //   平均を取るなら nanmean (tools/ctrl_tune/tests/test_speed_kf.py)
   OUT_FW_AC_ACCEL,
+  OUT_FRONT_RAW_LEFT,   // 前輪エンコーダの校正前の生の角度 [rad] (TELEMETRY の front_angle。取付向きの符号のまま)
+  OUT_FRONT_RAW_RIGHT,  //   reserved bit3 のときだけ意味がある (それ以外は 0)
+  OUT_FRONT_ODOM_LEFT,  // 前輪の各輪の累積走行距離 [m] (ファームの校正後。TELEMETRY の odom_dist)。reserved bit2/3 のとき
+  OUT_FRONT_ODOM_RIGHT,
   OUT_COUNT,
 };
 
@@ -110,6 +114,11 @@ typedef struct {
   // その差分が回転量になる (実機の静止実測と同じ: 隣り合う周期の相関 -0.5。front_noise_rad_s は
   // 角速度の標準偏差のまま、角度のノイズ = それ × dt / √2 に換算する)
   uint32_t reserved;
+  // reserved bit3 = 前輪エンコーダの真の特性を左右別に与える (bit2 の front_ripple の代わり)。
+  // 並びは [左 lo, hi, h1s, h1c, h2s, h2c, 右 …] で、意味はファームの校正値 (lib/encoder_cal) と同じ:
+  // 真の角度 θ (取付向きの符号のまま) に対し読み θm = θ + e(θ)、出力 u = lo + (hi − lo)·wrap(θm)/2π
+  double enc_true[12];
+  double front_adc_noise;  // 出力 u (0〜1) に乗る白色ノイズの標準偏差 (reserved bit3)
 } HostPlant;
 
 typedef struct {
@@ -249,6 +258,8 @@ typedef struct {
   double front_theta_noise[2];  // 角度ノイズの前回値 (reserved bit0 のとき、差分が回転量のノイズになる)
   double front_wheel_angle;     // 前輪の実際の回転角 (reserved bit2。タイヤ径の誤差を含む)
   double front_cal_prev[2];     // 校正後の角度の前回値 (reserved bit2)
+  double front_raw[2];          // 校正前の生の角度 (reserved bit3)
+  double front_odom_wheel[2];   // 校正後の各輪の累積走行距離 (reserved bit2/3)
   int front_cal_started;
   Rng rng_imu;        // 加速度計用。従来の乱数列 (rng) を乱さないよう別にする
   int imu_tick;       // 加速度の標本化 (約200Hz) の周期カウント
@@ -293,25 +304,39 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   float* front_gap_out[2] = {&s->encoder.last_gap_left_rad, &s->encoder.last_gap_right_rad};
   const EncoderCal* front_cal[2] = {&s->encoder.cal_left, &s->encoder.cal_right};
   // 助走 (advance が偽) の間も車輪は回す (下の従来の経路も助走中に初速ぶんの回転を出す)
-  if ((p->reserved & 4u) != 0) s->front_wheel_angle += front_omega * cfg->dt_s;
-  for (int i = 0; (p->reserved & 4u) != 0 && i < 2; i++) {
+  const int angle_model = (p->reserved & 12u) != 0;
+  if (angle_model) s->front_wheel_angle += front_omega * cfg->dt_s;
+  for (int i = 0; angle_model && i < 2; i++) {
     // 角度の読み: 真の角度 + 周期誤差 (+ 量子化ノイズ) を 0〜2π に畳み、ファームの校正の式で直す
     const double theta = front_dir[i] * s->front_wheel_angle;
-    const double phase = (i == 0) ? 0.0 : 1.3;
-    double theta_m = theta + p->front_ripple / ripple_h * sin(ripple_h * theta + phase);
-    if ((p->reserved & 1u) != 0) theta_m += p->front_noise_rad_s * cfg->dt_s / 1.4142135623730951 * RngNormal(&s->rng);
-    double u = fmod(theta_m, 2.0 * HOST_PI) / (2.0 * HOST_PI);
-    if (u < 0.0) u += 1.0;
+    double u;
+    if ((p->reserved & 8u) != 0) {
+      const double* e = &p->enc_true[6 * i];
+      double theta_m = theta + e[2] * sin(theta) + e[3] * cos(theta) + e[4] * sin(2.0 * theta) + e[5] * cos(2.0 * theta);
+      double w = fmod(theta_m, 2.0 * HOST_PI);
+      if (w < 0.0) w += 2.0 * HOST_PI;
+      u = e[0] + (e[1] - e[0]) * w / (2.0 * HOST_PI) + p->front_adc_noise * RngNormal(&s->rng);
+      if (u < 0.0) u = 0.0;
+      if (u > 1.0) u = 1.0;
+      s->front_raw[i] = u * 2.0 * HOST_PI;
+    } else {
+      const double phase = (i == 0) ? 0.0 : 1.3;
+      double theta_m = theta + p->front_ripple / ripple_h * sin(ripple_h * theta + phase);
+      if ((p->reserved & 1u) != 0) theta_m += p->front_noise_rad_s * cfg->dt_s / 1.4142135623730951 * RngNormal(&s->rng);
+      u = fmod(theta_m, 2.0 * HOST_PI) / (2.0 * HOST_PI);
+      if (u < 0.0) u += 1.0;
+    }
     const double theta_c = EncoderCal_Angle(front_cal[i], (float)u);
     if (!s->front_cal_started) s->front_cal_prev[i] = theta_c;
     double gap = theta_c - s->front_cal_prev[i];
     gap -= 2.0 * HOST_PI * floor((gap + HOST_PI) / (2.0 * HOST_PI));  // ±半周に畳む (ファームの GapRadians と同じ)
     s->front_cal_prev[i] = theta_c;
+    if (advance) s->front_odom_wheel[i] += gap * front_dir[i] * DRIVE_FRONT_WHEEL_RADIUS_M;
     *front_omega_out[i] = (float)(gap / cfg->dt_s);
     *front_gap_out[i] = (float)gap;
   }
-  if ((p->reserved & 4u) != 0) s->front_cal_started = 1;
-  for (int i = 0; (p->reserved & 4u) == 0 && i < 2; i++) {
+  if (angle_model) s->front_cal_started = 1;
+  for (int i = 0; !angle_model && i < 2; i++) {
     double omega_meas;
     double gap;
     if ((p->reserved & 1u) != 0) {
@@ -495,6 +520,10 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   o[OUT_FW_KF_GATED] = 0.0;
   o[OUT_FW_NIS_DIST] = o[OUT_FW_NIS_ACCEL] = o[OUT_FW_AC_DIST] = o[OUT_FW_AC_ACCEL] = NAN;
 #endif
+  o[OUT_FRONT_RAW_LEFT] = s->front_raw[0];
+  o[OUT_FRONT_RAW_RIGHT] = s->front_raw[1];
+  o[OUT_FRONT_ODOM_LEFT] = s->front_odom_wheel[0];
+  o[OUT_FRONT_ODOM_RIGHT] = s->front_odom_wheel[1];
 }
 
 /**
