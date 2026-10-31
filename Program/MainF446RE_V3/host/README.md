@@ -26,6 +26,7 @@
 cc -O2 -shared -fPIC -DHOST_FW_HAS_CONTROL_PARAMS -DHOST_FW_HAS_LAUNCH \
    -Ihost/shim -Ilib/pid -Ilib/filter -Ilib/mymath -Isrc/control \
    host/host_sim.c src/control/drive.c src/control/torque_vectoring.c src/control/control_params.c \
+   src/control/speed_kf.c src/control/encoder_direction.c \
    -o host_sim.dylib
 ```
 

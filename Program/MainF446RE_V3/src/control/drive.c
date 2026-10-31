@@ -14,11 +14,13 @@ static void ApplySensorParams(Drive* obj);
 // 前輪の各輪の周速 (上位への報告用)。車体の速度は走行距離と加速度計のカルマンフィルタ (speed_kf.h) が出す。
 // 生の角速度は微分ノイズで静止中も ±12m/s 振れるため、各輪の周速は LPF (τ≈10ms) を通した値を報告する
 static void UpdateFrontWheelSpeeds(Drive* obj, float dt_s) {
+  const float sign_left = EncoderDirection_GetSign(&obj->front_dir_left);
+  const float sign_right = EncoderDirection_GetSign(&obj->front_dir_right);
   float omega_left = LPF_UpdateTau(&obj->lpf_front_left,
-                                   Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR,
+                                   Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR * sign_left,
                                    DRIVE_LPF_TAU_FRONT_S, dt_s);
   float omega_right = LPF_UpdateTau(&obj->lpf_front_right,
-                                    Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR,
+                                    Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR * sign_right,
                                     DRIVE_LPF_TAU_FRONT_S, dt_s);
   obj->front_speed_left_m_s = omega_left * DRIVE_FRONT_WHEEL_RADIUS_M;
   obj->front_speed_right_m_s = omega_right * DRIVE_FRONT_WHEEL_RADIUS_M;
@@ -50,6 +52,23 @@ static float SlipRatio(float wheel_speed_m_s, float reference_speed_m_s, float f
   return (wheel_speed_m_s - reference_speed_m_s) * dir / denominator;
 }
 
+// 前輪の読みの鏡像を直す (encoder_direction.h)。Encoder の更新ごとに1回だけ、周速と車速 KF より先に。
+// 直した増分は車速 KF が使い、周速 (報告用) は判定した向きだけを掛ける。後輪の速度は前周期 (0.5ms 前) の値
+static void UpdateFrontDirection(Drive* obj) {
+  uint32_t encoder_seq = Encoder_GetUpdateSeq(obj->encoder);
+  if (encoder_seq == obj->dir_encoder_seq) return;
+  obj->dir_encoder_seq = encoder_seq;
+  const float rear_m_s = 0.5f * (obj->rear_speed_left_m_s + obj->rear_speed_right_m_s);
+  const float vehicle_m_s = obj->vehicle_speed_m_s;  // 前周期の KF
+  const float dt_s = Encoder_GetLastDt(obj->encoder);
+  obj->front_step_left_m = EncoderDirection_Apply(
+      &obj->front_dir_left, Encoder_GetLastGapLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR * DRIVE_FRONT_WHEEL_RADIUS_M,
+      rear_m_s, vehicle_m_s, dt_s);
+  obj->front_step_right_m = EncoderDirection_Apply(
+      &obj->front_dir_right, Encoder_GetLastGapRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR * DRIVE_FRONT_WHEEL_RADIUS_M,
+      rear_m_s, vehicle_m_s, dt_s);
+}
+
 // 走行距離と加速度計の車速推定 (speed_kf.h) を1周期ぶん進める。Encoder の更新ごとに1回だけ
 static void UpdateSpeedKf(Drive* obj) {
   uint32_t encoder_seq = Encoder_GetUpdateSeq(obj->encoder);
@@ -64,8 +83,9 @@ static void UpdateSpeedKf(Drive* obj) {
   // 制御ループが長く止まると、エンコーダの角度差 (±半周に畳んである) は 1 回転ぶん折り返す。予測が見込む回転量に
   // 最も近い側へ、各輪の増分に 1 回転の整数倍を足して戻す (止まっていなければ何も変わらない)
   const float expected_rad = SpeedKf_ExpectedDistanceStep(&obj->speed_kf) / (DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
-  float gap_left = Encoder_GetLastGapLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR;
-  float gap_right = Encoder_GetLastGapRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR;
+  // 各輪の増分は、読みの鏡像を直した値 (UpdateFrontDirection)
+  float gap_left = obj->front_step_left_m / DRIVE_FRONT_WHEEL_RADIUS_M;
+  float gap_right = obj->front_step_right_m / DRIVE_FRONT_WHEEL_RADIUS_M;
   gap_left += TWO_PI * roundf((expected_rad - gap_left) / TWO_PI);
   gap_right += TWO_PI * roundf((expected_rad - gap_right) / TWO_PI);
   SpeedKf_UpdateDistance(&obj->speed_kf, 0.5f * (gap_left + gap_right) * DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
@@ -84,6 +104,7 @@ static void UpdateSpeedKf(Drive* obj) {
 
 // dt_s は前回からの実際の経過時間 (呼び出しが飛んだ周期も含む。ローパスの係数に使う)
 static void UpdateObservations(Drive* obj, float dt_s) {
+  UpdateFrontDirection(obj);
   UpdateFrontWheelSpeeds(obj, dt_s);
   UpdateSpeedKf(obj);
   // 車体の車速 = カルマンフィルタ。PID・TC のスリップの基準・自動停止の前後判定のすべてがこれを使う
@@ -433,6 +454,11 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   ApplySensorParams(obj);
   obj->kf_encoder_seq = Encoder_GetUpdateSeq(encoder);  // 起動前の更新は取り込まない
   obj->kf_imu_seq = 0;
+  EncoderDirection_Init(&obj->front_dir_left);
+  EncoderDirection_Init(&obj->front_dir_right);
+  obj->dir_encoder_seq = Encoder_GetUpdateSeq(encoder);
+  obj->front_step_left_m = 0.0f;
+  obj->front_step_right_m = 0.0f;
 
   obj->enabled = false;
   obj->tc_enabled = false;  // 上位が送る (ras_link.c と同じ。毎周期 Drive_SetTractionControlEnabled で上書きされる)
@@ -753,6 +779,14 @@ float Drive_GetAccelBiasKf(const Drive* obj) {
 
 uint32_t Drive_GetKfGatedCount(const Drive* obj) {
   return obj->speed_kf.gated_count;
+}
+
+uint32_t Drive_GetFrontReversalCount(const Drive* obj) {
+  return EncoderDirection_GetFlips(&obj->front_dir_left) + EncoderDirection_GetFlips(&obj->front_dir_right);
+}
+
+float Drive_GetFrontEncoderSign(const Drive* obj, bool right) {
+  return EncoderDirection_GetSign(right ? &obj->front_dir_right : &obj->front_dir_left);
 }
 
 float Drive_GetSlipLeft(const Drive* obj) {

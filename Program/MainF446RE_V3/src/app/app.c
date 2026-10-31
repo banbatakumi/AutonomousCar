@@ -276,6 +276,19 @@ static void UpdateSensors() {
   }
 }
 
+// 前輪の読みの向きを直したら上位へ知らせる (drive.h の Drive_GetFrontReversalCount。直すのは Drive が毎周期行う)
+static void ReportFrontReversal(void) {
+  static uint32_t reported = 0;
+  uint32_t count = Drive_GetFrontReversalCount(&drive);
+  if (count == reported) return;
+  reported = count;
+  char text[64];
+  snprintf(text, sizeof(text), "front encoder reading reversed: L %s R %s (total %lu)",
+           Drive_GetFrontEncoderSign(&drive, false) < 0.0f ? "mirrored" : "normal",
+           Drive_GetFrontEncoderSign(&drive, true) < 0.0f ? "mirrored" : "normal", (unsigned long)count);
+  RasLink_Log(&ras_link, RAS_LOG_WARN, text);
+}
+
 void MainApp() {
   // 上位 (Raspberry Pi) と繋がっていない/armされていない間は Vehicle 側のフェイルセーフが
   // ブレーキを掛け続けるので、Drive は制動モードで後輪を押さえる
@@ -302,6 +315,7 @@ void MainApp() {
     RasLink_Receive(&ras_link);
     Vehicle_Update(&vehicle);
     Drive_Update(&drive);
+    ReportFrontReversal();
     Motors_Transmit(&motors, Power_IsDriveOn(&power));
 
     // Telemetry_Update 自体が内部で 100Hz (RAS_TELEMETRY_INTERVAL_US) に間引かれる

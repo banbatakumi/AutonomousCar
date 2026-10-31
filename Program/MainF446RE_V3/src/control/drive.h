@@ -5,6 +5,7 @@
 
 #include "control_params.h"
 #include "encoder.h"
+#include "encoder_direction.h"
 #include "imu.h"
 #include "lpf.h"
 #include "motors.h"
@@ -248,6 +249,12 @@ typedef struct {
   SpeedKf speed_kf;           // 走行距離+加速度計の車速推定 (制御の車速)
   uint32_t kf_encoder_seq;    // 取り込み済みの Encoder 更新番号 (同じ更新を二重に使わない)
   uint32_t kf_imu_seq;        // 取り込み済みの IMU サンプル番号
+  // 前輪の読みの向きの反転 (AS5600 の出力が鏡像になる) を後輪の速度と突き合わせて直す (encoder_direction.h)
+  EncoderDirection front_dir_left;
+  EncoderDirection front_dir_right;
+  uint32_t dir_encoder_seq;    // 向きの判定に取り込み済みの Encoder 更新番号
+  float front_step_left_m;     // 直した前輪の増分 [m] (前進が正。車速 KF が使う)
+  float front_step_right_m;
 
   bool enabled;
   bool tc_enabled;                // 既定は無効 (上位が送る)
@@ -481,6 +488,15 @@ float Drive_GetAccelKf(const Drive* obj);
 void Drive_TakeKfDiag(Drive* obj, float nis[SPEED_KF_DIAG_COUNT], float autocorr[SPEED_KF_DIAG_COUNT]);
 float Drive_GetAccelBiasKf(const Drive* obj);
 uint32_t Drive_GetKfGatedCount(const Drive* obj);
+
+/**
+ * @brief 前輪の読みの向きを直した回数 (encoder_direction.h。左右の合計)。増えたら上位へ LOG で知らせる
+ */
+uint32_t Drive_GetFrontReversalCount(const Drive* obj);
+/**
+ * @brief 前輪の読みの今の向き (+1 = 通常、-1 = 鏡像を直している最中)。right が偽なら左
+ */
+float Drive_GetFrontEncoderSign(const Drive* obj, bool right);
 
 /**
  * @brief 左後輪のスリップ率を取得する (正 = 空転、負 = ロック傾向)。
