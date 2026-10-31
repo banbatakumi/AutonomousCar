@@ -71,12 +71,14 @@
 //
 // ★MD 側の絶対上限 (Kt × 最大電流 10A。Kt は MD ごとの校正値) を超えないこと。MD は受け取った
 // 上限を自分の絶対上限で頭打ちにして返し、こちらは指令と完全に一致するまで MD を「使える」と
-// みなさない (Motors_NotReadyReason)。後輪 MD の絶対上限は約0.148・0.144Nm (走行記録の
-// トルク指令÷電流から。Kt 0.0148・0.0144Nm/A) なので 0.15 では届かず、ARM の5秒後に
-// md_fault でラッチして走れなくなる。
-// タイヤのグリップの限界は約0.09Nm なので、0.13 でも走りには出ない。MD を校正し直して Kt が
-// 0.013Nm/A を下回ると同じ症状になる (LOG に "torque limit not applied" と出る)
-#define DRIVE_MAX_TORQUE_NM 0.13f
+// みなさない (Motors_NotReadyReason)。2026-10-18 に MD を自動校正し直す前の後輪 MD の絶対上限は
+// 約0.148・0.144Nm (Kt 0.0148・0.0144Nm/A) で、0.15 では届かず ARM の5秒後に md_fault で
+// ラッチして走れなくなっていた (その頃は 0.13)。校正し直した後は絶対上限が約0.2Nm (トルク指令あたりの
+// 電流が約 -29%) なので 0.15 にした (2026-10-20)。MD を校正し直して Kt が 0.015Nm/A を下回ると
+// 同じ症状になる (LOG に "torque limit not applied" と出る)。
+// ★上位 (Pi) の同値: raspi/msgs/convert.py の MAX_TARGET_TORQUE_NM (GUI の store/ui.ts・
+//   vehicle.toml の speed_torque_max_nm = これ×2 は tools/fwsim/tests/test_fw_constants.py が突き合わせる)
+#define DRIVE_MAX_TORQUE_NM 0.15f
 #define DRIVE_MAX_SPEED_M_S 5.0f  // これを超えたら正トルクを出さない (暴走時の最終防壁)
 // 上位が加速度制限を指定しなかった (COMMAND.accel_limit = 0) ときに、目標車速を動かす傾き。
 // 上位が指定した値に上限は掛けない。目標車速のランプそのものは残る (車速PIの加速度フィードフォワードが、この
