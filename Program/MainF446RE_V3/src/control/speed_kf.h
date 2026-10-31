@@ -85,6 +85,20 @@
 #ifndef SPEED_KF_GATE_SIGMA
 #define SPEED_KF_GATE_SIGMA 6.0f      // 予測との差がこれ以上 (σ) なら測定ノイズを膨らませる
 #endif
+// 走行距離の測定がゲートに掛かり続けたら測り直す時間 [s]。
+// 走行距離の残差は累積値 (s_meas − s) なので、車速が一度ずれると残差は毎周期増え、ゲートが効きっぱなしになって
+// 二度と戻れない。距離が効かない間は加速度計が a+b しか縛らないので a と b が逆向きに膨らみ、車速は積分で
+// 上がり続け、最後は 1 回転の折り返しの補正 (drive.c) が誤った予測に測定を合わせて 188m/s 付近に張り付く
+// (2026-10-31、実機で車速が 32.767 (TELEMETRY の i16 の上限) に張り付きリセットまで戻らなかった。ホストで再現:
+// 推定だけ 2m/s ずらす・前輪が浮いて空転・±2g を超える衝突で発生)。ゲートが続いた間の走行距離 ÷ 時間を車速として
+// 初期化し直す。通常の走行では連続して掛からないので、20ms (40周期) あれば区別できる
+#ifndef SPEED_KF_RESYNC_S
+#define SPEED_KF_RESYNC_S 0.02f
+#endif
+// これを超える車速は物理的にありえない (DRIVE_MAX_SPEED_M_S は 5) ので初期化し直す [m/s]。最後の砦。
+// 1 周期に半回転を超えて回る車速 (2kHz で 188m/s) まで外れると、折り返しの補正で測定が外れた推定に合ってしまい
+// 上の測り直しが効かないため
+#define SPEED_KF_MAX_SPEED_M_S 20.0f
 #define SPEED_KF_REBASE_M 0.25f       // 走行距離がこれを超えたら 0 へ引き戻す (float の桁落ち対策)
 #define SPEED_KF_MAX_DT_S 1.0f        // これ以上空いたら速度を信用せず初期化し直す (起動直後の長い Setup の後など)。
                                       // それ未満の停止は、予測を長い dt で進めて (P が Q·dt ぶん広がる) 次の測定で引き戻す
@@ -131,6 +145,12 @@ typedef struct {
   bool resync;           // 長い停止で初期化した直後。最初の走行距離の増分は、止まっていた間の回転なので捨てる
   uint32_t gated_count;  // 測定ノイズを膨らませた回数 (走行距離 + 加速度。オーバーフローは無視)
   SpeedKfDiag diag[SPEED_KF_DIAG_COUNT];
+  // 走行距離の測定がゲートに続けて掛かっている間の経過時間と走行距離 (SPEED_KF_RESYNC_S)。掛からなければ 0
+  float last_dt_s;  // 直近の Predict の dt
+  float gated_run_s;
+  float gated_run_m;
+  uint32_t resync_count;  // ゲートが続いて測り直した回数 (TELEMETRY には出していない。デバッガ・ホストのテスト用)
+  float predicted_step_m;  // 直近の Predict で s が進んだ量 (SpeedKf_ExpectedDistanceStep)
 } SpeedKf;
 
 void SpeedKf_Init(SpeedKf* kf);
@@ -150,8 +170,12 @@ void SpeedKf_UpdateDistance(SpeedKf* kf, float delta_m);
  * 絶対角エンコーダの角度差は ±半周に畳んで求める (Encoder_Update) ので、制御ループが止まって半周を超えて回ると
  * 折り返した値 (本来の増分から 1 回転ぶん外れた値) が来る (前輪の周速 3m/s で 31ms 以上の停止)。
  * 呼び出し側が各輪の増分へ 1 回転の整数倍を足して、この値に最も近い側を選ぶ (drive.c)。
+ *
+ * その周期の予測で s が進んだ量 (v·dt + a·dt²/2) を返す。以前は s − s_meas (累積の残差込み) を返していたため、推定が
+ * 外れてゲートが続く間は溜まった残差に合わせて測定の側を 1 回転ぶん巻き戻し、外れた推定を測定が追認していた
+ * (SPEED_KF_RESYNC_S の測り直しも、外れた測定から車速を出してしまう)。推定が合っている間は両者は同じ値
  */
-static inline float SpeedKf_ExpectedDistanceStep(const SpeedKf* kf) { return kf->x[0] - kf->s_meas; }
+static inline float SpeedKf_ExpectedDistanceStep(const SpeedKf* kf) { return kf->predicted_step_m; }
 
 /** @brief 機体 X 軸の生の加速度 [m/s²] (前進加速が正・重力込み) で更新する。 */
 void SpeedKf_UpdateAccel(SpeedKf* kf, float accel_x_m_s2);
