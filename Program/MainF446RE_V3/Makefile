@@ -192,6 +192,13 @@ $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: %.S Makefile | $(BUILD_DIR)
 	$(AS) -c $(CFLAGS) $< -o $@
 
+# ビルドの識別 (src/comm/build_info.h)。★CubeMX で Makefile を作り直したら書き足すこと。
+# build_info.o は他のオブジェクトが1つでも作り直されたら作り直し、そのときの時刻と git のコミットを埋め込む
+BUILD_INFO_OBJ = $(BUILD_DIR)/build_info.o
+$(BUILD_INFO_OBJ): $(filter-out $(BUILD_INFO_OBJ),$(OBJECTS))
+$(BUILD_INFO_OBJ): CFLAGS += -DBUILD_EPOCH=$(shell date +%s)u \
+  -DBUILD_GIT='"$(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)$(shell git diff --quiet HEAD -- . 2>/dev/null || echo +dirty)"'
+
 $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 	$(SZ) $@

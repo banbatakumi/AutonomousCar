@@ -6,6 +6,7 @@
 
 #include "adc.h"
 #include "adc_dma.h"
+#include "build_info.h"
 #include "buzzer.h"
 #include "digitalinout.h"
 #include "drive.h"
@@ -200,6 +201,12 @@ void Setup() {
   Heartbeat_Init(&heartbeat, RAS_SIG_GPIO_Port, RAS_SIG_Pin);
   if (watchdog_reset) {
     RasLink_Log(&ras_link, RAS_LOG_ERROR, "restarted by watchdog reset (main loop had stopped)");
+  }
+  {
+    // どのファームで走ったかを記録に残す (build_info.h。VERSION の build_epoch はビルド時刻だけ)
+    char text[64];
+    snprintf(text, sizeof(text), "firmware build %s epoch %lu", g_build_git, (unsigned long)g_build_epoch);
+    RasLink_Log(&ras_link, RAS_LOG_INFO, text);
   }
 
   Vehicle_Init(&vehicle, &ras_link, &drive, &motors, &steering, &lighting, &power, &heartbeat,

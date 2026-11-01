@@ -1,5 +1,7 @@
 #include "ras_link.h"
 
+#include "build_info.h"
+
 #include <string.h>
 
 #include "crc16.h"
@@ -309,8 +311,7 @@ static void SendVersion(RasLink* obj) {
   uint16_t pos = 0;
   PutU16(p, &pos, RAS_PROTOCOL_VERSION);
   PutU32(p, &pos, RAS_FIRMWARE_ID);
-  // ビルド時刻は持っていないため0。必要になったらビルドシステムから埋め込むこと
-  PutU32(p, &pos, 0);
+  PutU32(p, &pos, g_build_epoch);  // ビルドした時刻 (build_info.h。Makefile が埋め込む)
   SendFrame(obj, RAS_TXQ_INFO, RAS_TYPE_VERSION, p, RAS_LEN_VERSION, 0);
 }
 
