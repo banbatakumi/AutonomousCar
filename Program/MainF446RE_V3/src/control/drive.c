@@ -69,6 +69,14 @@ static void UpdateFrontDirection(Drive* obj) {
       rear_m_s, vehicle_m_s, dt_s);
 }
 
+// 前輪 1輪の走行距離 [0.1mm] へ増分 [m] を積む。端数は carry に持ち越す (encoder.c の Accumulate と同じ)
+static void AccumulateOdom(int32_t* odom_0p1mm, float* carry_0p1mm, float step_m) {
+  float total = *carry_0p1mm + step_m * 1.0e4f;
+  int32_t whole = (int32_t)total;
+  *odom_0p1mm += whole;
+  *carry_0p1mm = total - (float)whole;
+}
+
 // 走行距離と加速度計の車速推定 (speed_kf.h) を1周期ぶん進める。Encoder の更新ごとに1回だけ
 static void UpdateSpeedKf(Drive* obj) {
   uint32_t encoder_seq = Encoder_GetUpdateSeq(obj->encoder);
@@ -88,6 +96,10 @@ static void UpdateSpeedKf(Drive* obj) {
   float gap_right = obj->front_step_right_m / DRIVE_FRONT_WHEEL_RADIUS_M;
   gap_left += TWO_PI * roundf((expected_rad - gap_left) / TWO_PI);
   gap_right += TWO_PI * roundf((expected_rad - gap_right) / TWO_PI);
+  // 上位へ報告する前輪の走行距離 (TELEMETRY の odom_dist) も、鏡像と折り返しを直したこの増分で積む。
+  // Encoder の累積 (生の向き) のままだと、会場の試走で鏡像の間に距離が逆に減り、走行距離より 9〜10% 短かった
+  AccumulateOdom(&obj->front_odom_left_0p1mm, &obj->front_odom_carry_left, gap_left * DRIVE_FRONT_WHEEL_RADIUS_M);
+  AccumulateOdom(&obj->front_odom_right_0p1mm, &obj->front_odom_carry_right, gap_right * DRIVE_FRONT_WHEEL_RADIUS_M);
   SpeedKf_UpdateDistance(&obj->speed_kf, 0.5f * (gap_left + gap_right) * DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
 
   // 加速度は IMU のサンプル (約200Hz) が新しいときだけ。IMU が使えない間は走行距離だけで推定する
@@ -486,6 +498,10 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   obj->dir_encoder_seq = Encoder_GetUpdateSeq(encoder);
   obj->front_step_left_m = 0.0f;
   obj->front_step_right_m = 0.0f;
+  obj->front_odom_left_0p1mm = 0;
+  obj->front_odom_right_0p1mm = 0;
+  obj->front_odom_carry_left = 0.0f;
+  obj->front_odom_carry_right = 0.0f;
 
   obj->enabled = false;
   obj->tc_enabled = false;  // 上位が送る (ras_link.c と同じ。毎周期 Drive_SetTractionControlEnabled で上書きされる)
@@ -815,6 +831,10 @@ float Drive_GetAccelBiasKf(const Drive* obj) {
 
 uint32_t Drive_GetKfGatedCount(const Drive* obj) {
   return obj->speed_kf.gated_count;
+}
+
+int32_t Drive_GetFrontOdom0p1mm(const Drive* obj, bool right) {
+  return right ? obj->front_odom_right_0p1mm : obj->front_odom_left_0p1mm;
 }
 
 uint32_t Drive_GetFrontReversalCount(const Drive* obj) {

@@ -255,6 +255,11 @@ typedef struct {
   uint32_t dir_encoder_seq;    // 向きの判定に取り込み済みの Encoder 更新番号
   float front_step_left_m;     // 直した前輪の増分 [m] (前進が正。車速 KF が使う)
   float front_step_right_m;
+  // 前輪の走行距離 (TELEMETRY の odom_dist。前進が正、鏡像と折り返しを直した増分の累積) と、0.1mm 未満の端数
+  int32_t front_odom_left_0p1mm;
+  int32_t front_odom_right_0p1mm;
+  float front_odom_carry_left;
+  float front_odom_carry_right;
 
   bool enabled;
   bool tc_enabled;                // 既定は無効 (上位が送る)
@@ -492,6 +497,10 @@ void Drive_TakeKfDiag(Drive* obj, float nis[SPEED_KF_DIAG_COUNT], float autocorr
 float Drive_GetAccelBiasKf(const Drive* obj);
 uint32_t Drive_GetKfGatedCount(const Drive* obj);
 
+/**
+ * @brief 前輪の走行距離 [0.1mm] (前進が正。読みの鏡像と折り返しを直した増分の累積)。right が偽なら左
+ */
+int32_t Drive_GetFrontOdom0p1mm(const Drive* obj, bool right);
 /**
  * @brief 前輪の読みの向きを直した回数 (encoder_direction.h。左右の合計)。増えたら上位へ LOG で知らせる
  */
