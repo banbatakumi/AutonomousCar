@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "auto_stop_path.h"
 #include "mymath.h"
 
 static void SetHorn(Vehicle* obj, bool on) {
@@ -103,10 +104,17 @@ static void UpdateLidarPower(Vehicle* obj, bool want_on) {
 // 動的停止距離 [cm] を返す
 static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
   float v = (speed_m_s >= 0.0f) ? speed_m_s : -speed_m_s;
-  float delay_s = VEHICLE_AUTO_STOP_SENSOR_DELAY_S + config->control.md_torque_lag_s;
+  float delay_s = VEHICLE_AUTO_STOP_SENSOR_DELAY_S + VEHICLE_AUTO_STOP_LIDAR_PERIOD_S +
+                  config->control.md_torque_lag_s;
   float physical_cm =
       (v * delay_s + (v * v) / (2.0f * config->control.brake_decel_m_s2)) * 100.0f;
   return physical_cm + config->auto_stop_margin_cm;
+}
+
+// LiDAR の点 (LiDAR 基準・車両の向き [cm]) を base_link [m] に直して予想進路と比べる
+static bool IsInAutoStopPath(const void* ctx, float x_cm, float y_cm) {
+  return AutoStopPath_Contains((const AutoStopPath*)ctx, VEHICLE_LIDAR_X_M + x_cm * 0.01f,
+                               y_cm * 0.01f);
 }
 
 // 実際の進行方向 (カルマンフィルタの実車速) について、動的停止距離以内に障害物が
@@ -121,9 +129,14 @@ static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
 // 自動停止が braking=true にすると target_speed が常に0へクランプされて実車速も
 // 永久に0のままになる (前方に障害物・後方は空いていても後退できないデッドロック) ため
 //
-// センサはいずれも車体先端(バンパー)より内側に付いているため、しきい値
-// (d_stop / VEHICLE_AUTO_STOP_ULTRASONIC_NEAR_CM) 側に取付オフセットを足して、
-// 「車体先端から障害物まで」を基準に判定する (VEHICLE_AUTO_STOP_*_OFFSET_CM 参照)
+// LiDAR は、今の実舵角のまま止まるまでに車体が掃く範囲 (予想進路、auto_stop_path.h) を見る。
+// 舵を切っているのに真っ直ぐの矩形で見ると、曲がった先の障害物を見落とし、外側の壁で止まる。
+// 指令ではなく実舵角を使うのは、舵が指令に追いついていない (据え切りの途中・ラックに当たっている) ときに
+// 実際に進む向きを見るため。舵角どおりに曲がる (横滑りしない) と仮定するので、限界付近で外へ膨らむ分は
+// 片側の余裕 (VEHICLE_AUTO_STOP_LATERAL_MARGIN_M) の内側でしか拾えない
+//
+// 超音波はセンサの向きが固定なので、真っ直ぐ前 (後ろ) の距離を車体先端からの距離に直して判定する
+// (VEHICLE_AUTO_STOP_ULTRASONIC_*_OFFSET_CM)
 static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
                                     float desired_direction) {
   float speed = Drive_GetVehicleSpeed(obj->drive);
@@ -132,18 +145,31 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
                      ? (speed >= 0.0f)
                      : (desired_direction >= 0.0f);
   float d_stop_cm = AutoStopDistanceCm(speed, config);
-  float lidar_center_deg = forward ? 0.0f : 180.0f;
-  float lidar_offset_cm = forward ? VEHICLE_AUTO_STOP_LIDAR_FRONT_OFFSET_CM
-                                   : VEHICLE_AUTO_STOP_LIDAR_REAR_OFFSET_CM;
   float us_offset_cm = forward ? VEHICLE_AUTO_STOP_ULTRASONIC_FRONT_OFFSET_CM
                                 : VEHICLE_AUTO_STOP_ULTRASONIC_REAR_OFFSET_CM;
 
   // Lidar_IsOk() (rx_count==0 か、300ms以上パケット自体が来ていない) を先に見て、センサ未接続時は
-  // Lidar_QueryCorridor へ触れず即座に超音波フォールバックへ倒す
+  // Lidar_QueryRegion へ触れず即座に超音波フォールバックへ倒す。判定は VEHICLE_AUTO_STOP_LIDAR_PERIOD_S に
+  // 間引くが、見る向きが変わったときはすぐ出し直す (逆向きの結果を使い回さない)
   LidarRoiResult roi = {0, 0};
-  if (Lidar_IsOk(obj->lidar)) {
-    roi = Lidar_QueryCorridor(obj->lidar, lidar_center_deg, VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_CM,
-                              d_stop_cm + lidar_offset_cm);
+  if (!Lidar_IsOk(obj->lidar)) {
+    obj->auto_stop_lidar_valid = false;
+  } else {
+    if (!obj->auto_stop_lidar_valid || obj->auto_stop_lidar_forward != forward ||
+        Timer_Read(&obj->auto_stop_lidar_timer) >= VEHICLE_AUTO_STOP_LIDAR_PERIOD_S) {
+      AutoStopPath path;
+      AutoStopPath_Init(&path, forward,
+                        AutoStopPath_Curvature(Steering_GetRoadWheelAngleRad(obj->steering),
+                                               DRIVE_WHEELBASE_M),
+                        VEHICLE_BODY_FRONT_X_M, VEHICLE_BODY_REAR_X_M,
+                        VEHICLE_AUTO_STOP_HALF_WIDTH_M, d_stop_cm * 0.01f);
+      obj->auto_stop_lidar_roi =
+          Lidar_QueryRegion(obj->lidar, forward ? 0.0f : 180.0f, IsInAutoStopPath, &path);
+      obj->auto_stop_lidar_forward = forward;
+      obj->auto_stop_lidar_valid = true;
+      Timer_Reset(&obj->auto_stop_lidar_timer);
+    }
+    roi = obj->auto_stop_lidar_roi;
   }
   bool lidar_fresh = roi.fresh_count > 0;
   bool lidar_hit = roi.hit_count >= VEHICLE_AUTO_STOP_LIDAR_MIN_POINTS;
@@ -316,10 +342,11 @@ static void ApplyRasCommand(Vehicle* obj) {
   // 止まってからは毎周期判定し直すので、障害物が無くなれば (または上位が逆方向を指令すれば) 動ける
   bool auto_stop_moving =
       fabsf(Drive_GetVehicleSpeed(obj->drive)) > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S;
-  obj->auto_stop_active =
-      armed && auto_stop_enabled &&
-      ((obj->auto_stop_active && auto_stop_moving) ||
-       IsAutoStopObstacleAhead(obj, config, desired_direction));
+  bool auto_stop_check = armed && auto_stop_enabled && !(obj->auto_stop_active && auto_stop_moving);
+  obj->auto_stop_active = armed && auto_stop_enabled &&
+                          (!auto_stop_check || IsAutoStopObstacleAhead(obj, config, desired_direction));
+  // 判定しなかった周期のあとに古い LiDAR の結果を使い回さない (Timer は約24秒で一周する)
+  if (!auto_stop_check) obj->auto_stop_lidar_valid = false;
   bool braking = cmd_braking || obj->auto_stop_active || forced_braking;
 
   float target_speed_m_s = 0.0f;
@@ -472,6 +499,7 @@ static void ApplyFailsafe(Vehicle* obj) {
   SetHorn(obj, false);
   obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
+  obj->auto_stop_lidar_valid = false;
 }
 
 void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors, Steering* steering,
@@ -497,6 +525,10 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors,
   obj->horn_on = false;
   obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
+  obj->auto_stop_lidar_valid = false;
+  obj->auto_stop_lidar_forward = true;
+  obj->auto_stop_lidar_roi = (LidarRoiResult){0, 0};
+  Timer_Init(&obj->auto_stop_lidar_timer);
   obj->auto_stop_blind = false;
   obj->auto_stop_blind_pending = false;
   obj->auto_stop_blind_start_us = 0;

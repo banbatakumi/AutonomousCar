@@ -224,8 +224,8 @@ static float bin_cos[91];
 static float bin_sin[91];
 static bool bin_trig_ready = false;
 
-LidarRoiResult Lidar_QueryCorridor(const Lidar* obj, float center_deg, float half_width_cm,
-                                   float max_forward_cm) {
+LidarRoiResult Lidar_QueryRegion(const Lidar* obj, float center_deg, LidarPointFilter inside,
+                                 const void* ctx) {
   if (!bin_trig_ready) {
     for (int i = 0; i <= 90; i++) {
       bin_cos[i] = cosf((float)i * (3.14159265f / 180.0f));
@@ -236,6 +236,8 @@ LidarRoiResult Lidar_QueryCorridor(const Lidar* obj, float center_deg, float hal
   LidarRoiResult result = {0, 0};
   uint32_t now = Micros();
   int center = (int)(center_deg + 0.5f);
+  // 前方 (0度) と後方 (180度) のどちらへ伸ばすか。後方は x の向きが逆になる
+  bool rear = (center > 90 && center < 270);
   for (int offset = -89; offset <= 89; offset++) {
     int bin = ((center + offset) % 360 + 360) % 360;
     uint8_t sector_idx = (uint8_t)(bin / LIDAR_DEG_PER_SECTOR);
@@ -246,9 +248,13 @@ LidarRoiResult Lidar_QueryCorridor(const Lidar* obj, float center_deg, float hal
     if (mm == 0) continue;
     int a = offset < 0 ? -offset : offset;
     float d_cm = (float)mm / 10.0f;
-    float x_cm = d_cm * bin_cos[a];
-    float y_cm = d_cm * bin_sin[a];
-    if (x_cm <= max_forward_cm && y_cm <= half_width_cm) result.hit_count++;
+    // 車両角 = −(センサ角)。センサ角 center + offset の点は、前方なら車両角 −offset (y = −d·sin offset)、
+    // 後方なら車両角 180 − offset (x = −d·cos offset、y = +d·sin offset)
+    float along_cm = d_cm * bin_cos[a];
+    float side_cm = (offset < 0 ? -d_cm : d_cm) * bin_sin[a];
+    float x_cm = rear ? -along_cm : along_cm;
+    float y_cm = rear ? side_cm : -side_cm;
+    if (inside(ctx, x_cm, y_cm)) result.hit_count++;
   }
   return result;
 }

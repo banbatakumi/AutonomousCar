@@ -149,14 +149,17 @@ bool Lidar_IsOk(const Lidar* obj);
 LidarRoiResult Lidar_QueryRoi(const Lidar* obj, float center_deg, float half_width_deg,
                               float max_distance_cm);
 
+// 点が窓に入るかを決める関数。x_cm・y_cm は LiDAR を原点とする車両の向きの座標 (x 前・y 左) [cm]。
+// 裏向きの取付による左右の鏡像は戻してある (車両角 = 360 − センサ角)
+typedef bool (*LidarPointFilter)(const void* ctx, float x_cm, float y_cm);
+
 /**
- * @brief center_deg を軸とする矩形の窓 (前方 0〜max_forward_cm、左右 ±half_width_cm、
- * いずれも LiDAR 基準) に入る点の数を数える。center_deg ±89度のビンを走査し、
- * fresh_count は窓の外も含めた走査範囲内で新しいビンの数。左右は対称なので鏡像の影響を受けない。
- * center_deg は 0 または 180 付近でのみ使うこと (Lidar_QueryRoi と同じ)。
+ * @brief center_deg (0 = 前方、180 = 後方。車両角とセンサ角が一致する向きだけ) ±89度のビンを走査し、
+ * inside が真を返す点の数を数える。fresh_count は窓の外も含めた走査範囲内で新しいビンの数。
+ * 左右が非対称な窓 (舵角に沿った予想進路など) を、鏡像を気にせず書くためのもの。
  */
-LidarRoiResult Lidar_QueryCorridor(const Lidar* obj, float center_deg, float half_width_cm,
-                                   float max_forward_cm);
+LidarRoiResult Lidar_QueryRegion(const Lidar* obj, float center_deg, LidarPointFilter inside,
+                                 const void* ctx);
 
 /**
  * @brief 回転モータのデューティを設定する (0.0-1.0)。回転数の調整用。
