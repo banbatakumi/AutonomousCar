@@ -284,6 +284,8 @@ static float SlipSpeedTarget(float slip_target, float reference_speed_m_s, float
 static void ResetAbs(Drive* obj) {
   ResetSlipLimiter(&obj->abs);
   obj->abs_limit_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
+  obj->abs_request_nm = 0.0f;
+  obj->abs_in_speed_pi = false;
   obj->abs_floor_time_s = 0.0f;
   obj->abs_fallback_latched = false;
 }
@@ -301,6 +303,7 @@ static void ResetTraction(Drive* obj) {
 // 合わせる (select-low)。MD の制動は車輪の回転を妨げる向きに掛かるので、ロック傾向は
 // 「車輪が路面より遅い」= 進行方向を基準にしたスリップ速度の負側
 static float ApplyAbs(Drive* obj, float requested_nm, float dt_s) {
+  obj->abs_request_nm = requested_nm;
   if (obj->abs_fallback_latched) return requested_nm;
 
   const ControlParams* p = &obj->params;
@@ -328,6 +331,30 @@ static float ApplyAbs(Drive* obj, float requested_nm, float dt_s) {
     obj->abs_floor_time_s = 0.0f;
   }
   return obj->abs_limit_nm < requested_nm ? obj->abs_limit_nm : requested_nm;
+}
+
+// 車速PIの減速に ABS を掛ける。前進中 (車速 > DRIVE_STANDSTILL_SPEED_M_S) に PI が減速トルク (負) を
+// 要求している周期だけ真を返し、*left_nm・*right_nm を ABS の上限で絞る (TC の代わり)。
+//
+// 2026-10-31 の会場の試走 (surge_20261031_055820) で、3.9m/s から車速指令 0 (加速度の上限 4.0・制動フラグなし) で
+// 止めたとき、減速トルクには駆動用の TC だけが掛かり、上限が 20ms ごとに 0↔0.15N·m を往復して後輪が 40〜70% 滑り、
+// ヨーレート 3.2rad/s でスピンした。ABS は制動モード (brake) のときしか働いていなかった。
+// ABS は左右共通の上限 (select-low) で、制動の場面に合わせて調整してある (abs_*)。後退中の減速は対象外
+// (ApplyAbs は前進の制動の向きだけを見ている。後退は低速の手動だけ)
+static bool ApplySpeedPiAbs(Drive* obj, float* left_nm, float* right_nm, float dt_s) {
+  const bool braking = obj->abs_enabled && obj->vehicle_speed_m_s > DRIVE_STANDSTILL_SPEED_M_S &&
+                       *left_nm < 0.0f && *right_nm < 0.0f;
+  if (!braking) {
+    if (obj->abs_in_speed_pi) ResetAbs(obj);
+    return false;
+  }
+  obj->abs_in_speed_pi = true;
+  // 強く減速したい方の輪を要求にする。ABS は select-low の共通の上限なので、両輪をそれで絞る
+  const float request_nm = -(*left_nm < *right_nm ? *left_nm : *right_nm);
+  const float limit_nm = ApplyAbs(obj, request_nm, dt_s);
+  if (*left_nm < -limit_nm) *left_nm = -limit_nm;
+  if (*right_nm < -limit_nm) *right_nm = -limit_nm;
+  return true;
 }
 
 // TC + 片輪浮き対策: 1輪ぶんのトルク上限を更新する。
@@ -510,8 +537,10 @@ void Drive_Update(Drive* obj) {
   // ローパスは長く空いた後は新しい値をそのまま採るのが正しいので、丸める前の経過時間を渡す
   UpdateObservations(obj, elapsed_s);
 
-  // ABSの状態は制動モードの間だけ持ち越す。離したら次の制動を全量から始め、フォールバックも解く
-  if (!(obj->enabled && !obj->side_brake_active && obj->brake_active && obj->abs_enabled)) {
+  // ABSの状態は制動の間 (制動モードと、車速PIの減速 = ApplySpeedPiAbs) だけ持ち越す。離したら次の制動を
+  // 全量から始め、フォールバックも解く
+  if (!(obj->enabled && !obj->side_brake_active && obj->abs_enabled &&
+        (obj->brake_active || (obj->abs_in_speed_pi && !obj->torque_mode_active)))) {
     ResetAbs(obj);
   }
 
@@ -613,18 +642,25 @@ void Drive_Update(Drive* obj) {
 
   bool lift_left = false;
   bool lift_right = false;
-  obj->tc_limit_left_nm = UpdateWheelLimit(obj, &obj->tc_left, request_left_nm, obj->torque_left_nm,
-                                           slip_left_m_s, lead_left_m_s, obj->slip_ref_left_m_s, dt_s,
-                                           &lift_left);
-  obj->tc_limit_right_nm = UpdateWheelLimit(obj, &obj->tc_right, request_right_nm, obj->torque_right_nm,
-                                            slip_right_m_s, lead_right_m_s, obj->slip_ref_right_m_s, dt_s,
-                                            &lift_right);
-
-  // 片輪を絞っても反対の輪は要求のまま (絞った分を載せない)
-  float left_nm = Constrain(request_left_nm, -obj->tc_limit_left_nm, obj->tc_limit_left_nm);
-  float right_nm = Constrain(request_right_nm, -obj->tc_limit_right_nm, obj->tc_limit_right_nm);
-  bool limited_left = left_nm != request_left_nm;
-  bool limited_right = right_nm != request_right_nm;
+  float left_nm = request_left_nm;
+  float right_nm = request_right_nm;
+  // 車速PIの減速は ABS で絞る (ApplySpeedPiAbs)。その間 TC は使わない (覚えている駆動側のグリップも捨てる)
+  const bool pi_abs = !obj->torque_mode_active && !launching && ApplySpeedPiAbs(obj, &left_nm, &right_nm, dt_s);
+  if (pi_abs) {
+    ResetTraction(obj);
+  } else {
+    obj->tc_limit_left_nm = UpdateWheelLimit(obj, &obj->tc_left, request_left_nm, obj->torque_left_nm,
+                                             slip_left_m_s, lead_left_m_s, obj->slip_ref_left_m_s, dt_s,
+                                             &lift_left);
+    obj->tc_limit_right_nm = UpdateWheelLimit(obj, &obj->tc_right, request_right_nm, obj->torque_right_nm,
+                                              slip_right_m_s, lead_right_m_s, obj->slip_ref_right_m_s, dt_s,
+                                              &lift_right);
+    // 片輪を絞っても反対の輪は要求のまま (絞った分を載せない)
+    left_nm = Constrain(request_left_nm, -obj->tc_limit_left_nm, obj->tc_limit_left_nm);
+    right_nm = Constrain(request_right_nm, -obj->tc_limit_right_nm, obj->tc_limit_right_nm);
+  }
+  bool limited_left = !pi_abs && left_nm != request_left_nm;
+  bool limited_right = !pi_abs && right_nm != request_right_nm;
 
   // 後輪周速が物理的にあり得ない値まで来たら、判定に関係なくその輪のトルクを0にする (最終防波堤)
   if (obj->wheel_lift_guard_enabled) {
@@ -727,8 +763,8 @@ void Drive_SetAbsEnabled(Drive* obj, bool enabled) {
 }
 
 bool Drive_IsAbsActive(const Drive* obj) {
-  return obj->enabled && !obj->side_brake_active && obj->brake_active && obj->abs_enabled &&
-         !obj->abs_fallback_latched && obj->abs_limit_nm < obj->brake_torque_nm;
+  return obj->enabled && !obj->side_brake_active && (obj->brake_active || obj->abs_in_speed_pi) &&
+         obj->abs_enabled && !obj->abs_fallback_latched && obj->abs_limit_nm < obj->abs_request_nm;
 }
 
 void Drive_Enable(Drive* obj) {

@@ -308,6 +308,8 @@ typedef struct {
   bool wheel_lift_limiting;  // 同 片輪浮き対策の偏差の方が効いていた (または絶対上限で切った)
   SlipLimiter abs;
   float abs_limit_nm;         // 制動トルクの上限 (左右共通。働いていなければ DRIVE_MAX_BRAKE_TORQUE_NM)
+  float abs_request_nm;       // ABS に渡した制動トルクの要求 (正。Drive_IsAbsActive の比較用)
+  bool abs_in_speed_pi;       // 車速PIの減速に ABS を掛けている (ApplySpeedPiAbs。制動モードでなくても ABS の状態を持ち越す)
   float abs_floor_time_s;     // 上限が DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いている継続時間
   bool abs_fallback_latched;  // 真の間はABSを止めて要求どおりに制動する (ブレーキ解除で戻る)
   // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
@@ -420,6 +422,7 @@ void Drive_SetAbsEnabled(Drive* obj, bool enabled);
 
 /**
  * @brief ABSが今まさに制動トルクを要求より削っているかを取得する (デバッグ・上位への報告用)。
+ * 制動モード (Drive_SetBrake) と、車速PIが前進中に減速トルクを出している間の両方。
  * フォールバック中 (ABSを止めて要求どおりに制動している間) は偽。
  */
 bool Drive_IsAbsActive(const Drive* obj);
