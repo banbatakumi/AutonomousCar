@@ -286,14 +286,14 @@ static void SendTelemetry(RasLink* obj) {
   PutU8(p, &pos, QuantizeU8(t->batt_current_a[0], 0.05f));
   // シグナル系は待機電流が数百mAと小さいため、駆動系より細かいスケールを使う
   PutU8(p, &pos, QuantizeU8(t->batt_current_a[1], 0.02f));
-  // 超音波は最小測距が2cmあり「距離0」が physically 出ないため、0 を無効値に使える
+  // 超音波は最小測距が2cmあり「距離0」は出ないため、0 を無効値に使える
   PutU8(p, &pos, QuantizeU8(t->us_distance_m[0], 0.02f));
   PutU8(p, &pos, QuantizeU8(t->us_distance_m[1], 0.02f));
   for (int i = 0; i < 3; i++) PutU8(p, &pos, t->md_status[i]);
   // cmd_seq_echo はスナップショットの時点ではなく**送信時点**で最後に受けた COMMAND の SEQ
   // (他のフィールドより最大1周期新しい)。上位の往復時間 (cmd_rtt_ms) の測定にはこの方が正しい
   PutU8(p, &pos, obj->has_command ? obj->command.seq : 0);
-  // v0.24〜v0.26: 車速のカルマンフィルタの診断と前輪の絶対角 (末尾に追加。既存フィールドの位置は変えていない)
+  // 車速のカルマンフィルタの診断と前輪の絶対角
   PutI16(p, &pos, QuantizeI16(t->accel_kf_m_s2, 0.001f));
   PutI16(p, &pos, QuantizeI16(t->accel_bias_kf_m_s2, 0.001f));
   PutU16(p, &pos, t->kf_gated_count);
@@ -785,8 +785,8 @@ void RasLink_Receive(RasLink* obj) {
 void RasLink_Update(RasLink* obj) {
   uint32_t now = Micros();
 
-  // LIMITS は起動時に変わらない値なので VERSION と同じバースト送信に相乗りさせる
-  // (専用のカウンタ・タイマを別に持つ必要が無いため)
+  // LIMITS は VERSION と同じバースト送信に相乗りさせる (専用のカウンタ・タイマを持たないため)。
+  // 可動範囲が変わったときは RasLink_SendLimits で送り直す
   if (obj->version_burst_left > 0 &&
       (uint32_t)(now - obj->last_version_us) >= RAS_VERSION_BURST_INTERVAL_US) {
     SendVersion(obj);

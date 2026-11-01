@@ -37,9 +37,8 @@ typedef struct {
   // 直近に RasLink_Log で通知済みの PowerFault ビット。新規に立ったビットだけを通知するのに使う
   uint32_t logged_faults;
 
-  // Telemetry_Update() 自体の実行間引き用。RasLink 側の実送信は100Hz (RAS_TELEMETRY_INTERVAL_US) へ間引かれるのに対し
-  // Telemetry_Update() は2kHzで呼ばれ、ADC読み・MD状態集計など送信に使われない分まで
-  // 毎周期実行していたため、送信周期 (RAS_TELEMETRY_INTERVAL_US) に合わせて内部でも間引く
+  // Telemetry_Update() は2kHzで呼ばれるが、組み立ては送信周期 (RAS_TELEMETRY_INTERVAL_US) に
+  // 合わせて内部で間引く (ADC読み・MD状態集計などを送信されない周期に回さないため)
   Timer update_timer;
 } Telemetry;
 
@@ -51,7 +50,7 @@ void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, P
                     Drive* drive, RangeSensor* range_sensor);
 
 /**
- * @brief MD の通信監視を進め、次に送る TELEMETRY / STATS の内容を最新値に差し替える。
+ * @brief 次に送る TELEMETRY / STATS の内容を最新値に差し替える。
  * 制御周期ごとに呼んでよい (実際の組み立て・送信は内部で RAS_TELEMETRY_INTERVAL_US = 100Hz に
  * 間引かれるため、毎周期呼んでも2kHzで重い処理が走るわけではない)。
  */

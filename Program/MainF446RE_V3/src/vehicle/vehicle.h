@@ -32,7 +32,7 @@
 //
 // 「止める」の約束 (上位・MD と意味を揃えてある):
 //   - 走行中に上位の ARM が外れても、すぐには駆動電源を切らない。電源を切ると MD ごと落ちて
-//     制動できず惰行するので、停車するまで最大制動を続けてから切る (VEHICLE_DISARM_BRAKE_*)
+//     制動できず惰行するので、停車するまで最大制動を続けてから切る (vehicle.c の DisarmBrakeTimeoutS)
 //   - ARM されても、3台の MD が使える状態になるまでは走らせない (VEHICLE_MD_BOOT_TIMEOUT_S)。
 //     走行中にどれかが使えなくなったら最大制動で止め、ARM を外すまで再開しない
 //   - 制動して止まったら、後輪の位置保持へ移る (ブレーキホールド。制動トルクは車輪が止まると
@@ -53,16 +53,14 @@
 
 // ===========================================================================
 // 制動の減速度と MD のトルクの遅れは、上位が CONFIG_SET で送る実行時パラメータ (control_params.h の
-// brake_decel_m_s2・md_torque_lag_s、v0.29)。Pi 側 config/vehicle.toml が唯一の定義で、ここには持たない
+// brake_decel_m_s2・md_torque_lag_s)。Pi 側 config/vehicle.toml が唯一の定義で、ここには持たない
 // ===========================================================================
 // 「止まり切るはずの時間」に掛ける余裕。低速では MD の制動が tanh で弱まり (20rad/s = 0.6m/s 以下)、
-// 減速度が brake_decel_m_s2 を下回るぶん
+// 減速度が brake_decel_m_s2 を下回るぶん。走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの
+// 時間の上限は、最高速 (DRIVE_MAX_SPEED_M_S) から brake_decel_m_s2 で止まり切れる時間にこれを掛けたもの
+// (vehicle.c の DisarmBrakeTimeoutS)。前輪エンコーダの異常で車速が 0 に落ちなくても、これを過ぎたら電源を切る
 #define VEHICLE_STOP_TIME_MARGIN 1.5f
 
-// 走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの時間の上限 [s] は、最高速
-// (DRIVE_MAX_SPEED_M_S) からの最大制動 (brake_decel_m_s2) で止まり切れる時間に余裕を掛けたもの
-// (5m/s ÷ 2.47m/s² × 1.5 ≒ 3.0s。vehicle.c の DisarmBrakeTimeoutS)。前輪エンコーダの異常で車速が 0 に
-// 落ちなくても、これを過ぎたら電源を切る
 // 緊急停止・COMMAND 途絶で停車を保持しているとき、止まってからこの時間が経ったら駆動電源を切る [s]。
 // 電源を入れたまま位置保持を続けると、据え切りと同様にモータが過熱し、電池も減り続ける。
 // 切ると坂では転がりうるが、30秒止まっていれば人が気づく時間は十分にあるとみなす。
@@ -189,7 +187,7 @@ typedef struct {
 
   // 上位から要求されたウィンカー/ハザード状態 (flags2 の WINKER_LEFT/RIGHT をデコードしたもの)。
   // Lighting へ直接反映せず、フォールト時のハザード優先の調停は Indicator (src/hmi/indicator.c)
-  // に委ねる (ハザードは Indicator が既に Lighting_SetWinker の唯一の呼び出し元だったため)
+  // に委ねる (Lighting_SetWinker を呼ぶのは Indicator だけ)
   LightingWinkerState winker_request;
 
   // ARMが外れている(=走らせる予定がない)時間を計り、LiDAR電源の遅延OFFに使う

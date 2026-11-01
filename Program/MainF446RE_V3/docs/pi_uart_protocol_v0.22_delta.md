@@ -1,7 +1,7 @@
 # SURGE Mark.2 UART プロトコル — v0.21 → v0.22 差分
 
 **日付**: 2026-10-11
-**状態**: STM32 側・Pi 側とも実装済み・ビルド確認済み。**未書き込み、実機での動作検証は未了** (MD は変更なし)
+**状態**: STM32 に書き込み済み (`fb65b6f` に含まれる)。走行での検証状況は CLAUDE.md の「現在の状態」を見る
 
 v0.21 (`pi_uart_protocol_v0.21_delta.md`) からの差分のみを記す。**ワイヤ形式 (LEN・オフセット)・`param_id` は同じ**で、
 変わるのは `COMMAND.accel_limit` の扱いと `LIMITS.max_accel_m_s2` の値だけ。

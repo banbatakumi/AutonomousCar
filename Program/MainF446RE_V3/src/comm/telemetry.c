@@ -114,7 +114,7 @@ void Telemetry_Update(Telemetry* obj) {
   if (elapsed_us < RAS_TELEMETRY_INTERVAL_US) return;
   // 周期の起点を「今」ではなく1周期ぶんだけ進める。Timer_Reset だと、この関数が呼ばれる位置が
   // 制御周期の中で前後するぶん (LiDAR の処理量で変わる) 20周期目に 1us 足りず 21周期目まで
-  // 待つことがあり、LiDAR が回っている間は 100Hz のはずが約 97Hz に落ちていた。
+  // 待つことがあり、100Hz が約 97Hz に落ちる。
   // 大きく遅れたとき (ブロッキング処理の直後) は追いつこうとせず今から数え直す
   if (elapsed_us >= 2u * RAS_TELEMETRY_INTERVAL_US) {
     Timer_Reset(&obj->update_timer);

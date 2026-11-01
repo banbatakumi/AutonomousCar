@@ -9,10 +9,10 @@
 #include "timer.h"
 
 // ===========================================================================
-// Raspberry Pi (上位) との UART 通信。レイアウトは ras_link.c、近年の変更点は
-// docs/pi_uart_protocol_v0.19_delta.md 〜 v0.23_delta.md (旧版は docs/archive/)。
+// Raspberry Pi (上位) との UART 通信。レイアウトは ras_link.c、版ごとの変更点は
+// docs/pi_uart_protocol_v0.19_delta.md 〜 v0.29_delta.md (それ以前は docs/archive/)。
 //
-// 物理層: USART1, 1000000bps 8N1 (分周誤差0%。2026-09-26 に 250000bps から変更)。
+// 物理層: USART1, 1000000bps 8N1 (分周誤差0%)。
 //
 // このモジュールが持つのはフレーミング (SYNC/TYPE/SEQ/LEN/CRC16) とパケットの
 // 解釈・組み立てだけで、走行制御そのものには関与しない。受信した指令は
@@ -28,9 +28,8 @@
 // COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
 // (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
 #define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
-// "MF3" + 版数。Pi 側のログで機体を識別するための任意値。0x04 (2026-09-27): TELEMETRY の t_us を
-// 送信時刻からスナップショットの時刻に変えた (ワイヤ形式は同じなので protocol_version は据え置き)。
-// Pi の同定の解析はこれより古い記録の遅延に警告を出す (tools/sysid/fit.py)
+// "MF3" + 版数。Pi 側のログで機体を識別するための任意値。Pi の同定の解析は、TELEMETRY の t_us が
+// スナップショットの時刻になる前の記録 (これより古い値) の遅延に警告を出す (tools/sysid/fit.py)
 #define RAS_FIRMWARE_ID 0x4D463304u
 
 #define RAS_SYNC1 0xAAu
@@ -49,8 +48,7 @@
 #define RAS_COMMAND_TIMEOUT_US 100000u
 
 // 定期送信の周期 [us]
-// 100Hz (2026-09-26 に 50Hz から変更。上位が受け取る値の古さ (次のスナップショットまでの待ち)
-// を平均10ms→5msに縮める。1Mbps で上りの使用率は約21%)
+// TELEMETRY は 100Hz (上位が受け取る値の古さを平均 5ms に抑える。1Mbps で上りの使用率は約21%)
 #define RAS_TELEMETRY_INTERVAL_US 10000u   // 100Hz
 #define RAS_STATS_INTERVAL_US 1000000u     // 1Hz
 #define RAS_VERSION_BURST_INTERVAL_US 100000u
@@ -72,7 +70,7 @@ typedef enum {
   RAS_TYPE_PING = 0x12,
   RAS_TYPE_CONFIG_GET = 0x13,
   RAS_TYPE_VERSION_REQ = 0x14,
-  RAS_TYPE_LIMITS_REQ = 0x15,  //
+  RAS_TYPE_LIMITS_REQ = 0x15,
 } RasPacketType;
 
 // COMMAND.mode / TELEMETRY.flags bit0-1
@@ -80,7 +78,7 @@ typedef enum {
   RAS_MODE_DISARM = 0,
   RAS_MODE_MANUAL = 1,
   RAS_MODE_AUTO = 2,
-  RAS_MODE_RESERVED = 3,  // 旧 CALIB (廃止)。受信しても現在のモードを維持する
+  RAS_MODE_RESERVED = 3,  // 予約。受信しても現在のモードを維持する
 } RasMode;
 
 // COMMAND.flags
@@ -99,12 +97,12 @@ typedef enum {
 // cm単位で直接指定) を下回ったら最大制動トルクで自動停止する (src/vehicle/vehicle.c)。判定は前後LiDARの
 // セーフティゾーン(角度×距離のROI内点数)を主に用い、超音波は LiDAR が死角・欠測のときの
 // フォールバックと至近距離の独立トリガーの2役を担う。一度作動したら止まるまで制動を続け、
-// 止まってから判定し直す。下りている間は従来通り上位の指令のみに従う
+// 止まってから判定し直す。下りている間は上位の指令のみに従う
 #define RAS_CMD_FLAG_AUTO_STOP (1u << 7)
 
 // COMMAND.flags2 (flags が8bit使い切ったための拡張バイト)
-// 立っている間、指令を受けた瞬間の後輪モータ機械角度を目標値としてラッチし、位置制御へ
-// 切り替えて機械的に切り替える (パーキングロック)。速度に関わらず即座に切り替わり、
+// 立っている間、指令を受けた瞬間の後輪モータ機械角度を目標値としてラッチし、位置制御で
+// 保持する (パーキングロック)。速度に関わらず即座に切り替わり、
 // brake (bit1) より優先する (Drive_Update 側の優先順位で解決する)。
 #define RAS_CMD_FLAG2_SIDE_BRAKE (1u << 0)
 // 立っている間、左/右ウィンカーを点滅させる (自律走行中の右左折・車線変更の意思表示用)。
@@ -140,7 +138,7 @@ typedef enum {
 #define RAS_FLAG_TV_ACTIVE (1u << 6)
 #define RAS_FLAG_IMU_OK (1u << 7)
 #define RAS_FLAG_LIDAR_OK (1u << 8)
-// bit9 は旧 calib_running。CALIB 廃止に伴い予約
+// bit9 は予約
 #define RAS_FLAG_STEER_CENTER_VALID (1u << 10)
 #define RAS_FLAG_FAULT_DRIVE_OVERCURRENT (1u << 11)
 #define RAS_FLAG_FAULT_SIGNAL_OVERCURRENT (1u << 12)
@@ -203,18 +201,14 @@ typedef enum {
   RAS_CONFIG_MODE_LOCKED = 3,
 } RasConfigResult;
 
-// 実装済みのパラメータのみを定義する。
-// 足回りの制御 (TC・ABS・片輪浮き対策・TV) の調整パラメータは param_id と
-// 範囲・既定値は src/control/control_params.h の表が唯一の定義で、ここには並べない
-// (0x0011-0x0015, 0x0021-0x002C, 0x0030-0x0031 = 車速PI, 0x0051, 0x0071-0x0073)。Flash へは保存しない。
-// 値は持たない: 起動直後は仮置き (下限 = 何もしない値) で、上位が全項目を送るまで ARM を通さない運用。
-// TC/TV の ON/OFF (0x0010/0x0020) はゲインではなく機能そのものの有効/無効なので対応している。
-// 片輪浮き対策 (0x0050) の ON/OFF は TC本体 (0x0010) とは独立に切替できる。
-// 最大速度・最大加速度・最大舵角 (旧 0x0001-0x0003) は廃止した。上位から変更する
-// 実用上の必要が無かったため、Drive/Steering 側の固定定数 (DRIVE_MAX_SPEED_M_S /
-// Steering_GetMaxRoadWheelAngleRad()) に一本化してある。最大加速度は上限そのものを
-// 無くしてある (上位が COMMAND.accel_limit で毎回決める。drive.h の DRIVE_DEFAULT_ACCEL_M_S2 の注記)
-// (最大舵角だけはリンクの換算 steer_link_* で変わる。変わるたびに LIMITS を送り直す)
+// ここに定義するのは機能の ON/OFF など RasConfig の直下の項目だけ。調整パラメータ (TC・ABS・
+// 片輪浮き対策・TV・車速PI・エンコーダ校正・車速 KF など) の param_id・範囲・既定値は
+// src/control/control_params.h の表が唯一の定義で、ここには並べない。Flash へは保存せず、
+// 起動直後は仮置き (下限 = 何もしない値) で、上位が全項目を送るまで ARM を通さない運用。
+// 最大速度・最大舵角は Drive/Steering 側の固定定数 (DRIVE_MAX_SPEED_M_S /
+// Steering_GetMaxRoadWheelAngleRad()) で、LIMITS で通知する。最大加速度に上限は無く、
+// 上位が COMMAND.accel_limit で毎回決める (drive.h の DRIVE_DEFAULT_ACCEL_M_S2 の注記)。
+// 最大舵角だけはリンクの換算 steer_link_* で変わり、変わるたびに LIMITS を送り直す
 typedef enum {
   RAS_PARAM_TC_ENABLE = 0x0010,     // 0.0=無効, 非0=有効 (既定は無効。上位が接続のたびに送る)
   RAS_PARAM_TV_ENABLE = 0x0020,     // 0.0=無効, 非0=有効 (既定は無効。上位が接続のたびに送る)
@@ -276,19 +270,17 @@ typedef struct {
 
 // 送信するテレメトリ。呼び出し側は物理量のまま埋める (量子化は RasLink が行う)
 typedef struct {
-  // このスナップショットを取った時刻 (Micros())。TELEMETRY の t_us にはこれを載せる。
-  // 以前は送信時の Micros() を載せていたが、スナップショットは Telemetry_Update の、送信は
-  // RasLink_Update の別々の 50Hz タイマーで動いていたため、中身が最大 20ms 古いのに送信時刻が
-  // 付き、上位の時刻合わせ (制御遅延の同定など) が最大 20ms ずれていた
+  // このスナップショットを取った時刻 (Micros())。TELEMETRY の t_us にはこれを載せる
+  // (送信時刻だと、スナップショットから送信までの待ちぶん、上位の時刻合わせ (制御遅延の同定など) がずれる)
   uint32_t t_us;
   uint32_t flags;  // RAS_FLAG_*
 
-  float speed_m_s;         // 車体中心線方向の車速 (前輪速を舵角で射影したもの)
+  float speed_m_s;         // 車体中心線方向の車速 (走行距離と加速度計のカルマンフィルタ。src/control/speed_kf.h)
   float yaw_rate_rad_s;    // 左旋回が正
   float steer_actual_rad;  // 路面舵角
   float steer_cmd_rad;     // 直近に指令した路面舵角
 
-  // 車輪周速 [FL, FR, RL, RR]。4輪ともローパス後の値を渡すこと (帯域およそ 1.6Hz)。
+  // 車輪周速 [FL, FR, RL, RR]。4輪ともローパス後の値を渡すこと (時定数は drive.h の DRIVE_LPF_TAU_*)。
   // 前輪はアナログ絶対角の微分なので、生値は静止中でも ±12m/s 振れて使い物にならない。
   // 低速域では分解能が足りないため、輪ごとの走行距離が要る用途では odom_dist の差分を使うこと
   float wheel_speed_m_s[4];
@@ -318,18 +310,18 @@ typedef struct {
 
   uint8_t md_status[3];  // RAS_MD_STATUS_* [RL, RR, ST]
 
-  // --- 車速のカルマンフィルタの診断 (v0.24 で追加、v0.25 で前輪 LPF を廃止。src/control/speed_kf.h)。speed_m_s がこのフィルタの車速 ---
+  // --- 車速のカルマンフィルタの診断 (src/control/speed_kf.h)。speed_m_s がこのフィルタの車速 ---
   float accel_kf_m_s2;          // カルマンフィルタの加速度
   float accel_bias_kf_m_s2;     // カルマンフィルタの加速度計バイアス (重力の傾き成分を含む)
   uint16_t kf_gated_count;      // 測定を弱めた累積回数 (16bit で巻き戻る。前輪のロック・衝撃の目安)
-  // 前回のスナップショットからの一貫性の診断 (v0.26。src/control/speed_kf.h)。
+  // 前回のスナップショットからの一貫性の診断。
   // NIS (平均 z²。前提が合っていれば 1) は静止で 1e-3 まで小さくなり、そのまま量子化すると潰れるので、
   // 平方根 (z の RMS) と、隣り合う残差の相関係数 ρ = (平均 z_k z_{k-1}) / NIS で送る。0 = その間に測定が無かった
   float kf_z_rms_dist;          // 走行距離の残差の z の RMS (= √NIS)。1 が理想
   float kf_z_rms_accel;         // 加速度の残差の z の RMS
   float kf_rho_dist;            // 走行距離の残差の隣り合う相関係数 (-1〜1)。0 が理想
   float kf_rho_accel;           // 加速度の残差の相関係数
-  // 前輪エンコーダの絶対角 [rad、0〜2π。取付向きの符号のまま = 速度の符号を直す前]。[FL, FR] (v0.26)。
+  // 前輪エンコーダの絶対角 [rad、0〜2π。取付向きの符号のまま = 速度の符号を直す前]。[FL, FR]。
   // 周期誤差 (角度の関数) の同定に使う (上位の tools/sysid)。Encoder_Update が読んだ最新の値
   float front_angle_rad[2];
 } RasTelemetry;
@@ -360,9 +352,8 @@ typedef struct {
   uint8_t tx_pong_storage[64];
   uint8_t tx_telemetry_storage[256];
   uint8_t tx_lidar_storage[512];
-  // 上位は接続のたびに調整パラメータ (control_params.h の表) をまとめて CONFIG_SET してくる。
-  // CONFIG_ACK は1つ 14 バイトで、256 だと約 18 個で溢れていた (上位の再送で回復はする)。
-  // 調整パラメータと校正値で約 50 項目あるので、まとめて届いても溢れないだけ持つ
+  // 上位は接続のたびに調整パラメータ (control_params.h の表。約 50 項目) をまとめて CONFIG_SET
+  // してくる。CONFIG_ACK は1つ 14 バイトなので、まとめて届いても溢れないだけ持つ
   uint8_t tx_info_storage[1024];
   uint8_t tx_log_storage[512];
   uint8_t tx_frame[RAS_FRAME_MAX];  // 送信中のフレーム (DMA が読むので完了まで触らない)

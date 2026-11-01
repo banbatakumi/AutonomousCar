@@ -83,7 +83,7 @@ static void UpdateSpeedKf(Drive* obj) {
   if (encoder_seq == obj->kf_encoder_seq) return;
   obj->kf_encoder_seq = encoder_seq;
 
-  // 前輪の回転量の左右平均 → 走行距離。舵角で車体前後方向へ射影するのは LPF の車速と同じ
+  // 前輪の回転量の左右平均 → 走行距離。舵角で車体前後方向へ射影する
   float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
   const float cos_steer = cosf(steer_rad);
   SpeedKf_Predict(&obj->speed_kf, Encoder_GetLastDt(obj->encoder));
@@ -107,7 +107,7 @@ static void UpdateSpeedKf(Drive* obj) {
     const ImuData* imu = Imu_GetData(obj->imu);
     if (imu->sample_seq != obj->kf_imu_seq) {
       obj->kf_imu_seq = imu->sample_seq;
-      // 旋回で乗る -k·ω² を補正してから使う (control_params.h の kf_lever_arm_m。speed_kf.h の SPEED_KF_LEVER_ARM_M)
+      // 旋回で乗る -k·ω² を補正してから使う (control_params.h の kf_lever_arm_m)
       const float gz_rad_s = Radians(imu->gyro_z);
       SpeedKf_UpdateAccel(&obj->speed_kf, imu->accel_x_raw + obj->params.kf_lever_arm_m * gz_rad_s * gz_rad_s);
     }
@@ -135,8 +135,7 @@ static void UpdateObservations(Drive* obj, float dt_s) {
 
   // 旋回中は内輪と外輪で本来の速度が違う。ここを車体速度で共通化すると外輪が常時「空転」と
   // 判定されてTCが誤介入するため、ヨーレートから各輪の基準速度を作る。
-  // 基準速度はカルマンフィルタの車速 (遅れがほぼ無い。以前の前輪LPFは τ10ms の遅れが加速で基準を低く見せ、
-  // スリップ率に偏りを入れていた)
+  // 基準速度はカルマンフィルタの車速 (遅れがほぼ無い。遅れた車速だと加速でスリップ率に偏りが入る)
   float half_track = DRIVE_REAR_TRACK_M * 0.5f;
   obj->slip_ref_left_m_s = obj->vehicle_speed_m_s - obj->yaw_rate_rad_s * half_track;
   obj->slip_ref_right_m_s = obj->vehicle_speed_m_s + obj->yaw_rate_rad_s * half_track;
@@ -348,9 +347,7 @@ static float ApplyAbs(Drive* obj, float requested_nm, float dt_s) {
 // 車速PIの減速に ABS を掛ける。前進中 (車速 > DRIVE_STANDSTILL_SPEED_M_S) に PI が減速トルク (負) を
 // 要求している周期だけ真を返し、*left_nm・*right_nm を ABS の上限で絞る (TC の代わり)。
 //
-// 2026-10-31 の会場の試走 (surge_20261031_055820) で、3.9m/s から車速指令 0 (加速度の上限 4.0・制動フラグなし) で
-// 止めたとき、減速トルクには駆動用の TC だけが掛かり、上限が 20ms ごとに 0↔0.15N·m を往復して後輪が 40〜70% 滑り、
-// ヨーレート 3.2rad/s でスピンした。ABS は制動モード (brake) のときしか働いていなかった。
+// 減速に駆動用の TC を使うと上限が 0 と満額を往復し、後輪が大きく滑ってスピンした。
 // ABS は左右共通の上限 (select-low) で、制動の場面に合わせて調整してある (abs_*)。後退中の減速は対象外
 // (ApplyAbs は前進の制動の向きだけを見ている。後退は低速の手動だけ)
 static bool ApplySpeedPiAbs(Drive* obj, float* left_nm, float* right_nm, float dt_s) {

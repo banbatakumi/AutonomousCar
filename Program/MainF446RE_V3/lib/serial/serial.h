@@ -47,7 +47,7 @@ static inline uint16_t Serial_DmaHead(Serial* self) {
 // 呼び出し側 (RasLink_Update 等) が制御周期ごとに呼ぶ前提 (でなければこの判定自体が狂う)。
 //
 // 注意: メインループを止める長時間ブロッキング処理 (src/sensing/imu.c の静止キャリブレー
-// ション中の HAL_Delay、lib/flash/flash.h の HAL_FLASHEx_Erase、IMU の I2C復旧処理等) の
+// ション中の HAL_Delay、lib/flash/flash.h の HAL_FLASHEx_Erase、IMU の起動時の I2C バス復旧等) の
 // 直後は、実際の受信バイト数によらず (baudレートの理論上限で計算した) fill_time_us を
 // 上回りやすく、保守的に「オーバーランの疑いあり」と判定されやすい。ただしこれは
 // 下の「最新位置まで読み捨てて追いつく」動作と対になっており、ブロッキング

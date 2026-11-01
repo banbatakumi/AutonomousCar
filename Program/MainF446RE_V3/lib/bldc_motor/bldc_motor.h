@@ -119,32 +119,32 @@ void BldcMotor_Transmit(BldcMotor* obj);
 void BldcMotor_Update(BldcMotor* obj);
 
 /**
- * @brief 角速度指令 [rad/s] を設定する (APP_MODE_SPEED)。
+ * @brief 角速度指令 [rad/s] を設定する (BLDC_MOTOR_MODE_SPEED)。
  */
 void BldcMotor_SetAngularSpeed(BldcMotor* obj, float rad_s);
 
 /**
- * @brief 位置指令 [rad] を設定する (APP_MODE_POSITION)。
+ * @brief 位置指令 [rad] を設定する (BLDC_MOTOR_MODE_POSITION)。
  */
 void BldcMotor_SetPosition(BldcMotor* obj, float rad);
 
 /**
- * @brief トルク指令をq軸電流 [A] で設定する (APP_MODE_TORQUE)。
+ * @brief トルク指令をq軸電流 [A] で設定する (BLDC_MOTOR_MODE_TORQUE)。
  */
 void BldcMotor_SetTorqueCurrent(BldcMotor* obj, float amp);
 
 /**
- * @brief トルク指令 [N・m] を設定する (APP_MODE_TORQUE_NM)。
+ * @brief トルク指令 [N・m] を設定する (BLDC_MOTOR_MODE_TORQUE_NM)。
  */
 void BldcMotor_SetTorqueNm(BldcMotor* obj, float nm);
 
 /**
- * @brief 制動電流指令 [A] を設定する (APP_MODE_BRAKE)。
+ * @brief 制動電流指令 [A] を設定する (BLDC_MOTOR_MODE_BRAKE)。
  */
 void BldcMotor_SetBrakeCurrent(BldcMotor* obj, float amp);
 
 /**
- * @brief 制動トルク指令 [N・m] を設定する (APP_MODE_BRAKE_NM)。
+ * @brief 制動トルク指令 [N・m] を設定する (BLDC_MOTOR_MODE_BRAKE_NM)。
  */
 void BldcMotor_SetBrakeNm(BldcMotor* obj, float nm);
 

@@ -48,7 +48,7 @@
 
 // 半径は幾何寸法 (直径60mm) から入れてある。ゴムタイヤは荷重で潰れるぶん実際の転がり半径が
 // 数%小さくなり、その誤差はそのまま車速とオドメトリの倍率誤差になる。精度が要るなら
-// メジャーで測った距離を転がして Encoder_GetAccumAngleLeftMrad() の累積値から逆算すること。
+// メジャーで測った距離を転がして Drive_GetFrontOdom0p1mm() の値から逆算すること。
 
 // 各センサ・アクチュエータの符号。左右のモータ/エンコーダは鏡像に取り付くため、
 // 「車体前進方向を正」に揃えるための符号をここで吸収する。
@@ -72,11 +72,9 @@
 //
 // ★MD 側の絶対上限 (Kt × 最大電流 10A。Kt は MD ごとの校正値) を超えないこと。MD は受け取った
 // 上限を自分の絶対上限で頭打ちにして返し、こちらは指令と完全に一致するまで MD を「使える」と
-// みなさない (Motors_NotReadyReason)。2026-10-18 に MD を自動校正し直す前の後輪 MD の絶対上限は
-// 約0.148・0.144Nm (Kt 0.0148・0.0144Nm/A) で、0.15 では届かず ARM の5秒後に md_fault で
-// ラッチして走れなくなっていた (その頃は 0.13)。校正し直した後は絶対上限が約0.2Nm (トルク指令あたりの
-// 電流が約 -29%) なので 0.15 にした (2026-10-20)。MD を校正し直して Kt が 0.015Nm/A を下回ると
-// 同じ症状になる (LOG に "torque limit not applied" と出る)。
+// みなさない (Motors_NotReadyReason)。現在の後輪 MD の絶対上限は約0.2Nm。MD を校正し直して
+// Kt が 0.015Nm/A を下回ると、上限に届かず ARM の5秒後に md_fault でラッチして走れなくなる
+// (LOG に "torque limit not applied" と出る)。
 // ★上位 (Pi) の同値: raspi/msgs/convert.py の MAX_TARGET_TORQUE_NM (GUI の store/ui.ts・
 //   vehicle.toml の speed_torque_max_nm = これ×2 は tools/fwsim/tests/test_fw_constants.py が突き合わせる)
 #define DRIVE_MAX_TORQUE_NM 0.15f
@@ -84,8 +82,8 @@
 // 上位が加速度制限を指定しなかった (COMMAND.accel_limit = 0) ときに、目標車速を動かす傾き。
 // 上位が指定した値に上限は掛けない。目標車速のランプそのものは残る (車速PIの加速度フィードフォワードが、この
 // 傾きに要るトルクを先に足す)。上限を掛けない理由: 出せる加速はタイヤのグリップで決まり、路面で
-// 変わる (フローリングの同定で約2.8m/s²、畳はそれより高い)。固定の 3.0 が残っていると、上位が
-// 同定し直してもファームを書き直すまで使えない。滑らせない役目は TC が、暴走を止める役目は
+// 変わる (フローリングの同定で約2.8m/s²、畳はそれより高い)。固定の上限があると、上位が同定し直して
+// もファームを書き直すまで使えない。滑らせない役目は TC が、暴走を止める役目は
 // トルク上限 (DRIVE_MAX_TORQUE_NM) と速度上限 (DRIVE_MAX_SPEED_M_S) が持っている。
 // 上位は config/vehicle.toml の [safety] cmd_accel_limit_m_s2 で上限を決めて毎回送る
 #define DRIVE_DEFAULT_ACCEL_M_S2 3.0f
@@ -146,7 +144,7 @@
 // ===========================================================================
 #define DRIVE_LAUNCH_REVERSE_SPEED_M_S 0.3f
 #define DRIVE_LAUNCH_MIN_STEP_M_S 0.5f
-// 目標のこれだけ手前で終える。車速の読み (前輪のローパス、τ≈10ms) と MD の遅れのぶん、全開の
+// 目標のこれだけ手前で終える。車速推定の遅れと MD の遅れのぶん、全開の
 // 加速度 (約2.5m/s^2) では実車速が読みより 0.05m/s ほど先にいる
 #define DRIVE_LAUNCH_END_MARGIN_M_S 0.05f
 #define DRIVE_LAUNCH_TIMEOUT_S 3.0f  // 最高速 (5m/s) まで約2秒
@@ -181,9 +179,9 @@
 // 再カットで必要以上に抜く (ロックなしの約85%)。比較は Pi 側リポジトリの tools/ctrl_tune/bench.py。
 //
 // ■ TC (各輪独立)
-// 駆動 (車速PI・torque_mode) と車速PIの減速の両方に掛かる。後者も対象にするのは、
-// 目標車速のランプ (3.0m/s^2) は後輪だけの制動で出せる減速度を超えるので、旋回しながら減速すると
-// 後輪がロックしてスピンし得た。
+// 駆動 (車速PI・torque_mode) と、後退中の車速PIの減速に掛かる。前進中の車速PIの減速は TC ではなく
+// ABS で絞る (ApplySpeedPiAbs)。減速に TC を使うと上限が 0 と満額を往復し
+// 後輪が大きく滑ってスピンした。
 // 片輪を絞っても、その分を反対の輪へ載せない (総駆動力が減る)。総和を保つために
 // 反対の輪を押し増すと、要求していないヨーモーメントが出る。
 //
@@ -194,7 +192,7 @@
 // (偏差は TC と小さい方を使う)。TC とは独立に ON/OFF できる。
 //
 // ■ ABS
-// 制動モード (Drive_SetBrake) の間だけ働く。上限は左右共通で、ロックしかけている側に合わせる
+// 制動モード (Drive_SetBrake) と、前進中に車速PIが減速トルクを出している間に働く。上限は左右共通で、ロックしかけている側に合わせる
 // (select-low)。左右独立にすると左右で路面μが違うときに後輪側でヨーモーメントが出てスピン方向に
 // 振れるため、実車の後輪 ABS と同じく安定性を優先する。
 // ===========================================================================
@@ -400,7 +398,7 @@ void Drive_SetSideBrake(Drive* obj, bool on);
 bool Drive_IsSideBrakeEngaged(const Drive* obj);
 
 /**
- * @brief トルクベクタリングの有効/無効を切り替える (既定は有効)。
+ * @brief トルクベクタリングの有効/無効を切り替える (既定は無効)。
  * 無効にすると左右へ常に等トルクを配分する (オープンデフ相当の挙動になる)。
  * 有効にしていても、IMU の実測ヨーレートが得られない間は介入しない。
  */
@@ -408,7 +406,7 @@ void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled);
 
 /**
  * @brief トラクションコントロール (TC本体、前輪基準のスリップ) の有効/無効を切り替える
- * (既定は有効)。片輪浮き対策 (Drive_SetWheelLiftGuardEnabled) とは独立に切り替わり、両方を
+ * (既定は無効)。片輪浮き対策 (Drive_SetWheelLiftGuardEnabled) とは独立に切り替わり、両方を
  * 無効にすると各輪のトルク上限は常に DRIVE_MAX_TORQUE_NM になる。
  */
 void Drive_SetTractionControlEnabled(Drive* obj, bool enabled);
@@ -469,7 +467,7 @@ float Drive_GetTorqueRequestRight(const Drive* obj);
 void Drive_Enable(Drive* obj);
 
 /**
- * @brief 駆動制御を無効化し、トルク指令の送信を止める (MD側は無通信0.5秒で停止モード = 惰行)。
+ * @brief 駆動制御を無効化し、トルク 0 を指令する (惰行。送信は止めない)。
  */
 void Drive_Disable(Drive* obj);
 
@@ -485,7 +483,7 @@ bool Drive_IsEnabled(const Drive* obj);
 float Drive_GetVehicleSpeed(const Drive* obj);
 
 /**
- * @brief カルマンフィルタの加速度 [m/s²]・加速度計バイアス [m/s²]・測定を弱めた累積回数 (TELEMETRY で上位に出す)。
+ * @brief カルマンフィルタの加速度 [m/s²] (TELEMETRY で上位に出す)。
  */
 float Drive_GetAccelKf(const Drive* obj);
 
@@ -494,7 +492,9 @@ float Drive_GetAccelKf(const Drive* obj);
  * TELEMETRY のスナップショットごとに1回だけ呼ぶ (呼ぶたびに前回からの分が消える)。
  */
 void Drive_TakeKfDiag(Drive* obj, float nis[SPEED_KF_DIAG_COUNT], float autocorr[SPEED_KF_DIAG_COUNT]);
+/** @brief 加速度計バイアスの推定 [m/s²]。 */
 float Drive_GetAccelBiasKf(const Drive* obj);
+/** @brief 測定を弱めた(ゲートした)累積回数。 */
 uint32_t Drive_GetKfGatedCount(const Drive* obj);
 
 /**

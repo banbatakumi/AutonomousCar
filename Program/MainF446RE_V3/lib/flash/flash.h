@@ -20,7 +20,7 @@
 // 保存する用途を将来追加する場合、別々に Flash_WriteDataToSector() を呼ぶと
 // 後から書いたデータが先に書いたデータを消去ごと巻き添えにする。そのようなケースでは
 // 呼び出し側でまとめて1つのバッファへ再構成してから一括で書き込むこと
-// (現状は steering.c の1箇所のみで、Sector 7 に単一データしか置いていないため実害なし)
+// (現状は steering.c が Sector 7、imu.c が Sector 6 に、それぞれ単一データだけを置いているため実害なし)
 static inline HAL_StatusTypeDef Flash_WriteDataToSector(uint32_t address,
                                                         uint32_t sector,
                                                         uint32_t voltage_range,
@@ -86,8 +86,7 @@ static inline void Flash_ReadData(uint32_t address, void* buffer, size_t size) {
   // 呼び出し側は構造体 (int16_t のフィールドなど) へ読むので、バッファを uint32_t* に型替えして書いてはいけない。
   // 厳密なエイリアシング規則に反し、-O2 ではコンパイラが「uint32_t の書き込みは int16_t のフィールドに届かない」と
   // みなして、呼び出し側の初期値 (ゼロ初期化) をそのまま読む。IMU の較正レコード (imu.c LoadCalibration) の
-  // オフセットがすべて 0 に読まれてチェックサム不一致になり、較正が捨てられていた (2026-10-16、record = {0} を
-  // 足した e3e40bf 以降)。memcpy はエイリアシングの対象外なので、ワード単位で読んだ値を memcpy で書き込む
+  // オフセットがすべて 0 に読まれてチェックサム不一致になり、較正が捨てられる。memcpy はエイリアシングの対象外なので、ワード単位で読んだ値を memcpy で書き込む
   uint8_t* bytes = (uint8_t*)buffer;
   size_t full_words = size / 4;
   for (size_t i = 0; i < full_words; i++) {

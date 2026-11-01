@@ -17,21 +17,20 @@ make run      # make -j12 後、SWDFlash.sh (ST-Link, STM32_Programmer_CLI) で 
 ```
 
 - `Makefile` は CubeMX 生成。ファイル追加時は `.ioc` 再生成か `C_SOURCES` / `C_INCLUDES` を手編集。
-- 実機向けの単体テストは無い。`src/control` (Drive・TorqueVectoring・ControlParams) は `host/` でホスト向けにコンパイルでき、上位側リポジトリの `tools/ctrl_tune` が車両モデルと閉ループにして使う (`host/README.md`)。**`src/control` のロジックを変えたら、前後で上位側の `python -m tools.ctrl_tune.bench` と `python -m pytest tools/ctrl_tune/tests` を回す。**
+- 実機向けの単体テストは無い。`src/control` は `host/` でホスト向けにコンパイルでき、上位側リポジトリの `tools/ctrl_tune` が車両モデルと閉ループにして使う (`host/README.md`)。**`src/control` のロジックを変えたら、前後で上位側の `python -m tools.ctrl_tune.bench` と `python -m pytest tools/ctrl_tune/tests` を回す。**
 
 ## 現在の状態
 
-- プロトコル: `RAS_PROTOCOL_VERSION` = 0x001D (v0.29)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.29_delta.md` (v0.24〜v0.26 は車速のカルマンフィルタ。1つの文書にまとめてある)。
-- **2026-11-01 書き込み済み (`fb65b6f`。走行では未検証。ワイヤ形式は不変。直前の Flash の控えは Mac の `~/stm32_backup_20261101/before_toyota_fix.bin`)**: 会場の試走の対処。(1) 前進中に車速PIが減速トルクを出す間は TC ではなく ABS で絞る (`ApplySpeedPiAbs`。3.9m/s から車速指令0で止めたとき、TC の上限が 0↔0.15N·m を往復して後輪が 40〜70% 滑りスピンした。上位の `tools/fwsim` の `decel_pi_manual*` で滑っていた割合 0.33→0.05)。(2) TELEMETRY の `odom_dist` を、鏡像と折り返しを直した前輪の増分から積む (`Drive_GetFrontOdom0p1mm`。Encoder の累積は生の向き)。(3) VERSION の `build_epoch` にビルド時刻、起動時の LOG (INFO "firmware build <git>[+dirty] epoch <秒>") に git のコミット (`src/comm/build_info.c`。Makefile が埋め込む。★CubeMX で Makefile を作り直したら規則を書き足す)。
-- **2026-10-31 書き込み済み・走行では未検証 (ワイヤ形式は不変。直前の Flash の控えは Mac の `~/stm32_backup_20261031/before_kf_resync.bin`。書き込み前のファームは作業ツリーからこの修正だけを抜いたものとバイト一致)**: 車速 KF が一度外れると戻れず車速が 32.767 (TELEMETRY の上限) に張り付く不具合の修正。ゲートが `SPEED_KF_RESYNC_S` (20ms) 続いたら走行距離から測り直す・`SpeedKf_ExpectedDistanceStep` をその周期の予測の増分に (累積の残差を含めない)・|車速| > 20m/s で初期化。試験は上位側の `tools/fwsim/tests/test_speed_kf_divergence.py`。
-- **2026-10-31 作業ツリーだけ (未書き込み・ビルドとホストのテストのみ。ワイヤ形式は不変)**: 前輪エンコーダの読みの鏡像の補正 (`src/control/encoder_direction.c`)。会場の試走で、毎周同じ場所で前輪の左右の生の角度が「2π − 本来の角度」になり (AS5600 の DIR が切り替わったときの出方)、車速 KF が -1.5〜-2.0m/s になっていた (LiDAR では前進、後輪の周速と一致)。後輪と車速の推定 (前周期の KF) が同じ向きに 0.3m/s 以上のときだけ、毎回前輪の増分の向きをそれに合わせ、切り替わりの飛びは後輪の距離で置き換える (後輪だけを基準にすると、シムの低μの回生で後輪が後ろへ回り車速が 2.7m/s 狂った)。10ms の窓で向き (sign) も反転し、低速と周速の報告に使う。推定が既に狂っている場合の立て直しに、100ms の窓で前輪と後輪が逆向き・大きさ 0.6〜1.7 倍なら反転する。反転したら LOG (WARN "front encoder reading reversed") で知らせる。`odom_dist` (Encoder の累積) は直していない。試験は上位の `tools/fwsim/tests/test_front_encoder_direction.py` (実記録の抜粋入り)。
-- **v0.29 は作業ツリーだけ (2026-10-19、未書き込み・ビルドとホストのテストのみ)**: 制動の減速度 `brake_decel_m_s2` (0x0101) と MD のトルクの遅れ `md_torque_lag_s` (0x0102) を `CONFIG_SET` の実行時パラメータにし、`VEHICLE_BRAKE_DECEL_M_S2`・`VEHICLE_MD_TORQUE_TAU_S` を消した (自動停止の停止距離・DISARM 後の制動の上限に使う。値は上位の `vehicle.toml` の校正の結果。`docs/pi_uart_protocol_v0.29_delta.md`)。
-- **v0.28 を 2026-10-19 に書き込み済み** (上位が `protocol_version` 0x001C・調整値 41 項目の一致を確認。v0.27 の Flash の控えは Mac の `~/stm32_backup_v027/backup_v027.bin`。駆動系は未検証): ジャイロ z 軸の感度の補正 `imu_gyro_z_scale` (`CONFIG_SET` 0x00F1。`imu.c` がバイアスを引いた後の z に掛ける。既定 1 = v0.27 と同じ動き)。値は上位の `vehicle.toml` の `[control]` に手で置く (校正の試験は無い)。
-- **作業ツリーにあって未書き込み・実機未検証 (v0.27)**: 前輪エンコーダの校正 (`lib/encoder_cal`、`enc_*`。出力の範囲と1回転の周期誤差を `Encoder` が直す)・車速のカルマンフィルタの調整値 (`kf_*`。`kf_sigma_a_per_m_s` は新設) を `CONFIG_SET` の実行時パラメータに。TELEMETRY の `front_angle` は校正前の生の読みに。既定値は v0.26 と同じ動き。値は上位の車両の校正 (`tools/calib/encoder.py`・`kf.py`) が決める。
-- STM32 は v0.26 (車速のカルマンフィルタ入り、2026-10-17) を書き込み済み (上位が `protocol_version` 0x001A を確認)。**車速は前輪の微分+LPF ではなく走行距離と加速度計のカルマンフィルタ** (`src/control/speed_kf.c`。調整値は v0.27 から `CONFIG_SET` で上位が送る。既定は経験値を含む v0.26 の値。検定は上位の `raspi/tools/kf_consistency.py`、TELEMETRY の `kf_z_rms_*`・`kf_rho_*`)。**MD 側に v0.19 以降 (ARM の「止める」約束・ブレーキホールド・ローンチ・車速PIの加速度FF・ランプ上限廃止) の対応版を書き込んだかは未確認**。
-- **実機未検証の機能**: トルクベクタリング (荷重比例の配分)、ステアのリンク換算 (v0.18)、自動停止 (LiDAR 主・超音波補助)、LIMITS パケット、ブレーキホールドの移行条件、ローンチ、加速度FF、省電力化 (超音波/LiDAR PWM 停止)。ABS・TC・片輪浮き対策のしきい値/ゲインは机上値 (上位側の車両モデルで最適化した初期値)。ESS ブレーキ灯のしきい値は未実測。自動停止の遅延 (`VEHICLE_AUTO_STOP_DELAY_S`) は LiDAR の1回転＋MD のトルクの立ち上がりから求めた値で、通しでは未実測。
-- **作業ツリーにあって未書き込み・実機未検証**: フェイルセーフ後の ARM の立ち上がり要求 (`rearm_required`)、MD 異常のデバウンス、自動停止を止まるまで保持、brake/torque_mode 中の目標車速の追従、I2C BUSY 時の IMU 読み出しの見送り、超音波の途絶の無効化、ウォッチドッグ復帰時の演出の省略。ワイヤ形式は変えていないので `protocol_version` は 0x0017 のまま。
-- **作業ツリーにあって未書き込み (制御定数の根拠の整理、ワイヤ形式は不変)**: 自動停止の減速度を手置きの 3.0 から同定した制動の減速度 (`VEHICLE_BRAKE_DECEL_M_S2` 2.47) へ (停止距離が 2m/s で約15cm 伸びる＝早めに止まる)、自動停止の遅延・センサ取付オフセット・矩形の幅・DISARM 後の制動の上限を車体寸法と同定値の式に、各輪の周速のローパスを係数ではなく時定数 (`DRIVE_LPF_TAU_*`) で持ち実際の経過時間から係数を求める形に、加速度FFの時定数を上位の指令周期 (`DRIVE_HOST_COMMAND_PERIOD_S`) に。写しの値 (車体寸法・同定値) は上位の `tools/ctrl_tune/tests/test_fw_constants.py` が `config/vehicle.toml` と突き合わせる。
+- プロトコル: `RAS_PROTOCOL_VERSION` = 0x001D (v0.29)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。変更点は `docs/pi_uart_protocol_v0.19_delta.md` 〜 `v0.29_delta.md` (v0.24〜v0.26 は `v0.26_delta.md` に1つにまとめてある)。
+- **書き込み済み: `fb65b6f` (2026-11-01)**。それ以前のコミット (v0.29 まで・下記の会場の試走の対処を含む) は全て入っている。起動時の LOG と VERSION の `build_epoch` で書き込まれたビルドを確認できる (`src/comm/build_info.c`。Makefile が git のコミットを埋め込む。★CubeMX で Makefile を作り直したら規則を書き足す)。Flash の控え (Mac): `~/stm32_backup_20261101/before_toyota_fix.bin` (直前)、`~/stm32_backup_20261031/before_kf_resync.bin`、`~/stm32_backup_v027/backup_v027.bin`。
+- 2026-11-01 の会場の試走で出た問題への対処 (走行では未検証。試験は上位側の `tools/fwsim`):
+  - 車速 KF が外れると戻れず 32.767 m/s に張り付く → ゲートが `SPEED_KF_RESYNC_S` 続いたら走行距離から測り直し、|車速| > 20m/s で初期化 (`speed_kf.c`)。
+  - 前輪エンコーダ (AS5600) の読みが「2π − 本来の角度」に鏡像化し車速が負になる → 後輪と前周期の KF の向きで前輪の増分の向きを直す (`src/control/encoder_direction.c`。反転したら LOG WARN)。TELEMETRY の `odom_dist` もこの補正後の増分から積む (`Drive_GetFrontOdom0p1mm`。`Encoder` の累積は生の向きのまま)。
+  - 前進中の車速PIの減速トルクで後輪がスピン → その間は TC ではなく ABS で絞る (`ApplySpeedPiAbs`)。
+- 車速は前輪の走行距離と加速度計のカルマンフィルタ (`src/control/speed_kf.c`)。前輪エンコーダの校正 (`lib/encoder_cal`、`enc_*`)・KF の調整値 (`kf_*`)・ジャイロ z の感度 (`imu_gyro_z_scale`)・制動の減速度 (`brake_decel_m_s2`)・MD のトルクの遅れ (`md_torque_lag_s`) は `CONFIG_SET` で上位 (`vehicle.toml`) が送る。TELEMETRY の `front_angle` は校正前の生の読み。
+- **MD 側に v0.19 以降 (ARM の「止める」約束・ブレーキホールド・ローンチ・車速PIの加速度FF・ランプ上限廃止) の対応版を書き込んだかは未確認**。
+- **走行で検証できていない機能**: トルクベクタリング (荷重比例の配分)、ステアのリンク換算、自動停止 (LiDAR 主・超音波補助)、LIMITS パケット、ブレーキホールドの移行条件、ローンチ、加速度FF、省電力化 (超音波/LiDAR PWM 停止)、フェイルセーフ後の ARM の立ち上がり要求 (`rearm_required`)、MD 異常のデバウンス。ABS・TC・片輪浮き対策のしきい値/ゲインは上位側の車両モデルで最適化した値で、実走での詰めは未了。ESS ブレーキ灯のしきい値は未実測。自動停止の遅延 (`VEHICLE_AUTO_STOP_SENSOR_DELAY_S` (LiDAR 1回転) + `md_torque_lag_s`) は通しでは未実測。
+- 制御定数のうち車体寸法・同定値の写しは、上位の `tools/ctrl_tune/tests/test_fw_constants.py` が `config/vehicle.toml` と突き合わせる。
 - 実機確認済み: LiDAR 給電の ARM 連動、後輪の位置保持。
 
 ## 走行制御・安全の要点
@@ -39,9 +38,9 @@ make run      # make -j12 後、SWDFlash.sh (ST-Link, STM32_Programmer_CLI) で 
 - 起動直後と **Pi 未接続/DISARM の間は `DRIVE_POWER`・`LIDAR_POWER` とも OFF が既定**。ボタン1を押しながら起動したときだけステア原点較正のため `Setup()` で一時的に駆動電源を入れ、較正後に切る。ステア中心が未較正の間は駆動電源を入れず、`Steering_SetAngleRad` も何も送らない。
 - 優先順位 (`src/vehicle/vehicle.c`): ①緊急停止ラッチ中 → ②COMMAND 生存中は上位指令 → ③それ以外はフェイルセーフ (`ApplyFailsafe`: 最大制動で停車保持。ホーン・パッシング・ウィンカーも解除)。**フェイルセーフを一度通ったら (緊急停止・COMMAND 途絶・起動直後)、上位が ARM を一度下ろして立て直すまで `armed` にしない** (`rearm_required`。ARM を立てたままの COMMAND で、解除・復帰した瞬間に走り出さないため。受け付けなかったら LOG で知らせる)。
 - 安全層: ①`DRIVE_POWER` のハード遮断 (過電流でラッチ) → ②IWDG 500ms → ③ハートビート断 50ms で緊急停止 (ラッチ。**ハートビートが戻った状態でボタン2を押すまで解除しない**。駆動電源は切らない: 切ると MD が制動できず惰行するため。ただし停車して `VEHICLE_FAILSAFE_POWER_OFF_S` (30秒) 経ったら過熱・電池消耗の防止に切る。ARM で戻る) → ④COMMAND 途絶 100ms で自動ブレーキ。ハートビートを一度も検出していない間は ③が働かないので、`TELEMETRY.flags` の `NO_HEARTBEAT` (bit25) を立てる (上位は ARM を通さない)。
-- 「止める」: `Coast()` は送信停止ではなくトルク0を送り続ける (`BldcMotor_Stop` を止める手段に使わない)。走行中に ARM が外れたら、停車 (`DRIVE_STANDSTILL_SPEED_M_S`) まで駆動電源を切らず最大制動 (`UpdateDisarmBraking`、上限 `VEHICLE_DISARM_BRAKE_TIMEOUT_S`)。3台の MD の健全性を毎周期監視し (`UpdateMdHealth`)、揃うまで `armed` にしない・走行中に `VEHICLE_MD_FAULT_DEBOUNCE_S` 続けて崩れたら両後輪を最大制動して `md_fault` をラッチ。
+- 「止める」: `Coast()` は送信停止ではなくトルク0を送り続ける (`BldcMotor_Stop` を止める手段に使わない)。走行中に ARM が外れたら、停車 (`DRIVE_STANDSTILL_SPEED_M_S`) まで駆動電源を切らず最大制動 (`UpdateDisarmBraking`、上限 `DisarmBrakeTimeoutS()` = 最大車速 / `brake_decel_m_s2` × 余裕)。3台の MD の健全性を毎周期監視し (`UpdateMdHealth`)、揃うまで `armed` にしない・走行中に `VEHICLE_MD_FAULT_DEBOUNCE_S` 続けて崩れたら両後輪を最大制動して `md_fault` をラッチ。
 - ブレーキホールド: 制動して |車速| が `VEHICLE_BRAKE_HOLD_SPEED_M_S` 未満の状態が `VEHICLE_BRAKE_HOLD_DELAY_S` 続いたら後輪の位置保持へ (`UpdateBrakeHold`)。サイドブレーキ (`flags2` bit0) は速度に関わらず即座に位置保持し、brake・torque_mode・速度より優先。
-- 駆動 (`src/control/drive.c`): 車速 PI (+加速度FF) → 左右配分 (等配分 + TV の差) → スリップ制限 (TC/ABS/片輪浮き対策) → MD へトルク指令。brake・torque_mode の間は目標車速を実車速に合わせ続け、車速指令へ戻ったら今の車速からランプで詰める。車速は前輪エンコーダの走行距離 (非駆動輪) と加速度計のカルマンフィルタ (`speed_kf.c`)。brake は車速PIを迂回して MD の制動モードへトルクを直接渡す。torque_mode も PI を迂回するが TC/TV は掛かる。brake と torque_mode が同時なら brake が勝つ。ABS は制動モードのみ、TC は負トルク (PI の減速) にも掛かる。詳細・定数は `drive.h` のコメント。
+- 駆動 (`src/control/drive.c`): 車速 PI (+加速度FF) → 左右配分 (等配分 + TV の差) → スリップ制限 (TC/ABS/片輪浮き対策) → MD へトルク指令。brake・torque_mode の間は目標車速を実車速に合わせ続け、車速指令へ戻ったら今の車速からランプで詰める。車速は前輪エンコーダの走行距離 (非駆動輪) と加速度計のカルマンフィルタ (`speed_kf.c`)。brake は車速PIを迂回して MD の制動モードへトルクを直接渡す。torque_mode も PI を迂回するが TC/TV は掛かる。brake と torque_mode が同時なら brake が勝つ。ABS は制動モードと前進中の車速PIの減速 (`ApplySpeedPiAbs`。その間 TC は使わない)、TC は駆動と後退中の車速PIの減速に掛かる。TC・TV は上位が有効にするまで無効。詳細・定数は `drive.h` のコメント。
 - 調整パラメータは `src/control/control_params.h` の `CONTROL_PARAM_TABLE` が唯一の定義 (名前・`param_id`・既定値・範囲)。Flash には保存せず、上位が接続のたびに `CONFIG_SET` で送る。
 - 自動停止 (`COMMAND.flags` bit7): 動的停止距離 `d_stop = v・遅延 + v²/(2a) + margin` 以内、左右 ±15cm (半車幅+余裕。扇形だと遠方でコースの壁を拾う) の矩形に LiDAR 点が3点以上 (`Lidar_QueryCorridor`)、または超音波 (フォールバック/至近の独立トリガー) で作動。しきい値は車体先端基準 (取付オフセット加算)。静止時の前後判定は上位が指令した方向へフォールバック (デッドロック回避)。一度作動したら止まるまで解除しない (停止距離は車速で縮むので、判定だけだと解除と再作動を繰り返す)。緊急停止ラッチは LiDAR を使わない。ARM 中に LiDAR も前後の超音波も使えない状態が3秒続くと `AUTO_STOP_BLIND` (bit26)。超音波は生値の方が近ければ生値で判定 (LPF の遅れ対策)。判定は `AutoStopDistanceCm()` / `IsAutoStopObstacleAhead()`。
 - 灯火: ウィンカー要求は `Vehicle` が `winker_request` として保持するだけで、`Lighting_SetWinker()` を呼ぶのは `Indicator_Update()` (`src/hmi/indicator.c`) のみ (フォールト時のハザードを優先するため調停を一箇所に集約)。ブレーキ灯は制動モードまたは実減速度で点灯、高速点滅 (ESS) は制動モードかつ急減速のとき (`ApplyBrakeLight()`)。
@@ -59,13 +58,13 @@ src/         車両固有ロジック。依存は一方向: app → vehicle / hm
   vehicle/   上位指令・緊急停止・フェイルセーフの調停、舵角レート制限、ホーン・ブレーキ灯などの上位指令由来の灯火、自動停止
   hmi/       機体状態の表示 (電圧の呼吸 LED、フォールト/緊急停止のハザード)
   lighting/  前照灯・尾灯・ウィンカー/ハザード
-  sensing/   計測のみ: Encoder (前輪アナログ絶対角)・Imu (MPU6050+AHRS、軸変換・Flash較正)・Lidar (LD06 を1度ビン×360点→30点セクタ)
+  sensing/   計測のみ: Encoder (前輪アナログ絶対角・校正)・Imu (MPU6050+AHRS、軸変換・Flash較正)・Lidar (LD06 を1度ビン×360点→30点セクタ)・RangeSensor (前後超音波+LPF)
   power/     電圧・電流・温度の計測、DRIVE_POWER/LIDAR_POWER の制御、異常監視 (PowerFault)
-  control/   Motors (3 MD 通信と健全性)・Steering (原点較正・リンク換算)・Drive・TorqueVectoring・ControlParams
-  comm/      RasLink (Pi との UART プロトコル)・Heartbeat (RAS_SIG 100Hz 矩形波監視)・Telemetry (各モジュールの値を TELEMETRY/STATS/LIDAR に詰める層)
+  control/   Motors (3 MD 通信と健全性)・Steering (原点較正・リンク換算)・Drive・SpeedKf (車速)・EncoderDirection (前輪の鏡像補正)・TorqueVectoring・ControlParams
+  comm/      RasLink (Pi との UART プロトコル)・Heartbeat (RAS_SIG 100Hz 矩形波監視)・Telemetry (各モジュールの値を TELEMETRY/STATS/LIDAR に詰める層)・BuildInfo (git コミット・ビルド時刻)
 host/        src/control のホスト向けビルド (`host/README.md`)。実機ファームには含まれない
 lib/         特定の車両に依存しない汎用ライブラリ (多くはヘッダオンリー、Module_FunctionName 形式)
-  adc_dma ahrs bldc_motor buzzer crc8 crc16 digitalinout filter flash ld06 mpu6050 mymath pid pwm_out serial timer ultrasonic watchdog
+  adc_dma ahrs bldc_motor buzzer crc8 crc16 digitalinout encoder_cal filter flash ld06 mpu6050 mymath pid pwm_out serial timer ultrasonic watchdog
 docs/        README.md を参照
 ```
 
@@ -81,7 +80,7 @@ docs/        README.md を参照
 
 ## 通信
 
-- **Pi**: USART1 1000000bps。フレームは SYNC(2)/TYPE/SEQ/LEN/PAYLOAD/CRC16。仕様は `src/comm/ras_link.h` (flags・param_id・型)、`ras_link.c` (LEN・レイアウト)、`docs/pi_uart_protocol_v0.19〜v0.23_delta.md`。ベース仕様と v0.5〜v0.18 の差分は `docs/archive/`。送信は優先度つきキュー (PONG > TELEMETRY > LIDAR > CONFIG_ACK 等 > LOG)。USART1 の NVIC と `USART1_IRQHandler` は RasLink が持つ (CubeMX で USART1 割り込みを有効にすると多重定義になる)。
+- **Pi**: USART1 1000000bps。フレームは SYNC(2)/TYPE/SEQ/LEN/PAYLOAD/CRC16。仕様は `src/comm/ras_link.h` (flags・param_id・型)、`ras_link.c` (LEN・レイアウト)、`docs/pi_uart_protocol_v0.19〜v0.29_delta.md`。ベース仕様と v0.5〜v0.18 の差分は `docs/archive/`。送信は優先度つきキュー (PONG > TELEMETRY > LIDAR > CONFIG_ACK 等 > LOG)。USART1 の NVIC と `USART1_IRQHandler` は RasLink が持つ (CubeMX で USART1 割り込みを有効にすると多重定義になる)。
 - **RAS_SIG (PB12) と ECHO_FRONT (PA12) は同じ EXTI ライン12** のため外部割り込みが使えず、RAS_SIG はポーリング。
 - **MD**: USART2 (ステア) / USART3 (左後輪) / UART4 (右後輪)、1000000bps。**ボーレートは MD 側と同時に変えること** (片側だけだと全フレームが化ける)。指令 6バイト (モード・指令値・トルク上限、CRC-8)、状態 11バイト (トルク上限をエコーバック)。CRC 不一致は破棄して前回値を保持。トルク上限 0 は「無制限」ではなく「動かない」。速度上限は持たない。指令は毎周期 (2kHz)、MD は状態を 500us ごとに返す。MD の通信監視 (`COMM_OK`、100ms 無応答) は Motors が持つ。
 

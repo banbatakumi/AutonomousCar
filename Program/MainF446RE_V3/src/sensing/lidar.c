@@ -90,7 +90,7 @@ static void PlaceInterpolated(Lidar* obj, float angle_deg, uint16_t distance_mm,
   if (gap < -180.0f) gap += 360.0f;  // 360度の折り返し
 
   if (!obj->has_prev_point || gap <= 0.0f || gap > LIDAR_INTERP_MAX_GAP_DEG) {
-    // 補間できない (起動直後・欠落・逆行) ので従来どおり最も近いビンへ置く
+    // 補間できない (起動直後・欠落・逆行) ので最も近いビンへ置く
     PlacePoint(obj, angle_deg, distance_mm, intensity, t_us);
   } else {
     float a0 = obj->prev_angle_deg;

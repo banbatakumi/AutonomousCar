@@ -164,8 +164,7 @@ typedef struct {
 // 単なる軸の符号反転では表せず、X と Y の入れ替えが必要になる。
 //   機体X(前) = -chip_y,  機体Y(左) = -chip_x,  機体Z(上) = -chip_z
 //
-// ({+chip_y, +chip_x, -chip_z} は X/Y が逆で誤り。システム同定ログで確認: 前進加速で accel_x<0、
-// 左旋回で accel_y<0 になる。)
+// ({+chip_y, +chip_x, -chip_z} は誤り: 前進加速で accel_x<0、左旋回で accel_y<0 になる。)
 // pitch は Ahrs が右手系 (機首下げが正) で返すため、ProcessSample で符号を反転して
 // 「機首上げが正」にそろえている。
 //

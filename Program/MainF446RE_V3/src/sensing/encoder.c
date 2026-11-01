@@ -64,9 +64,7 @@ static void Accumulate(int32_t* accum_mrad, float* carry_mrad, float gap_rad) {
 #define ENCODER_MAX_DT_S 0.015f
 
 void Encoder_Update(Encoder* obj) {
-  // 角度を読む瞬間の時刻。dt は前回の「角度を読んだ瞬間」との差で、関数の処理時間も含めて正しい間隔になる。
-  // 以前は Timer を関数の最後でリセットしていたため、dt が処理時間 (約9us) ぶん短く、車速が約1.8% (500/491.5)
-  // 速く出ていた (記録の odom_dist・後輪周速との比、SLAM との比で確認)。us への切り捨ても無くした
+  // dt は前回の「角度を読んだ瞬間」との差。処理時間 (約9us) を dt から落とすと車速が約1.8%速く出る
   uint32_t now_cycles = DWT->CYCCNT;
   float dt_s = (float)(now_cycles - obj->last_cycles) / (float)(Timer_GetCyclesPerUs() * 1000000U);
   if (dt_s <= 0.0f) return;

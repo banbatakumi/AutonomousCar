@@ -40,9 +40,8 @@
 
 // Raspberry Pi (上位) との通信。USART1、1000000bps (APB2 45MHz (HCLK 180MHz の 1/4) で USARTDIV = 45M/(16×1M) = 2.8125 = 2+13/16 となり誤差 0%)。
 // 受信リングバッファは制御ループが一度でも詰まると取りこぼすため大きめに取る。
-// Serial_Available() はバッファが線速で満杯になる時間 (サイズ×10bit÷ボーレート) より長く
-// ポーリングが空くと上書きとみなして読み捨てるので、ボーレートを4倍にした分サイズも4倍にし、
-// その猶予を 250000bps・512バイトのときと同じ約20msに保つ
+// Serial_Available() はバッファが線速で満杯になる時間 (サイズ×10bit÷ボーレート ≒ 20ms) より長く
+// ポーリングが空くと上書きとみなして読み捨てるので、その猶予が約20msになるサイズにしてある
 #define RAS_SERIAL_RX_BUF_SIZE 2048
 
 // LD06 LiDAR (USART6, 230400bps)。約17.6kB/s 流れ込むため、制御周期 500us の間に
@@ -257,7 +256,7 @@ void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* hi2c) {
 
 static void UpdateSensors() {
   Encoder_Update(&encoder);
-  // ジャイロのバイアス追従は車が止まっているときだけ (Drive_GetVehicleSpeed は前輪エンコーダ由来)
+  // ジャイロのバイアス追従は車が止まっているときだけ
   Imu_SetVehicleStill(&imu, fabsf(Drive_GetVehicleSpeed(&drive)) < DRIVE_STANDSTILL_SPEED_M_S);
   Imu_Update(&imu);
   // 自動停止が超音波を見るのは上位指令を ARM として適用している周期だけなので、それと同じ
@@ -271,13 +270,11 @@ static void UpdateSensors() {
   }
   Lidar_Update(&lidar);
 
-  // IMU の I2C 復旧 (imu.c の StepRecovery) は制御周期ごとに1段階ずつ進むので、通常は
-  // メインループを止めない。ただし I2C バスが
-  // 電気的に張り付いていると HAL が1往復あたり 25ms 待つ。その間ハートビートのポーリングも
-  // 止まり、直後にエッジを偶然取りこぼすと誤って緊急停止がラッチされうるので、長く止まった
-  // ときだけ基準時刻をリセットする (実際の断線・Pi側の異常を見逃す窓ができるわけではない。
-  // 止まっていた間はそもそも判定できていなかった時間なので、その分を「途絶していない」として
-  // 扱うだけ)
+  // IMU の I2C 復旧 (imu.c の StepRecovery) は制御周期ごとに1段階ずつ進むので、通常はメインループを
+  // 止めない。ただし I2C バスが電気的に張り付いていると HAL が1往復あたり 25ms 待つ。その間
+  // ハートビートのポーリングも止まり、直後にエッジを偶然取りこぼすと誤って緊急停止がラッチされうるので、
+  // 長く止まったときだけ基準時刻をリセットする (止まっていた間は判定できていなかった時間なので、
+  // その分を「途絶していない」として扱うだけ。実際の断線の検出は妨げない)
   if (Imu_ConsumeRecoveryBlocked(&imu)) {
     Heartbeat_ResetBaseline(&heartbeat);
   }

@@ -109,7 +109,7 @@ static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
   return physical_cm + config->auto_stop_margin_cm;
 }
 
-// 実際の進行方向 (前輪エンコーダから推定した実車速) について、動的停止距離以内に障害物が
+// 実際の進行方向 (カルマンフィルタの実車速) について、動的停止距離以内に障害物が
 // あるかを見る。逆方向のセンサは見ないため、例えば前方に障害物があっても後退はできる。
 // 上位が指令した target_speed/target_torque の符号ではなく実車速を使うのは、
 // 「前進中に後退を指令」した瞬間でも実車はまだ前進しており、その一瞬に後方センサへ
@@ -126,8 +126,6 @@ static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
 // 「車体先端から障害物まで」を基準に判定する (VEHICLE_AUTO_STOP_*_OFFSET_CM 参照)
 static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
                                     float desired_direction) {
-  // 前後判定は符号反転への追従速度が重要なため、PID/上位報告用の重いLPF
-  // (Drive_GetVehicleSpeed, τ≈10ms) ではなく応答の速い方 (τ≈5ms) を使う
   float speed = Drive_GetVehicleSpeed(obj->drive);
   float abs_speed = (speed >= 0.0f) ? speed : -speed;
   bool forward = (abs_speed > VEHICLE_AUTO_STOP_DIRECTION_DEADBAND_M_S)
@@ -140,10 +138,8 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
   float us_offset_cm = forward ? VEHICLE_AUTO_STOP_ULTRASONIC_FRONT_OFFSET_CM
                                 : VEHICLE_AUTO_STOP_ULTRASONIC_REAR_OFFSET_CM;
 
-  // Lidar_IsOk() (rx_count==0 か、300ms以上パケット自体が来ていない) を先に見ておく。
-  // 未受信セクタの sector_update_us は起動直後から stale 初期化されているため
-  // roi.fresh_count は本来ここが無くても正しく0になるが、センサ未接続時に
-  // Lidar_QueryRoi へ触れず即座に超音波フォールバックへ倒すことを明示する
+  // Lidar_IsOk() (rx_count==0 か、300ms以上パケット自体が来ていない) を先に見て、センサ未接続時は
+  // Lidar_QueryCorridor へ触れず即座に超音波フォールバックへ倒す
   LidarRoiResult roi = {0, 0};
   if (Lidar_IsOk(obj->lidar)) {
     roi = Lidar_QueryCorridor(obj->lidar, lidar_center_deg, VEHICLE_AUTO_STOP_LIDAR_HALF_WIDTH_CM,
@@ -181,8 +177,8 @@ static bool UpdateBrakeHold(Vehicle* obj, bool braking) {
 
 // 走行中に上位の ARM が外れたら、停車するまで駆動電源を入れたまま最大制動を続ける。
 // ARM ビットでそのまま駆動電源を切ると MD ごと落ちて制動できず、惰行で止まるのを待つことになる
-// (上位は通信途絶・デッドマンで「安全側」として DISARM を送ってくる)
-// 走行中に ARM が外れたとき、停車を待って駆動電源を切るまでの時間の上限 [s] (vehicle.h の説明)
+// (上位は通信途絶・デッドマンで「安全側」として DISARM を送ってくる)。
+// 停車を待つ時間の上限は VEHICLE_STOP_TIME_MARGIN (vehicle.h) の説明を参照
 static float DisarmBrakeTimeoutS(const Vehicle* obj) {
   return DRIVE_MAX_SPEED_M_S / obj->drive->params.brake_decel_m_s2 * VEHICLE_STOP_TIME_MARGIN;
 }
@@ -518,11 +514,8 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors,
   obj->brake_light_decel_m_s2 = 0.0f;
   obj->brake_light_decel_on = false;
 
-  // Setup() は LIDAR_POWER を意図的に投入しない (Pi 未接続/DISARM の間は LiDAR も
-  // 無給電にする既定のため、実機で確認済み)。ここを true にすると UpdateLidarPower() の
-  // if (!obj->lidar_on) が常に偽になり、初回 ARM で Power_SetLidarPower() が一度も
-  // 呼ばれず給電されないまま放置される不具合になるため、実際の起動時給電状態 (false) に
-  // 合わせておく
+  // Setup() は LIDAR_POWER を投入しない (Pi 未接続/DISARM の間は LiDAR も無給電が既定)。
+  // true にすると UpdateLidarPower() の if (!obj->lidar_on) が偽になり、初回 ARM で給電されない
   Timer_Init(&obj->lidar_idle_timer);
   obj->lidar_on = false;
   // Lidar_Init() は回転 PWM を duty 40% で出し始めるが、給電は ARM まで入らないので止めておく
