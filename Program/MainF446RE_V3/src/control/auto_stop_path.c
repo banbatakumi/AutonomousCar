@@ -74,6 +74,11 @@ bool AutoStopPath_Contains(const AutoStopPath* obj, float x_m, float y_m) {
   return x < 0.0f || toward >= limit_cos_r;
 }
 
+bool AutoStopPath_IsInsideBody(float x_m, float y_m, float body_front_x_m, float body_rear_x_m,
+                               float body_half_width_m) {
+  return x_m > body_rear_x_m && x_m < body_front_x_m && fabsf(y_m) < body_half_width_m;
+}
+
 float AutoStopPath_Curvature(float road_wheel_angle_rad, float wheelbase_m) {
   return tanf(road_wheel_angle_rad) / wheelbase_m;
 }

@@ -111,10 +111,16 @@ static float AutoStopDistanceCm(float speed_m_s, const RasConfig* config) {
   return physical_cm + config->auto_stop_margin_cm;
 }
 
-// LiDAR の点 (LiDAR 基準・車両の向き [cm]) を base_link [m] に直して予想進路と比べる
+// LiDAR の点 (LiDAR 基準・車両の向き [cm]) を base_link [m] に直して予想進路と比べる。
+// 車体の外形の内側の点 (車体に立てた支柱・部品の反射) は数えない (予想進路は車体の真横も含むため)
 static bool IsInAutoStopPath(const void* ctx, float x_cm, float y_cm) {
-  return AutoStopPath_Contains((const AutoStopPath*)ctx, VEHICLE_LIDAR_X_M + x_cm * 0.01f,
-                               y_cm * 0.01f);
+  float x_m = VEHICLE_LIDAR_X_M + x_cm * 0.01f;
+  float y_m = y_cm * 0.01f;
+  if (AutoStopPath_IsInsideBody(x_m, y_m, VEHICLE_BODY_FRONT_X_M, VEHICLE_BODY_REAR_X_M,
+                                VEHICLE_BODY_HALF_WIDTH_M)) {
+    return false;
+  }
+  return AutoStopPath_Contains((const AutoStopPath*)ctx, x_m, y_m);
 }
 
 // 実際の進行方向 (カルマンフィルタの実車速) について、動的停止距離以内に障害物が

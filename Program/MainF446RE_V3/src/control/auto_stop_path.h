@@ -29,6 +29,7 @@
 //   - 後退は x を反転して同じ式で見る (舵が同じなら後退でも回転の中心は同じ)。先端は後端になる
 //   - 車体の横・後ろ (角度の下限) は見ない。呼び出し側が進行方向の半面の点だけを渡すこと
 //     (車体の真横で幅の内側にある点は「当たる」に数える。曲げずに置いた矩形のときと同じ)
+//   - 車体の外形の内側の点も「当たる」になる。呼び出し側が AutoStopPath_IsInsideBody で先に除くこと
 // ===========================================================================
 
 // これ未満の |曲率| [1/m] は直進の矩形で見る
@@ -64,6 +65,14 @@ void AutoStopPath_Init(AutoStopPath* obj, bool forward, float curvature_1_m, flo
  * @brief base_link 座標の点 (x_m, y_m) が予想進路に入るか。
  */
 bool AutoStopPath_Contains(const AutoStopPath* obj, float x_m, float y_m);
+
+/**
+ * @brief base_link 座標の点 (x_m, y_m) が車体の外形 (前後 body_rear_x〜body_front_x、左右 ±body_half_width) の
+ * 内側か。境界ちょうどは外に数える。車体の内側に障害物は無い (あれば既にぶつかっている) ので、内側の点は
+ * 車体に載せた物 (支柱・配線など) の反射として予想進路の判定から除く。
+ */
+bool AutoStopPath_IsInsideBody(float x_m, float y_m, float body_front_x_m, float body_rear_x_m,
+                               float body_half_width_m);
 
 /**
  * @brief 路面舵角 [rad] とホイールベース [m] から曲率 [1/m] を出す (左が正)。
