@@ -2,8 +2,8 @@
 
 自律走行ミニカー **SURGE Mark.2** の STM32 ファームウェアと基板（回路）。
 
-**技術解説サイト: https://banbatakumi.github.io/AutonomousCar_RasPi/**
-ファームの制御（車速制御・TC・ABS・トルクベクタリング・安全層）もこのサイトで解説しています。
+**技術解説サイト: https://banbatakumi.github.io/surge-mk2/**
+ファームの制御（車速制御・TC・ABS・トルクベクタリング・安全層）と基板もこのサイトで解説しています。
 
 > **ファームウェアの最新は [`FW/MainBoard_V3`](https://github.com/banbatakumi/AutonomousCar/tree/FW/MainBoard_V3) ブランチです。**
 > 既定ブランチ `main` の `Program/` は古い状態のままです。
