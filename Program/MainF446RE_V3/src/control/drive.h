@@ -78,7 +78,12 @@
 // ★上位 (Pi) の同値: raspi/msgs/convert.py の MAX_TARGET_TORQUE_NM (GUI の store/ui.ts・
 //   vehicle.toml の speed_torque_max_nm = これ×2 は tools/fwsim/tests/test_fw_constants.py が突き合わせる)
 #define DRIVE_MAX_TORQUE_NM 0.15f
-#define DRIVE_MAX_SPEED_M_S 5.0f  // これを超えたら正トルクを出さない (暴走時の最終防壁)
+// 上位が指令できる車速の上限 [m/s] (COMMAND.target_speed をここでクランプし、LIMITS で上位へ通知する)
+#define DRIVE_MAX_SPEED_M_S 5.0f
+// 実車速がこれを超えたら正トルクを出さない (暴走時の最終防壁)。指令の上限と同じ値にすると、上限ちょうどを
+// 指令したときに車速の揺れで正トルクが入切を繰り返して上限を保てないので、1割上に置く。
+// 後輪 MD のトルクモードの過速度保護 (BLDC/ProgramV4 の OVERSPEED_DIRECT_IQ_RAD_S = 270 rad/s = 8.1m/s) より下
+#define DRIVE_OVERSPEED_GUARD_M_S (DRIVE_MAX_SPEED_M_S * 1.1f)
 // 上位が加速度制限を指定しなかった (COMMAND.accel_limit = 0) ときに、目標車速を動かす傾き。
 // 上位が指定した値に上限は掛けない。目標車速のランプそのものは残る (車速PIの加速度フィードフォワードが、この
 // 傾きに要るトルクを先に足す)。上限を掛けない理由: 出せる加速はタイヤのグリップで決まり、路面で

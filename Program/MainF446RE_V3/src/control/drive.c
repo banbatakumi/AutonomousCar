@@ -413,8 +413,8 @@ static void AllocateTorque(float total_nm, float diff_nm, float* left_nm, float*
 
 // 車速フィードバックが壊れて積分が振り切れても、実速度が上限を超えたら加速させない
 static float ApplyOverspeedLimit(const Drive* obj, float torque_nm) {
-  if (obj->vehicle_speed_m_s > DRIVE_MAX_SPEED_M_S && torque_nm > 0.0f) return 0.0f;
-  if (obj->vehicle_speed_m_s < -DRIVE_MAX_SPEED_M_S && torque_nm < 0.0f) return 0.0f;
+  if (obj->vehicle_speed_m_s > DRIVE_OVERSPEED_GUARD_M_S && torque_nm > 0.0f) return 0.0f;
+  if (obj->vehicle_speed_m_s < -DRIVE_OVERSPEED_GUARD_M_S && torque_nm < 0.0f) return 0.0f;
   return torque_nm;
 }
 
