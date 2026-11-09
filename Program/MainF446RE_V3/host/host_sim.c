@@ -205,6 +205,7 @@ static double RngNormal(Rng* r) {
 }
 
 static double Max(double a, double b) { return a > b ? a : b; }
+static double Min(double a, double b) { return a < b ? a : b; }
 
 #define MD_DELAY_MAX 256
 
@@ -215,18 +216,37 @@ typedef struct {
   double torque_nm;  // 実際に出ているトルク (車体前進方向が正)
 } MdModel;
 
-// 後輪1つのタイヤの前後力。kappa (スリップ率の真値) も返す
+// 後輪1つのタイヤの前後力。kappa (スリップ率の真値)、実際に出た横力 *fy_out、摩擦円の使用率 *use_out も返す。
+//
+// 合成スリップ (簡易): 横の要求 fy_n を純横の曲線で出すのに要る横の滑り tanα を逆算し、σ = √(κ² + tan²α) で
+// 力の大きさ D·sin(C·atan(B·σ)) を出して、κ と tanα の比で前後と横に配る (力は滑りの向きを向く)。
+// 前後に大きく滑らせる (空転) ほど力は前後を向き、横力が抜けて後輪が横に流れる (駆動でリアが出る。
+// 2026-11-06 `surge_20261106_024246` のヘアピン出口)。横の要求が 0 なら従来の前後の曲線と同じ、κ = 0 なら要求どおりの横力。
+// 以前は横を優先して前後力の上限だけを削っていたので、TC が横を守れているかを測れなかった。
+// 横の剛性は前後と同じ B・C とする (横の同定は無い。形を見るためのモデル)
 static double TyreForce(const HostPlant* p, double wheel_rim_m_s, double centre_m_s, double fz_n,
-                        double mu_scale, double fy_n, double* kappa_out) {
+                        double mu_scale, double fy_n, double* kappa_out, double* fy_out, double* use_out) {
   double denom = Max(fabs(centre_m_s), p->slip_speed_floor_m_s);
   double kappa = (wheel_rim_m_s - centre_m_s) / denom;
   *kappa_out = kappa;
   double d = p->mu * mu_scale * Max(fz_n, 0.0);
-  // 摩擦円: 横力に使っている分だけ前後力の上限が下がる (最低でも5%は残す)
-  double fx_max2 = d * d - fy_n * fy_n;
-  double floor2 = 0.0025 * d * d;
-  double fx_max = sqrt(fx_max2 > floor2 ? fx_max2 : floor2);
-  return fx_max * sin(p->tyre_c * atan(p->tyre_b * kappa));
+  if (d <= 0.0) {
+    *fy_out = 0.0;
+    *use_out = 1.0;
+    return 0.0;
+  }
+  double ratio = Min(fabs(fy_n) / d, 1.0);
+  double tan_alpha = tan(asin(ratio) / p->tyre_c) / p->tyre_b * (fy_n < 0.0 ? -1.0 : 1.0);
+  double sigma = sqrt(kappa * kappa + tan_alpha * tan_alpha);
+  if (sigma < 1e-9) {
+    *fy_out = 0.0;
+    *use_out = 0.0;
+    return 0.0;
+  }
+  double f = d * sin(p->tyre_c * atan(p->tyre_b * sigma));
+  *fy_out = f * tan_alpha / sigma;
+  *use_out = Min(fabs(f) / d, 1.0);
+  return f * kappa / sigma;
 }
 
 // シミュレーション1本ぶんの状態。host_sim_create() で作り、host_sim_step() で続きから進める
@@ -424,12 +444,28 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
   double kappa[2] = {0.0, 0.0};
   double yaw_ss = 0.0;
   for (int k = 0; k < cfg->substeps; k++) {
-    double a_y = s->v * s->yaw;
-    double fy = p->mass_kg * a_y * p->rear_lateral_share * 0.5;
+    // 舵で決まる定常のヨーレート (横の上限で頭打ち)
+    double eff = p->steer_gain * steer + p->steer_gain_cubic * steer * steer * steer;
+    yaw_ss = s->v * tan(eff) / DRIVE_WHEELBASE_M;
+    double speed_abs = Max(fabs(s->v), 0.3);
+    double yaw_cap = p->lateral_accel_max_m_s2 / speed_abs;
+    if (yaw_ss > yaw_cap) yaw_ss = yaw_cap;
+    if (yaw_ss < -yaw_cap) yaw_ss = -yaw_cap;
+    // 横の荷重移動も舵が決める旋回の横加速度で (理由は下の fy_rear と同じ)
+    double a_y = s->v * yaw_ss;
     double fz_long = p->fz_static_n + p->load_transfer * p->mass_kg * s->accel_x * 0.5;
     double fz_lat = p->lateral_transfer * p->mass_kg * a_y;  // 左旋回 (a_y>0) で右輪に乗る
-    double fz[2] = {fz_long - fz_lat, fz_long + fz_lat};
+    double fz[2] = {Max(fz_long - fz_lat, 0.0), Max(fz_long + fz_lat, 0.0)};
     double centre[2] = {s->v - s->yaw * half_track, s->v + s->yaw * half_track};
+    // 後軸が受け持つ横力の要求 = 舵が決める旋回 (v·yaw_ss) に要る分。左右へは荷重の比で配る。
+    // ★ 実際のヨー (v·yaw) で出すと、回り過ぎるほど要求が増えて後輪が張り付いたまま戻らない (このモデルは
+    //   横滑り角を持たず、ヨーをそのまま進路の曲がりとみなすため。回り過ぎは車体が横を向くだけで横加速度は増えない)
+    double fy_rear = p->mass_kg * s->v * yaw_ss * p->rear_lateral_share;
+    double fz_sum = fz[0] + fz[1];
+    double fy_req[2] = {fz_sum > 0.0 ? fy_rear * fz[0] / fz_sum : 0.5 * fy_rear,
+                        fz_sum > 0.0 ? fy_rear * fz[1] / fz_sum : 0.5 * fy_rear};
+    double fy_got[2] = {fy_req[0], fy_req[1]};
+    double use[2] = {0.0, 0.0};
 
     for (int i = 0; i < 2; i++) {
       double target = 0.0;
@@ -444,7 +480,8 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
       }
       s->md[i].torque_nm += (target - s->md[i].torque_nm) * (h / (p->md_tau_s + h));
 
-      force[i] = TyreForce(p, s->omega[i] * r_wheel, centre[i], fz[i], mu_scale[i], fy, &kappa[i]);
+      force[i] = TyreForce(p, s->omega[i] * r_wheel, centre[i], fz[i], mu_scale[i], fy_req[i], &kappa[i],
+                           &fy_got[i], &use[i]);
       double friction = p->wheel_friction_nm * tanh(s->omega[i] / 1.0) + p->wheel_damping_nms * s->omega[i];
       s->omega[i] += (s->md[i].torque_nm - r_wheel * force[i] - friction) / p->wheel_inertia_kgm2 * h;
       s->md_speed[i] += (s->omega[i] - s->md_speed[i]) * (h / (p->md_speed_tau_s + h));
@@ -458,14 +495,16 @@ static void StepOnce(HostSim* s, const double* u, double* o, int advance) {
     s->accel_x += (a - s->accel_x) * (h / (0.005 + h));
 
     // ヨー: 舵で決まる定常のヨーレートへ戻ろうとする減衰 + 左右の駆動力差のモーメント
-    double eff = p->steer_gain * steer + p->steer_gain_cubic * steer * steer * steer;
-    yaw_ss = s->v * tan(eff) / DRIVE_WHEELBASE_M;
-    double speed_abs = Max(fabs(s->v), 0.3);
-    double yaw_cap = p->lateral_accel_max_m_s2 / speed_abs;
-    if (yaw_ss > yaw_cap) yaw_ss = yaw_cap;
-    if (yaw_ss < -yaw_cap) yaw_ss = -yaw_cap;
-    double moment = (force[1] - force[0]) * half_track;
-    s->yaw += (moment - p->yaw_damping * (s->yaw - yaw_ss) / speed_abs) / p->yaw_inertia_kgm2 * h;
+    // + 後輪の横力の不足 (摩擦円で前後に使った分) でリアが外へ出るモーメント。
+    // 戻ろうとする減衰は後輪の横力の**増やせる余地**が作る。摩擦円に張り付いた輪はそれ以上横力を増やせないので、
+    // 輪ごとに 1 − 使用率² (限界で 0) を荷重で重み付けして掛ける (rear_grip)
+    double fy_short = fy_rear - (fy_got[0] + fy_got[1]);  // 旋回と同じ向き = 外へ流れる
+    double rear_grip = fz_sum > 0.0
+                           ? (fz[0] * (1.0 - use[0] * use[0]) + fz[1] * (1.0 - use[1] * use[1])) / fz_sum
+                           : 0.0;
+    double rear_arm_m = DRIVE_WHEELBASE_M * (1.0 - p->rear_lateral_share);  // 重心から後軸まで
+    double moment = (force[1] - force[0]) * half_track + fy_short * rear_arm_m;
+    s->yaw += (moment - rear_grip * p->yaw_damping * (s->yaw - yaw_ss) / speed_abs) / p->yaw_inertia_kgm2 * h;
     s->gyro += (s->yaw - s->gyro) * (h / (p->gyro_tau_s + h));
   }
   s->step++;
