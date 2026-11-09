@@ -1,28 +1,13 @@
 # docs
 
 現行の仕様の正はコード (`src/comm/ras_link.h`・`ras_link.c`、`src/control/drive.h`、`src/control/control_params.h`)。
-delta は各版の変更の経緯で、後の版で変わった箇所はそのまま残っている。食い違ったらコードを信じる。
+プロトコルの数値・バイト配置の唯一の定義は Pi 側リポジトリの `raspi/proto/protocol.toml`（説明は Pi 側 `docs/uart_protocol.md`）。
 
-## 直下 (v0.19 以降の差分)
-
-| ファイル | 内容 |
-|---|---|
-| `pi_uart_protocol_v0.19_delta.md` | 「止める」の約束 (ARM 解除時の停車まで制動・MD 健全性・ブレーキホールド)、`flags` bit22/23 |
-| `pi_uart_protocol_v0.20_delta.md` | ローンチコントロール |
-| `pi_uart_protocol_v0.21_delta.md` | 車速PIの加速度フィードフォワード |
-| `pi_uart_protocol_v0.22_delta.md` | 目標車速ランプの固定上限の廃止 |
-| `pi_uart_protocol_v0.23_delta.md` | 調整パラメータの既定値をファームに持たない・車速PIのゲインを調整パラメータに |
-| `pi_uart_protocol_v0.26_delta.md` | v0.24〜v0.26: 車速のカルマンフィルタ |
-| `pi_uart_protocol_v0.27_delta.md` | 前輪エンコーダの校正・KF の調整値を `CONFIG_SET` に |
-| `pi_uart_protocol_v0.28_delta.md` | ジャイロ z 軸の感度の補正 |
-| `pi_uart_protocol_v0.29_delta.md` | 制動の減速度・MD のトルクの遅れを `CONFIG_SET` に (現行版 0x001D) |
-
-プロトコルを変えたら `RAS_PROTOCOL_VERSION` を上げて delta を足し、この表に1行足す。
+プロトコルを変えたら `RAS_PROTOCOL_VERSION` を上げ、Pi 側の `protocol.toml` と一緒に入れ替える。変更の経緯はコミットメッセージに書く。
 
 ## archive/ (過去の記録。通常は読まない。古い数値・仕様を含む)
 
-- `pi_uart_protocol_v0.4_request.md`: v0.4 のベース仕様 (フレーム・PING/PONG・LiDAR セクタなど)。COMMAND/TELEMETRY のレイアウトは以降の版で変わっている
-- `pi_uart_protocol_v0.5〜v0.18_delta.md`: 各版の差分
+- `pi_uart_protocol_v0.4_request.md`・`v0.5〜v0.29_delta.md`: 各版の差分。後の版で変わった箇所はそのまま残っている
 - `PROGRESS.md`: 2026-08 の調査・作業ログ (ステア電圧崩壊、app.c 分割など)
 - `code_review_2026-08-21.md`: 2026-08-21 のレビューと対応状況
 - `md_protocol_update_prompt.md`: 2026-09 の MD 改修依頼 (現行は MD 側 `docs/SERIAL_PROTOCOL.md`)

@@ -1,8 +1,8 @@
 // src/control (Drive・TorqueVectoring) をホストでそのままコンパイルし、後輪+タイヤ+車体の
 // モデルと閉ループで回す。使い方・モデルの中身は host/README.md。
 //
-// 呼び出すのは Pi 側リポジトリの tools/ctrl_tune (ctypes)。構造体・列の並びを変えたら
-// HOST_SIM_ABI を上げ、tools/ctrl_tune/fw.py も揃えること。
+// 呼び出すのは Pi 側リポジトリの tools/fwsim (ctypes)。構造体・列の並びを変えたら
+// HOST_SIM_ABI を上げ、tools/fwsim/fw.py も揃えること。
 
 #include <math.h>
 #include <stdint.h>
@@ -61,7 +61,7 @@ enum {
   OUT_FW_KF_GATED,    // カルマンフィルタが測定を弱めた累積回数。同上
   OUT_FW_NIS_DIST,    // カルマンフィルタの一貫性の診断 (その行で取り込んだ残差。測定が無かった行は NaN)。
   OUT_FW_NIS_ACCEL,   //   NIS = z²、AC = 直前の残差との積。加速度は IMU のサンプル (10行に1回) のときだけ値が入る。
-  OUT_FW_AC_DIST,     //   平均を取るなら nanmean (tools/ctrl_tune/tests/test_speed_kf.py)
+  OUT_FW_AC_DIST,     //   平均を取るなら nanmean (tools/fwsim/tests/test_speed_kf.py)
   OUT_FW_AC_ACCEL,
   OUT_FRONT_RAW_LEFT,   // 前輪エンコーダの校正前の生の角度 [rad] (TELEMETRY の front_angle。取付向きの符号のまま)
   OUT_FRONT_RAW_RIGHT,  //   reserved bit3 のときだけ意味がある (それ以外は 0)
@@ -220,9 +220,8 @@ typedef struct {
 //
 // 合成スリップ (簡易): 横の要求 fy_n を純横の曲線で出すのに要る横の滑り tanα を逆算し、σ = √(κ² + tan²α) で
 // 力の大きさ D·sin(C·atan(B·σ)) を出して、κ と tanα の比で前後と横に配る (力は滑りの向きを向く)。
-// 前後に大きく滑らせる (空転) ほど力は前後を向き、横力が抜けて後輪が横に流れる (駆動でリアが出る。
-// 2026-11-06 `surge_20261106_024246` のヘアピン出口)。横の要求が 0 なら従来の前後の曲線と同じ、κ = 0 なら要求どおりの横力。
-// 以前は横を優先して前後力の上限だけを削っていたので、TC が横を守れているかを測れなかった。
+// 前後に大きく滑らせる (空転) ほど力は前後を向き、横力が抜けて後輪が横に流れる (駆動でリアが出る)。
+// 横の要求が 0 なら純粋な前後の曲線、κ = 0 なら要求どおりの横力。TC が横のグリップを守れているかを測るためのモデル。
 // 横の剛性は前後と同じ B・C とする (横の同定は無い。形を見るためのモデル)
 static double TyreForce(const HostPlant* p, double wheel_rim_m_s, double centre_m_s, double fz_n,
                         double mu_scale, double fy_n, double* kappa_out, double* fy_out, double* use_out) {

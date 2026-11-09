@@ -9,8 +9,8 @@
 #include "timer.h"
 
 // ===========================================================================
-// Raspberry Pi (上位) との UART 通信。レイアウトは ras_link.c、版ごとの変更点は
-// docs/pi_uart_protocol_v0.19_delta.md 〜 v0.29_delta.md (それ以前は docs/archive/)。
+// Raspberry Pi (上位) との UART 通信。レイアウトは ras_link.c。数値・バイト配置の唯一の定義は
+// Pi 側リポジトリの raspi/proto/protocol.toml (説明は docs/uart_protocol.md)。
 //
 // 物理層: USART1, 1000000bps 8N1 (分周誤差0%)。
 //
@@ -218,7 +218,7 @@ typedef enum {
   RAS_PARAM_ABS_ENABLE = 0x0070,           // 0.0=無効, 非0=有効 (既定は有効)
   // ブレーキホールド (制動して止まったら後輪の位置保持へ移る)。0.0=無効, 非0=有効 (既定は有効)
   RAS_PARAM_BRAKE_HOLD_ENABLE = 0x0090,
-  // ステアのリンクの換算。値・範囲は control_params.h の表。入れた瞬間に Steering へ反映し
+  // ステアのリンクの換算。値・範囲は control_params.h の表。停車して DISARM のときに Steering へ適用し
   // LIMITS を送り直すので、ID だけここにも置く
   RAS_PARAM_STEER_LINK_GAIN = 0x0081,
   RAS_PARAM_STEER_LINK_CUBIC = 0x0082,
