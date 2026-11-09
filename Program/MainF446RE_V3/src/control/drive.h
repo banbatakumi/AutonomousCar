@@ -172,13 +172,18 @@
 // 制御が見るのは**トルクを掛けている向きのスリップ速度**: 駆動なら空転、車速PIの減速・制動なら
 // ロック傾向が正になる。前進・後退・加速・減速を1つの式で扱える。
 //
-// ■ 制限のしかた (TC・ABS 共通、SlipLimiter)
+// ■ 制限のしかた (TC・ABS 共通)
 // スリップ率を目標 (tc_slip_target / abs_slip_target) に保つ連続の PI。出力はトルクの上限。
 //   偏差 e = 目標スリップ率×分母 − スリップ速度 [m/s] (正 = 余裕がある)
-//   ①e が負になったら働き始める。積分の初期値はそのとき実際に掛けていたトルク
+//   上限 = 積分 + kp×e。積分は ki×e で進む。どちらも [下限, 最大値] に収める
+//   滑り始めた周期 (e が負になった周期) は、積分を実際に掛けていたトルクまで下げてから進める
 //     (上限を最大値から削り始めると、掛けているトルクへ届くまで何もしないのと同じになる)
-//   ②働いている間、上限 = 積分 + kp×e。積分は ki×e で進む
-//   ③上限が要求トルク以上に戻ったら (= 要求どおり掛けても滑らない) 止める
+// 止め方だけが違う:
+//   TC (TractionLimiter): 止めない。滑らなければ積分が最大値まで戻り、そこが「制限なし」になる。
+//     ★ 2026-11-06 まで ABS と同じ止め方で、要求が満額 (車速PIの張り付き) だと滑りが収まった周期に
+//     制限なしへ跳ね戻って次の周期にまた滑り、20ms ごとに入り切りした (`surge_20261106_024246`)
+//   ABS (SlipLimiter): 上限が要求トルク以上に戻ったら (= 要求どおり掛けても滑らない) 止める。
+//     上限が低いまま長く留まるとフォールバック (DRIVE_ABS_FALLBACK_*) が働くため
 // 実車の油圧 ABS の「減→保持→増」を写したルールベースにしないのは、油圧の弁は開閉しかできない
 // ので段を刻むが、モータはトルクを連続に出せるため。段を刻むと最初の一撃で深くロックし、
 // 再カットで必要以上に抜く (ロックなしの約85%)。比較は Pi 側リポジトリの tools/ctrl_tune/bench.py。
@@ -193,7 +198,7 @@
 // ■ 片輪浮き対策
 // TC の基準は前輪なので、前輪エンコーダが壊れると働かない (または絞り続ける)。前輪に依らない
 // 見張りとして「後輪左右の速度差からヨーレートで説明できる分を引いた残り」が
-// wheel_lift_diff_threshold_m_s を超えたら、トルクの向きへ先走っている輪を同じ SlipLimiter で絞る
+// wheel_lift_diff_threshold_m_s を超えたら、トルクの向きへ先走っている輪を TC と同じ PI で絞る
 // (偏差は TC と小さい方を使う)。TC とは独立に ON/OFF できる。
 //
 // ■ ABS
@@ -228,11 +233,17 @@
 #define DRIVE_LPF_TAU_FRONT_S 0.00995f  // 前輪の各輪の周速 (上位報告用)
 #define DRIVE_LPF_TAU_REAR_S 0.00475f   // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め。2kHz で係数 0.90)
 
-// スリップ制限1つぶんの状態 (TC は各輪、ABS は左右共通で1つ)
+// ABS の状態 (左右共通で1つ)
 typedef struct {
   bool active;        // スリップが目標を超えて働き始めてから、上限が要求以上へ戻るまで
   float integral_nm;  // PI の積分 = 「このトルクなら滑らない」という見積もり
 } SlipLimiter;
+
+// TC の状態 (各輪)。働いている・いないの区別は持たない (積分が最大値 = 制限なし)
+typedef struct {
+  float integral_nm;  // PI の積分 = 「このトルクなら滑らない」という見積もり。滑らなければ最大値まで戻る
+  bool slipping;      // 前の周期に滑っていた (偏差が負)。滑り始めの周期を見分ける
+} TractionLimiter;
 
 typedef struct {
   Motors* motors;
@@ -308,8 +319,8 @@ typedef struct {
   float slip_right;
   float slip_ref_left_m_s;  // 左後輪が滑っていなければ出るはずの周速 (スリップの基準)
   float slip_ref_right_m_s;
-  SlipLimiter tc_left;
-  SlipLimiter tc_right;
+  TractionLimiter tc_left;
+  TractionLimiter tc_right;
   float tc_limit_left_nm;  // 左輪のトルク上限 (働いていなければ DRIVE_MAX_TORQUE_NM)
   float tc_limit_right_nm;
   bool tc_limiting;          // 前周期、いずれかの輪で上限が実際にトルクを削った

@@ -301,9 +301,14 @@ static void ResetAbs(Drive* obj) {
   obj->abs_fallback_latched = false;
 }
 
+static void ResetTractionLimiter(TractionLimiter* st) {
+  st->integral_nm = DRIVE_MAX_TORQUE_NM;
+  st->slipping = false;
+}
+
 static void ResetTraction(Drive* obj) {
-  ResetSlipLimiter(&obj->tc_left);
-  ResetSlipLimiter(&obj->tc_right);
+  ResetTractionLimiter(&obj->tc_left);
+  ResetTractionLimiter(&obj->tc_right);
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limiting = false;
@@ -373,13 +378,13 @@ static bool ApplySpeedPiAbs(Drive* obj, float* left_nm, float* right_nm, float d
 //   lead_m_s         その輪が反対の輪よりトルクの向きへ先走っている速度 (ヨーレートぶんを除く)
 //   reference_m_s    その輪の基準速度
 // lift_limited には、片輪浮き対策の偏差の方が効いていたかを返す
-static float UpdateWheelLimit(Drive* obj, SlipLimiter* st, float request_nm, float applied_nm,
+static float UpdateWheelLimit(Drive* obj, TractionLimiter* st, float request_nm, float applied_nm,
                               float slip_m_s, float lead_m_s, float reference_m_s, float dt_s,
                               bool* lift_limited) {
   const ControlParams* p = &obj->params;
   *lift_limited = false;
   if (!obj->tc_enabled && !obj->wheel_lift_guard_enabled) {
-    ResetSlipLimiter(st);
+    ResetTractionLimiter(st);
     return DRIVE_MAX_TORQUE_NM;
   }
 
@@ -397,9 +402,15 @@ static float UpdateWheelLimit(Drive* obj, SlipLimiter* st, float request_nm, flo
   }
   // 掛けていたトルクと掛けたいトルクの向きが違う (駆動→減速の切り替わり) なら、覚えているのは
   // 逆向きのグリップなので持ち越さない
-  if (st->active && request_nm * applied_nm < 0.0f) ResetSlipLimiter(st);
-  return UpdateSlipLimiter(st, error, Abs(request_nm), Abs(applied_nm), p->tc_kp_nm_per_m_s,
-                           p->tc_ki_nm_per_m, p->tc_min_torque_nm, DRIVE_MAX_TORQUE_NM, dt_s);
+  if (request_nm * applied_nm < 0.0f) ResetTractionLimiter(st);
+
+  // PI (手順は drive.h の「制限のしかた」)。滑らなければ積分が最大値まで戻り、上限 = 最大値 = 制限なし
+  const float min_nm = p->tc_min_torque_nm;
+  const bool slipping = error < 0.0f;
+  if (slipping && !st->slipping && st->integral_nm > Abs(applied_nm)) st->integral_nm = Abs(applied_nm);
+  st->slipping = slipping;
+  st->integral_nm = Constrain(st->integral_nm + p->tc_ki_nm_per_m * error * dt_s, min_nm, DRIVE_MAX_TORQUE_NM);
+  return Constrain(st->integral_nm + p->tc_kp_nm_per_m_s * error, min_nm, DRIVE_MAX_TORQUE_NM);
 }
 
 // 総駆動トルクと左右差を各輪へ配り、トルクの絶対上限 (DRIVE_MAX_TORQUE_NM) に各輪ごとに収める。
