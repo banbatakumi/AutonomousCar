@@ -5,6 +5,7 @@
 
 #include "control_params.h"
 #include "encoder.h"
+#include "encoder_direction.h"
 #include "imu.h"
 #include "lpf.h"
 #include "motors.h"
@@ -47,7 +48,7 @@
 
 // 半径は幾何寸法 (直径60mm) から入れてある。ゴムタイヤは荷重で潰れるぶん実際の転がり半径が
 // 数%小さくなり、その誤差はそのまま車速とオドメトリの倍率誤差になる。精度が要るなら
-// メジャーで測った距離を転がして Encoder_GetAccumAngleLeftMrad() の累積値から逆算すること。
+// メジャーで測った距離を転がして Drive_GetFrontOdom0p1mm() の値から逆算すること。
 
 // 各センサ・アクチュエータの符号。左右のモータ/エンコーダは鏡像に取り付くため、
 // 「車体前進方向を正」に揃えるための符号をここで吸収する。
@@ -71,18 +72,23 @@
 //
 // ★MD 側の絶対上限 (Kt × 最大電流 10A。Kt は MD ごとの校正値) を超えないこと。MD は受け取った
 // 上限を自分の絶対上限で頭打ちにして返し、こちらは指令と完全に一致するまで MD を「使える」と
-// みなさない (Motors_NotReadyReason)。後輪 MD の絶対上限は約0.148・0.144Nm (走行記録の
-// トルク指令÷電流から。Kt 0.0148・0.0144Nm/A) なので 0.15 では届かず、ARM の5秒後に
-// md_fault でラッチして走れなくなる。
-// タイヤのグリップの限界は約0.09Nm なので、0.13 でも走りには出ない。MD を校正し直して Kt が
-// 0.013Nm/A を下回ると同じ症状になる (LOG に "torque limit not applied" と出る)
-#define DRIVE_MAX_TORQUE_NM 0.13f
-#define DRIVE_MAX_SPEED_M_S 5.0f  // これを超えたら正トルクを出さない (暴走時の最終防壁)
+// みなさない (Motors_NotReadyReason)。現在の後輪 MD の絶対上限は約0.2Nm。MD を校正し直して
+// Kt が 0.015Nm/A を下回ると、上限に届かず ARM の5秒後に md_fault でラッチして走れなくなる
+// (LOG に "torque limit not applied" と出る)。
+// ★上位 (Pi) の同値: raspi/msgs/convert.py の MAX_TARGET_TORQUE_NM (GUI の store/ui.ts・
+//   vehicle.toml の speed_torque_max_nm = これ×2 は tools/fwsim/tests/test_fw_constants.py が突き合わせる)
+#define DRIVE_MAX_TORQUE_NM 0.15f
+// 上位が指令できる車速の上限 [m/s] (COMMAND.target_speed をここでクランプし、LIMITS で上位へ通知する)
+#define DRIVE_MAX_SPEED_M_S 5.0f
+// 実車速がこれを超えたら正トルクを出さない (暴走時の最終防壁)。指令の上限と同じ値にすると、上限ちょうどを
+// 指令したときに車速の揺れで正トルクが入切を繰り返して上限を保てないので、1割上に置く。
+// 後輪 MD のトルクモードの過速度保護 (BLDC/ProgramV4 の OVERSPEED_DIRECT_IQ_RAD_S = 270 rad/s = 8.1m/s) より下
+#define DRIVE_OVERSPEED_GUARD_M_S (DRIVE_MAX_SPEED_M_S * 1.1f)
 // 上位が加速度制限を指定しなかった (COMMAND.accel_limit = 0) ときに、目標車速を動かす傾き。
 // 上位が指定した値に上限は掛けない。目標車速のランプそのものは残る (車速PIの加速度フィードフォワードが、この
 // 傾きに要るトルクを先に足す)。上限を掛けない理由: 出せる加速はタイヤのグリップで決まり、路面で
-// 変わる (フローリングの同定で約2.8m/s²、畳はそれより高い)。固定の 3.0 が残っていると、上位が
-// 同定し直してもファームを書き直すまで使えない。滑らせない役目は TC が、暴走を止める役目は
+// 変わる (フローリングの同定で約2.8m/s²、畳はそれより高い)。固定の上限があると、上位が同定し直して
+// もファームを書き直すまで使えない。滑らせない役目は TC が、暴走を止める役目は
 // トルク上限 (DRIVE_MAX_TORQUE_NM) と速度上限 (DRIVE_MAX_SPEED_M_S) が持っている。
 // 上位は config/vehicle.toml の [safety] cmd_accel_limit_m_s2 で上限を決めて毎回送る
 #define DRIVE_DEFAULT_ACCEL_M_S2 3.0f
@@ -107,7 +113,7 @@
 //     刻むので、目標に届いた周期は 0、届く前は accel_limit、と周期ごとに跳ぶ。その刻みの周期を時定数に
 //     した 1 次ローパスでならす (刻みの周期より短いと跳びが残り、長いと傾きの変化に遅れる)。
 //     上位はこの時定数ぶん先の速度を送る (Pi 側 config/vehicle.toml の [dynamics] speed_ff_filter_s
-//     が同じ値を持つ。上位の tools/ctrl_tune のテストがこのヘッダと突き合わせる)
+//     が同じ値を持つ。上位の tools/fwsim のテストがこのヘッダと突き合わせる)
 //   - 足した後の合計を ±最大トルクに収める。TC・リミッタで削られた分の積分の巻き戻し
 //     (UnwindIntegral) は、足した後の要求と実際に出したトルクの差で行う
 //   - 制動・トルク指令・ローンチコントロール・停車の惰行の間は足さない (傾きの記憶も 0 に戻す)
@@ -120,7 +126,7 @@
 // ローンチコントロール (発進の加速。Drive_SetLaunch)
 //
 // 車速指令の加速は、目標車速のランプ (上位が送る accel_limit) を車速PIが追う形なので、偏差が
-// 溜まるまでトルクが出ない (グリップの限界のトルクに届くまで約0.3秒。Pi 側 tools/ctrl_tune の
+// 溜まるまでトルクが出ない (グリップの限界のトルクに届くまで約0.3秒。Pi 側 tools/fwsim の
 // 車両モデルで、停止からの最初の1秒に進む距離がトルク指令の全開の約3/4)。上位が要求している間、
 // 目標車速が実車速より大きく離れた加速だけ、ランプとPIを迂回して全開のトルクを要求し、TC に
 // グリップの限界へ絞らせる (= トルク指令の全開と同じ加速)。車速が目標に届いたら車速PIへ戻す。
@@ -143,7 +149,7 @@
 // ===========================================================================
 #define DRIVE_LAUNCH_REVERSE_SPEED_M_S 0.3f
 #define DRIVE_LAUNCH_MIN_STEP_M_S 0.5f
-// 目標のこれだけ手前で終える。車速の読み (前輪のローパス、τ≈10ms) と MD の遅れのぶん、全開の
+// 目標のこれだけ手前で終える。車速推定の遅れと MD の遅れのぶん、全開の
 // 加速度 (約2.5m/s^2) では実車速が読みより 0.05m/s ほど先にいる
 #define DRIVE_LAUNCH_END_MARGIN_M_S 0.05f
 #define DRIVE_LAUNCH_TIMEOUT_S 3.0f  // 最高速 (5m/s) まで約2秒
@@ -166,32 +172,37 @@
 // 制御が見るのは**トルクを掛けている向きのスリップ速度**: 駆動なら空転、車速PIの減速・制動なら
 // ロック傾向が正になる。前進・後退・加速・減速を1つの式で扱える。
 //
-// ■ 制限のしかた (TC・ABS 共通、SlipLimiter)
+// ■ 制限のしかた (TC・ABS 共通)
 // スリップ率を目標 (tc_slip_target / abs_slip_target) に保つ連続の PI。出力はトルクの上限。
 //   偏差 e = 目標スリップ率×分母 − スリップ速度 [m/s] (正 = 余裕がある)
-//   ①e が負になったら働き始める。積分の初期値はそのとき実際に掛けていたトルク
+//   上限 = 積分 + kp×e。積分は ki×e で進む。どちらも [下限, 最大値] に収める
+//   滑り始めた周期 (e が負になった周期) は、積分を実際に掛けていたトルクまで下げてから進める
 //     (上限を最大値から削り始めると、掛けているトルクへ届くまで何もしないのと同じになる)
-//   ②働いている間、上限 = 積分 + kp×e。積分は ki×e で進む
-//   ③上限が要求トルク以上に戻ったら (= 要求どおり掛けても滑らない) 止める
+// 止め方だけが違う:
+//   TC (TractionLimiter): 止めない。滑らなければ積分が最大値まで戻り、そこが「制限なし」になる。
+//     ABS と同じ止め方にすると、要求が満額 (車速PIの張り付き) のとき滑りが収まった周期に
+//     制限なしへ跳ね戻って次の周期にまた滑り、周期的に入り切りする
+//   ABS (SlipLimiter): 上限が要求トルク以上に戻ったら (= 要求どおり掛けても滑らない) 止める。
+//     上限が低いまま長く留まるとフォールバック (DRIVE_ABS_FALLBACK_*) が働くため
 // 実車の油圧 ABS の「減→保持→増」を写したルールベースにしないのは、油圧の弁は開閉しかできない
 // ので段を刻むが、モータはトルクを連続に出せるため。段を刻むと最初の一撃で深くロックし、
-// 再カットで必要以上に抜く (ロックなしの約85%)。比較は Pi 側リポジトリの tools/ctrl_tune/bench.py。
+// 再カットで必要以上に抜く (ロックなしの約85%)。比較は Pi 側リポジトリの tools/fwsim/bench.py。
 //
 // ■ TC (各輪独立)
-// 駆動 (車速PI・torque_mode) と車速PIの減速の両方に掛かる。後者も対象にするのは、
-// 目標車速のランプ (3.0m/s^2) は後輪だけの制動で出せる減速度を超えるので、旋回しながら減速すると
-// 後輪がロックしてスピンし得た。
+// 駆動 (車速PI・torque_mode) と、後退中の車速PIの減速に掛かる。前進中の車速PIの減速は TC ではなく
+// ABS で絞る (ApplySpeedPiAbs)。減速に TC を使うと上限が 0 と満額を往復し
+// 後輪が大きく滑ってスピンした。
 // 片輪を絞っても、その分を反対の輪へ載せない (総駆動力が減る)。総和を保つために
 // 反対の輪を押し増すと、要求していないヨーモーメントが出る。
 //
 // ■ 片輪浮き対策
 // TC の基準は前輪なので、前輪エンコーダが壊れると働かない (または絞り続ける)。前輪に依らない
 // 見張りとして「後輪左右の速度差からヨーレートで説明できる分を引いた残り」が
-// wheel_lift_diff_threshold_m_s を超えたら、トルクの向きへ先走っている輪を同じ SlipLimiter で絞る
+// wheel_lift_diff_threshold_m_s を超えたら、トルクの向きへ先走っている輪を TC と同じ PI で絞る
 // (偏差は TC と小さい方を使う)。TC とは独立に ON/OFF できる。
 //
 // ■ ABS
-// 制動モード (Drive_SetBrake) の間だけ働く。上限は左右共通で、ロックしかけている側に合わせる
+// 制動モード (Drive_SetBrake) と、前進中に車速PIが減速トルクを出している間に働く。上限は左右共通で、ロックしかけている側に合わせる
 // (select-low)。左右独立にすると左右で路面μが違うときに後輪側でヨーモーメントが出てスピン方向に
 // 振れるため、実車の後輪 ABS と同じく安定性を優先する。
 // ===========================================================================
@@ -222,11 +233,17 @@
 #define DRIVE_LPF_TAU_FRONT_S 0.00995f  // 前輪の各輪の周速 (上位報告用)
 #define DRIVE_LPF_TAU_REAR_S 0.00475f   // 後輪モータ速度 (MD側で既にフィルタ済みのため弱め。2kHz で係数 0.90)
 
-// スリップ制限1つぶんの状態 (TC は各輪、ABS は左右共通で1つ)
+// ABS の状態 (左右共通で1つ)
 typedef struct {
   bool active;        // スリップが目標を超えて働き始めてから、上限が要求以上へ戻るまで
   float integral_nm;  // PI の積分 = 「このトルクなら滑らない」という見積もり
 } SlipLimiter;
+
+// TC の状態 (各輪)。働いている・いないの区別は持たない (積分が最大値 = 制限なし)
+typedef struct {
+  float integral_nm;  // PI の積分 = 「このトルクなら滑らない」という見積もり。滑らなければ最大値まで戻る
+  bool slipping;      // 前の周期に滑っていた (偏差が負)。滑り始めの周期を見分ける
+} TractionLimiter;
 
 typedef struct {
   Motors* motors;
@@ -246,6 +263,17 @@ typedef struct {
   SpeedKf speed_kf;           // 走行距離+加速度計の車速推定 (制御の車速)
   uint32_t kf_encoder_seq;    // 取り込み済みの Encoder 更新番号 (同じ更新を二重に使わない)
   uint32_t kf_imu_seq;        // 取り込み済みの IMU サンプル番号
+  // 前輪の読みの向きの反転 (AS5600 の出力が鏡像になる) を後輪の速度と突き合わせて直す (encoder_direction.h)
+  EncoderDirection front_dir_left;
+  EncoderDirection front_dir_right;
+  uint32_t dir_encoder_seq;    // 向きの判定に取り込み済みの Encoder 更新番号
+  float front_step_left_m;     // 直した前輪の増分 [m] (前進が正。車速 KF が使う)
+  float front_step_right_m;
+  // 前輪の走行距離 (TELEMETRY の odom_dist。前進が正、鏡像と折り返しを直した増分の累積) と、0.1mm 未満の端数
+  int32_t front_odom_left_0p1mm;
+  int32_t front_odom_right_0p1mm;
+  float front_odom_carry_left;
+  float front_odom_carry_right;
 
   bool enabled;
   bool tc_enabled;                // 既定は無効 (上位が送る)
@@ -291,14 +319,16 @@ typedef struct {
   float slip_right;
   float slip_ref_left_m_s;  // 左後輪が滑っていなければ出るはずの周速 (スリップの基準)
   float slip_ref_right_m_s;
-  SlipLimiter tc_left;
-  SlipLimiter tc_right;
+  TractionLimiter tc_left;
+  TractionLimiter tc_right;
   float tc_limit_left_nm;  // 左輪のトルク上限 (働いていなければ DRIVE_MAX_TORQUE_NM)
   float tc_limit_right_nm;
   bool tc_limiting;          // 前周期、いずれかの輪で上限が実際にトルクを削った
   bool wheel_lift_limiting;  // 同 片輪浮き対策の偏差の方が効いていた (または絶対上限で切った)
   SlipLimiter abs;
   float abs_limit_nm;         // 制動トルクの上限 (左右共通。働いていなければ DRIVE_MAX_BRAKE_TORQUE_NM)
+  float abs_request_nm;       // ABS に渡した制動トルクの要求 (正。Drive_IsAbsActive の比較用)
+  bool abs_in_speed_pi;       // 車速PIの減速に ABS を掛けている (ApplySpeedPiAbs。制動モードでなくても ABS の状態を持ち越す)
   float abs_floor_time_s;     // 上限が DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いている継続時間
   bool abs_fallback_latched;  // 真の間はABSを止めて要求どおりに制動する (ブレーキ解除で戻る)
   // 実際にMDへ送った各輪のトルク指令。正 = 駆動、負 = 制動。制動モード (停車保持・
@@ -384,7 +414,7 @@ void Drive_SetSideBrake(Drive* obj, bool on);
 bool Drive_IsSideBrakeEngaged(const Drive* obj);
 
 /**
- * @brief トルクベクタリングの有効/無効を切り替える (既定は有効)。
+ * @brief トルクベクタリングの有効/無効を切り替える (既定は無効)。
  * 無効にすると左右へ常に等トルクを配分する (オープンデフ相当の挙動になる)。
  * 有効にしていても、IMU の実測ヨーレートが得られない間は介入しない。
  */
@@ -392,7 +422,7 @@ void Drive_SetTorqueVectoringEnabled(Drive* obj, bool enabled);
 
 /**
  * @brief トラクションコントロール (TC本体、前輪基準のスリップ) の有効/無効を切り替える
- * (既定は有効)。片輪浮き対策 (Drive_SetWheelLiftGuardEnabled) とは独立に切り替わり、両方を
+ * (既定は無効)。片輪浮き対策 (Drive_SetWheelLiftGuardEnabled) とは独立に切り替わり、両方を
  * 無効にすると各輪のトルク上限は常に DRIVE_MAX_TORQUE_NM になる。
  */
 void Drive_SetTractionControlEnabled(Drive* obj, bool enabled);
@@ -411,6 +441,7 @@ void Drive_SetAbsEnabled(Drive* obj, bool enabled);
 
 /**
  * @brief ABSが今まさに制動トルクを要求より削っているかを取得する (デバッグ・上位への報告用)。
+ * 制動モード (Drive_SetBrake) と、車速PIが前進中に減速トルクを出している間の両方。
  * フォールバック中 (ABSを止めて要求どおりに制動している間) は偽。
  */
 bool Drive_IsAbsActive(const Drive* obj);
@@ -452,7 +483,7 @@ float Drive_GetTorqueRequestRight(const Drive* obj);
 void Drive_Enable(Drive* obj);
 
 /**
- * @brief 駆動制御を無効化し、トルク指令の送信を止める (MD側は無通信0.5秒で停止モード = 惰行)。
+ * @brief 駆動制御を無効化し、トルク 0 を指令する (惰行。送信は止めない)。
  */
 void Drive_Disable(Drive* obj);
 
@@ -468,7 +499,7 @@ bool Drive_IsEnabled(const Drive* obj);
 float Drive_GetVehicleSpeed(const Drive* obj);
 
 /**
- * @brief カルマンフィルタの加速度 [m/s²]・加速度計バイアス [m/s²]・測定を弱めた累積回数 (TELEMETRY で上位に出す)。
+ * @brief カルマンフィルタの加速度 [m/s²] (TELEMETRY で上位に出す)。
  */
 float Drive_GetAccelKf(const Drive* obj);
 
@@ -477,8 +508,23 @@ float Drive_GetAccelKf(const Drive* obj);
  * TELEMETRY のスナップショットごとに1回だけ呼ぶ (呼ぶたびに前回からの分が消える)。
  */
 void Drive_TakeKfDiag(Drive* obj, float nis[SPEED_KF_DIAG_COUNT], float autocorr[SPEED_KF_DIAG_COUNT]);
+/** @brief 加速度計バイアスの推定 [m/s²]。 */
 float Drive_GetAccelBiasKf(const Drive* obj);
+/** @brief 測定を弱めた(ゲートした)累積回数。 */
 uint32_t Drive_GetKfGatedCount(const Drive* obj);
+
+/**
+ * @brief 前輪の走行距離 [0.1mm] (前進が正。読みの鏡像と折り返しを直した増分の累積)。right が偽なら左
+ */
+int32_t Drive_GetFrontOdom0p1mm(const Drive* obj, bool right);
+/**
+ * @brief 前輪の読みの向きを直した回数 (encoder_direction.h。左右の合計)。増えたら上位へ LOG で知らせる
+ */
+uint32_t Drive_GetFrontReversalCount(const Drive* obj);
+/**
+ * @brief 前輪の読みの今の向き (+1 = 通常、-1 = 鏡像を直している最中)。right が偽なら左
+ */
+float Drive_GetFrontEncoderSign(const Drive* obj, bool right);
 
 /**
  * @brief 左後輪のスリップ率を取得する (正 = 空転、負 = ロック傾向)。

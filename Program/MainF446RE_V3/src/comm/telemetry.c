@@ -80,12 +80,6 @@ static uint32_t BuildFlags(Telemetry* obj) {
   return flags;
 }
 
-// 前輪の累積回転角 [1e-3 rad] を走行距離 [0.1mm] へ換算する。
-// 上位は舵角で射影してから使うこと (操舵輪なので車輪の軌跡長 = 車体中心線距離ではない)
-static int32_t AccumAngleToOdom(int32_t mrad, float direction) {
-  return (int32_t)((float)mrad * direction * DRIVE_FRONT_WHEEL_RADIUS_M * 10.0f);
-}
-
 void Telemetry_Init(Telemetry* obj, RasLink* ras_link, const Vehicle* vehicle, Power* power,
                     Encoder* encoder, Imu* imu, Lidar* lidar, Motors* motors, Steering* steering,
                     Drive* drive, RangeSensor* range_sensor) {
@@ -120,7 +114,7 @@ void Telemetry_Update(Telemetry* obj) {
   if (elapsed_us < RAS_TELEMETRY_INTERVAL_US) return;
   // 周期の起点を「今」ではなく1周期ぶんだけ進める。Timer_Reset だと、この関数が呼ばれる位置が
   // 制御周期の中で前後するぶん (LiDAR の処理量で変わる) 20周期目に 1us 足りず 21周期目まで
-  // 待つことがあり、LiDAR が回っている間は 100Hz のはずが約 97Hz に落ちていた。
+  // 待つことがあり、100Hz が約 97Hz に落ちる。
   // 大きく遅れたとき (ブロッキング処理の直後) は追いつこうとせず今から数え直す
   if (elapsed_us >= 2u * RAS_TELEMETRY_INTERVAL_US) {
     Timer_Reset(&obj->update_timer);
@@ -148,10 +142,9 @@ void Telemetry_Update(Telemetry* obj) {
   telemetry.wheel_speed_m_s[2] = obj->drive->rear_speed_left_m_s;
   telemetry.wheel_speed_m_s[3] = obj->drive->rear_speed_right_m_s;
 
-  telemetry.odom_dist_0p1mm[0] =
-      AccumAngleToOdom(Encoder_GetAccumAngleLeftMrad(obj->encoder), DRIVE_FRONT_LEFT_DIR);
-  telemetry.odom_dist_0p1mm[1] =
-      AccumAngleToOdom(Encoder_GetAccumAngleRightMrad(obj->encoder), DRIVE_FRONT_RIGHT_DIR);
+  // 鏡像を直した前輪の増分の累積 (drive.h。Encoder の累積は生の向きなので使わない)
+  telemetry.odom_dist_0p1mm[0] = Drive_GetFrontOdom0p1mm(obj->drive, false);
+  telemetry.odom_dist_0p1mm[1] = Drive_GetFrontOdom0p1mm(obj->drive, true);
 
   telemetry.accel_m_s2[0] = imu_data->accel_x;
   telemetry.accel_m_s2[1] = imu_data->accel_y;

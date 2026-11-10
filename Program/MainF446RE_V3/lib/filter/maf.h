@@ -21,7 +21,7 @@ typedef struct {
 } MAF;
 
 // 移動平均フィルタの初期化
-// window_size で指定したサンプル数分のバッファを動的確保し、0 クリアする
+// window_size (最大 MAF_MAX_WINDOW) 分の固定長バッファを 0 クリアする
 static inline void MAF_Init(MAF* maf, uint16_t window_size) {
   if (!maf) return;
   if (window_size == 0) {
@@ -44,7 +44,7 @@ static inline void MAF_Init(MAF* maf, uint16_t window_size) {
 
 // 新しいサンプルを追加し、移動平均値を返す
 static inline float MAF_Update(MAF* maf, float new_val) {
-  // バッファ未確保や窓幅 0 の場合は入力値をそのまま返す
+  // 窓幅 0 の場合は入力値をそのまま返す
   if (maf->window_size == 0) {
     return new_val;
   }

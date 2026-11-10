@@ -31,7 +31,6 @@ typedef struct {
   float raw_left;
   float raw_right;
   // 前回、角度を読んだ瞬間の DWT サイクルカウンタ。角速度・回転量の dt は「角度を読む瞬間どうし」の差で求める
-  // (Timer を関数の最後でリセットすると、関数内の処理時間 (約9us) が dt から抜け、車速が約1.8%速く出た)
   uint32_t last_cycles;
   float angle_left_rad;
   float angle_right_rad;

@@ -29,7 +29,7 @@
 // CRC-8/AUTOSAR、フッタは無し。
 //
 //   [0]  0xAA          ヘッダ
-//   [1]  status        bit4:エンコーダ未校正 bit3:過電流 bit2:過熱 bit1:電源電圧異常 bit0:指令あり
+//   [1]  status        bit4:エンコーダ未校正 bit3:保護ラッチ(過電流・過速度) bit2:過熱 bit1:電源電圧異常 bit0:指令あり
 //   [2]  temperature   uint8 [degC]
 //   [3-4]  theta       uint16 BE × 0.1mrad
 //   [5-6]  speed       int16 BE × 0.01rad/s
@@ -76,7 +76,7 @@ typedef struct {
   uint32_t rx_error_count;  // CRC不一致で破棄したフレーム数 (配線・ノイズ環境の確認用)
 
   bool is_running;               // MDが受理済みの指令を実行中 (停止モードでない)。回転中かどうかではない
-  bool is_overcurrent;           // MD側で過電流を検知
+  bool is_overcurrent;           // MD側の保護ラッチ (過電流・過速度)
   bool is_overheat;              // MD側で過熱を検知
   bool is_voltage_out_of_range;  // MD側で電源電圧異常を検知
   bool is_uncalibrated;          // MDのエンコーダが未校正 (MDは制限値を受け付けず動かない)
@@ -119,32 +119,32 @@ void BldcMotor_Transmit(BldcMotor* obj);
 void BldcMotor_Update(BldcMotor* obj);
 
 /**
- * @brief 角速度指令 [rad/s] を設定する (APP_MODE_SPEED)。
+ * @brief 角速度指令 [rad/s] を設定する (BLDC_MOTOR_MODE_SPEED)。
  */
 void BldcMotor_SetAngularSpeed(BldcMotor* obj, float rad_s);
 
 /**
- * @brief 位置指令 [rad] を設定する (APP_MODE_POSITION)。
+ * @brief 位置指令 [rad] を設定する (BLDC_MOTOR_MODE_POSITION)。
  */
 void BldcMotor_SetPosition(BldcMotor* obj, float rad);
 
 /**
- * @brief トルク指令をq軸電流 [A] で設定する (APP_MODE_TORQUE)。
+ * @brief トルク指令をq軸電流 [A] で設定する (BLDC_MOTOR_MODE_TORQUE)。
  */
 void BldcMotor_SetTorqueCurrent(BldcMotor* obj, float amp);
 
 /**
- * @brief トルク指令 [N・m] を設定する (APP_MODE_TORQUE_NM)。
+ * @brief トルク指令 [N・m] を設定する (BLDC_MOTOR_MODE_TORQUE_NM)。
  */
 void BldcMotor_SetTorqueNm(BldcMotor* obj, float nm);
 
 /**
- * @brief 制動電流指令 [A] を設定する (APP_MODE_BRAKE)。
+ * @brief 制動電流指令 [A] を設定する (BLDC_MOTOR_MODE_BRAKE)。
  */
 void BldcMotor_SetBrakeCurrent(BldcMotor* obj, float amp);
 
 /**
- * @brief 制動トルク指令 [N・m] を設定する (APP_MODE_BRAKE_NM)。
+ * @brief 制動トルク指令 [N・m] を設定する (BLDC_MOTOR_MODE_BRAKE_NM)。
  */
 void BldcMotor_SetBrakeNm(BldcMotor* obj, float nm);
 

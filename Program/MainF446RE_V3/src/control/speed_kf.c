@@ -19,6 +19,9 @@ static void ResetState(SpeedKf* kf) {
   kf->p[2][2] = 10.0f;
   kf->p[3][3] = 25.0f;
   kf->s_meas = 0.0f;
+  kf->gated_run_s = 0.0f;
+  kf->gated_run_m = 0.0f;
+  kf->predicted_step_m = 0.0f;
   ResetDiagPrev(kf);
 }
 
@@ -32,6 +35,8 @@ void SpeedKf_Init(SpeedKf* kf) {
   kf->resync = false;
   memset(kf->diag, 0, sizeof(kf->diag));
   kf->gated_count = 0;
+  kf->last_dt_s = 0.0f;
+  kf->resync_count = 0;
   kf->initialized = true;
 }
 
@@ -52,6 +57,7 @@ static void Condition(SpeedKf* kf) {
 void SpeedKf_Predict(SpeedKf* kf, float dt) {
   if (!kf->initialized) return;
   if (!(dt > 0.0f)) return;
+  kf->last_dt_s = dt;
   if (dt > SPEED_KF_MAX_DT_S) {
     // 制御ループが長く止まっていた。その間の動きは分からないので速度を捨てて測り直す
     uint32_t gated = kf->gated_count;
@@ -63,7 +69,8 @@ void SpeedKf_Predict(SpeedKf* kf, float dt) {
 
   // x' = F x : s += v dt + a dt²/2、v += a dt
   const float h2 = 0.5f * dt * dt;
-  kf->x[0] += kf->x[1] * dt + kf->x[2] * h2;
+  kf->predicted_step_m = kf->x[1] * dt + kf->x[2] * h2;
+  kf->x[0] += kf->predicted_step_m;
   kf->x[1] += kf->x[2] * dt;
 
   // P' = F P Fᵀ + Q。F は単位行列に F01=dt, F02=dt²/2, F12=dt を足した形
@@ -98,8 +105,9 @@ void SpeedKf_Predict(SpeedKf* kf, float dt) {
   Condition(kf);
 }
 
-// スカラー測定の更新。h は測定行列 (1×4)、innovation は z − h x、r は測定ノイズの分散
-static void ScalarUpdate(SpeedKf* kf, SpeedKfDiagChannel channel, const float h[N], float innovation, float r) {
+// スカラー測定の更新。h は測定行列 (1×4)、innovation は z − h x、r は測定ノイズの分散。
+// ゲートで測定ノイズを膨らませたら true を返す
+static bool ScalarUpdate(SpeedKf* kf, SpeedKfDiagChannel channel, const float h[N], float innovation, float r) {
   float ph[N];  // P hᵀ
   for (int i = 0; i < N; i++) {
     ph[i] = 0.0f;
@@ -128,13 +136,15 @@ static void ScalarUpdate(SpeedKf* kf, SpeedKfDiagChannel channel, const float h[
   // 予測との差が大きすぎる測定は、分散を膨らませて効きを弱める (外れ値に引きずられない)
   const float gate2 = SPEED_KF_GATE_SIGMA * SPEED_KF_GATE_SIGMA;
   const float y2 = innovation * innovation;
+  bool gated = false;
   if (y2 > gate2 * (hph + r)) {
     r = y2 / gate2 - hph;
     kf->gated_count++;
+    gated = true;
   }
 
   const float s = hph + r;
-  if (!(s > 0.0f)) return;
+  if (!(s > 0.0f)) return gated;
   const float inv_s = 1.0f / s;
 
   float k[N];
@@ -145,6 +155,7 @@ static void ScalarUpdate(SpeedKf* kf, SpeedKfDiagChannel channel, const float h[
     for (int j = 0; j < N; j++) kf->p[i][j] -= k[i] * ph[j];
   }
   Condition(kf);
+  return gated;
 }
 
 void SpeedKf_UpdateDistance(SpeedKf* kf, float delta_m) {
@@ -156,7 +167,27 @@ void SpeedKf_UpdateDistance(SpeedKf* kf, float delta_m) {
   }
   kf->s_meas += delta_m;
   static const float h[N] = {1.0f, 0.0f, 0.0f, 0.0f};
-  ScalarUpdate(kf, SPEED_KF_DIAG_DISTANCE, h, kf->s_meas - kf->x[0], kf->cfg.sigma_s_m * kf->cfg.sigma_s_m);
+  const bool gated =
+      ScalarUpdate(kf, SPEED_KF_DIAG_DISTANCE, h, kf->s_meas - kf->x[0], kf->cfg.sigma_s_m * kf->cfg.sigma_s_m);
+
+  // ゲートが続いたら、推定が測定から外れて戻れなくなっている (SPEED_KF_RESYNC_S)。その間の走行距離 ÷ 時間を
+  // 車速として初期化し直す
+  if (gated) {
+    kf->gated_run_s += kf->last_dt_s;
+    kf->gated_run_m += delta_m;
+    if (kf->gated_run_s >= SPEED_KF_RESYNC_S) {
+      const float v = kf->gated_run_m / kf->gated_run_s;
+      uint32_t gated_count = kf->gated_count;
+      ResetState(kf);
+      kf->gated_count = gated_count;
+      kf->x[1] = v;
+      kf->resync_count++;
+      return;
+    }
+  } else {
+    kf->gated_run_s = 0.0f;
+    kf->gated_run_m = 0.0f;
+  }
 
   // s と s_meas は差だけが意味を持つので、同じ量を引いて小さく保つ (float の仮数は 24bit)
   if (fabsf(kf->s_meas) > SPEED_KF_REBASE_M) {
@@ -164,7 +195,7 @@ void SpeedKf_UpdateDistance(SpeedKf* kf, float delta_m) {
     kf->s_meas = 0.0f;
   }
 
-  if (!isfinite(kf->x[1]) || !isfinite(kf->x[2]) || !isfinite(kf->x[3])) {
+  if (!isfinite(kf->x[1]) || !isfinite(kf->x[2]) || !isfinite(kf->x[3]) || fabsf(kf->x[1]) > SPEED_KF_MAX_SPEED_M_S) {
     uint32_t gated = kf->gated_count;
     ResetState(kf);
     kf->gated_count = gated;

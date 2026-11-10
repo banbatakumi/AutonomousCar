@@ -63,7 +63,7 @@ typedef struct {
 
 /**
  * @brief トルクベクタリングを初期化する。車体寸法 [m] は駆動輪 (後輪) 側の値を渡すこと。
- * 初期状態は有効 (enabled)。
+ * 初期状態は無効 (上位が毎周期 Drive 経由で切り替える)。
  */
 void TorqueVectoring_Init(TorqueVectoring* obj, const ControlParams* params, float track_m,
                           float wheel_radius_m);

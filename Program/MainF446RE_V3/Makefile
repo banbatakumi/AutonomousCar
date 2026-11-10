@@ -192,6 +192,17 @@ $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: %.S Makefile | $(BUILD_DIR)
 	$(AS) -c $(CFLAGS) $< -o $@
 
+# ビルドの識別 (src/comm/build_info.h)。★CubeMX で Makefile を作り直したら書き足すこと。
+# build_info.o は他のオブジェクトが1つでも作り直されたら作り直し、そのときの時刻と git のコミットを埋め込む
+# git のコミットが変わっただけ (コードは同じ) でも作り直すよう、コミットを build/build_git.txt に控えて比べる
+BUILD_INFO_OBJ = $(BUILD_DIR)/build_info.o
+BUILD_GIT_STR := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)$(shell git diff --quiet HEAD -- . 2>/dev/null || echo +dirty)
+BUILD_GIT_STAMP = $(BUILD_DIR)/build_git.txt
+$(shell mkdir -p $(BUILD_DIR); [ "$$(cat $(BUILD_GIT_STAMP) 2>/dev/null)" = "$(BUILD_GIT_STR)" ] || echo "$(BUILD_GIT_STR)" > $(BUILD_GIT_STAMP))
+# ★ 対象ごとの変数 (CFLAGS +=) は前提のオブジェクトにも継がれる (make 3.81 には private が無い) ので、明示の規則にする
+$(BUILD_INFO_OBJ): src/comm/build_info.c $(filter-out $(BUILD_INFO_OBJ),$(OBJECTS)) $(BUILD_GIT_STAMP) Makefile | $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -DBUILD_EPOCH=$$(date +%s)u -DBUILD_GIT='"$(BUILD_GIT_STR)"' $< -o $@
+
 $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 	$(SZ) $@

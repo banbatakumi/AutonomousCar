@@ -19,7 +19,6 @@
 // 2点から線形補間して求める (角度の丸め誤差を無くすため)。ただし2点の距離差が
 // LIDAR_INTERP_MAX_DIFF_MM を超える (壁の端など) か、どちらかが無効 (0) のときは、
 // 補間すると実在しない点を作ってしまうので**ビン中心に近い方の点**をそのまま採用する。
-// (旧実装は常に後者で、実角度とビン中心のずれが最大0.4度程度残っていた)
 //
 // 1度ビンに複数点が入ったときの扱いについて:最短距離を採る方が安全側に見えるが、地図生成用の
 // データを系統的に近距離側へ歪ませるとスキャンマッチングの精度が落ちるため、
@@ -56,7 +55,7 @@
 #define LIDAR_PWM_TIMER_CLOCK_HZ 90000000U
 #define LIDAR_PWM_FREQ_HZ 15000U
 #define LIDAR_PWM_PERIOD (LIDAR_PWM_TIMER_CLOCK_HZ / LIDAR_PWM_FREQ_HZ - 1U)
-#define LIDAR_PWM_DUTY 0.4f  // ★実機で回転数を見ながら詰めること (10Hz 回転が目標)
+#define LIDAR_PWM_DUTY 0.4f  // 10Hz 回転が目標
 // 回転の目標周波数 [Hz] (LD06 のデータシートの標準値 10Hz。可変範囲 5〜13Hz)。点群の各ビンは
 // 1回転に1回しか更新されないので、障害物は最悪この周期の逆数だけ遅れて見える
 #define LIDAR_SCAN_FREQ_HZ 10.0f
@@ -150,14 +149,17 @@ bool Lidar_IsOk(const Lidar* obj);
 LidarRoiResult Lidar_QueryRoi(const Lidar* obj, float center_deg, float half_width_deg,
                               float max_distance_cm);
 
+// 点が窓に入るかを決める関数。x_cm・y_cm は LiDAR を原点とする車両の向きの座標 (x 前・y 左) [cm]。
+// 裏向きの取付による左右の鏡像は戻してある (車両角 = 360 − センサ角)
+typedef bool (*LidarPointFilter)(const void* ctx, float x_cm, float y_cm);
+
 /**
- * @brief center_deg を軸とする矩形の窓 (前方 0〜max_forward_cm、左右 ±half_width_cm、
- * いずれも LiDAR 基準) に入る点の数を数える。center_deg ±89度のビンを走査し、
- * fresh_count は窓の外も含めた走査範囲内で新しいビンの数。左右は対称なので鏡像の影響を受けない。
- * center_deg は 0 または 180 付近でのみ使うこと (Lidar_QueryRoi と同じ)。
+ * @brief center_deg (0 = 前方、180 = 後方。車両角とセンサ角が一致する向きだけ) ±89度のビンを走査し、
+ * inside が真を返す点の数を数える。fresh_count は窓の外も含めた走査範囲内で新しいビンの数。
+ * 左右が非対称な窓 (舵角に沿った予想進路など) を、鏡像を気にせず書くためのもの。
  */
-LidarRoiResult Lidar_QueryCorridor(const Lidar* obj, float center_deg, float half_width_cm,
-                                   float max_forward_cm);
+LidarRoiResult Lidar_QueryRegion(const Lidar* obj, float center_deg, LidarPointFilter inside,
+                                 const void* ctx);
 
 /**
  * @brief 回転モータのデューティを設定する (0.0-1.0)。回転数の調整用。

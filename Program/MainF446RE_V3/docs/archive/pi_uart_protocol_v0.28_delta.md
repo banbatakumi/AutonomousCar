@@ -1,7 +1,7 @@
 # SURGE Mark.2 UART プロトコル — v0.27 → v0.28 差分 (ジャイロ z 軸の感度の補正)
 
 **日付**: 2026-10-19
-**状態**: STM32 側・Pi 側とも実装済み。既定値は v0.27 と同じ動き (補正なし)
+**状態**: STM32 に書き込み済み (`fb65b6f` に含まれる)。走行での検証状況は CLAUDE.md の「現在の状態」を見る
 
 仕様の正は `src/control/control_params.h` (表) と上位の `raspi/proto/protocol.toml`。ここは経緯だけ。
 

@@ -14,11 +14,13 @@ static void ApplySensorParams(Drive* obj);
 // 前輪の各輪の周速 (上位への報告用)。車体の速度は走行距離と加速度計のカルマンフィルタ (speed_kf.h) が出す。
 // 生の角速度は微分ノイズで静止中も ±12m/s 振れるため、各輪の周速は LPF (τ≈10ms) を通した値を報告する
 static void UpdateFrontWheelSpeeds(Drive* obj, float dt_s) {
+  const float sign_left = EncoderDirection_GetSign(&obj->front_dir_left);
+  const float sign_right = EncoderDirection_GetSign(&obj->front_dir_right);
   float omega_left = LPF_UpdateTau(&obj->lpf_front_left,
-                                   Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR,
+                                   Encoder_GetAngularVelocityLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR * sign_left,
                                    DRIVE_LPF_TAU_FRONT_S, dt_s);
   float omega_right = LPF_UpdateTau(&obj->lpf_front_right,
-                                    Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR,
+                                    Encoder_GetAngularVelocityRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR * sign_right,
                                     DRIVE_LPF_TAU_FRONT_S, dt_s);
   obj->front_speed_left_m_s = omega_left * DRIVE_FRONT_WHEEL_RADIUS_M;
   obj->front_speed_right_m_s = omega_right * DRIVE_FRONT_WHEEL_RADIUS_M;
@@ -50,13 +52,38 @@ static float SlipRatio(float wheel_speed_m_s, float reference_speed_m_s, float f
   return (wheel_speed_m_s - reference_speed_m_s) * dir / denominator;
 }
 
+// 前輪の読みの鏡像を直す (encoder_direction.h)。Encoder の更新ごとに1回だけ、周速と車速 KF より先に。
+// 直した増分は車速 KF が使い、周速 (報告用) は判定した向きだけを掛ける。後輪の速度は前周期 (0.5ms 前) の値
+static void UpdateFrontDirection(Drive* obj) {
+  uint32_t encoder_seq = Encoder_GetUpdateSeq(obj->encoder);
+  if (encoder_seq == obj->dir_encoder_seq) return;
+  obj->dir_encoder_seq = encoder_seq;
+  const float rear_m_s = 0.5f * (obj->rear_speed_left_m_s + obj->rear_speed_right_m_s);
+  const float vehicle_m_s = obj->vehicle_speed_m_s;  // 前周期の KF
+  const float dt_s = Encoder_GetLastDt(obj->encoder);
+  obj->front_step_left_m = EncoderDirection_Apply(
+      &obj->front_dir_left, Encoder_GetLastGapLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR * DRIVE_FRONT_WHEEL_RADIUS_M,
+      rear_m_s, vehicle_m_s, dt_s);
+  obj->front_step_right_m = EncoderDirection_Apply(
+      &obj->front_dir_right, Encoder_GetLastGapRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR * DRIVE_FRONT_WHEEL_RADIUS_M,
+      rear_m_s, vehicle_m_s, dt_s);
+}
+
+// 前輪 1輪の走行距離 [0.1mm] へ増分 [m] を積む。端数は carry に持ち越す (encoder.c の Accumulate と同じ)
+static void AccumulateOdom(int32_t* odom_0p1mm, float* carry_0p1mm, float step_m) {
+  float total = *carry_0p1mm + step_m * 1.0e4f;
+  int32_t whole = (int32_t)total;
+  *odom_0p1mm += whole;
+  *carry_0p1mm = total - (float)whole;
+}
+
 // 走行距離と加速度計の車速推定 (speed_kf.h) を1周期ぶん進める。Encoder の更新ごとに1回だけ
 static void UpdateSpeedKf(Drive* obj) {
   uint32_t encoder_seq = Encoder_GetUpdateSeq(obj->encoder);
   if (encoder_seq == obj->kf_encoder_seq) return;
   obj->kf_encoder_seq = encoder_seq;
 
-  // 前輪の回転量の左右平均 → 走行距離。舵角で車体前後方向へ射影するのは LPF の車速と同じ
+  // 前輪の回転量の左右平均 → 走行距離。舵角で車体前後方向へ射影する
   float steer_rad = Steering_GetRoadWheelAngleRad(obj->steering);
   const float cos_steer = cosf(steer_rad);
   SpeedKf_Predict(&obj->speed_kf, Encoder_GetLastDt(obj->encoder));
@@ -64,10 +91,15 @@ static void UpdateSpeedKf(Drive* obj) {
   // 制御ループが長く止まると、エンコーダの角度差 (±半周に畳んである) は 1 回転ぶん折り返す。予測が見込む回転量に
   // 最も近い側へ、各輪の増分に 1 回転の整数倍を足して戻す (止まっていなければ何も変わらない)
   const float expected_rad = SpeedKf_ExpectedDistanceStep(&obj->speed_kf) / (DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
-  float gap_left = Encoder_GetLastGapLeft(obj->encoder) * DRIVE_FRONT_LEFT_DIR;
-  float gap_right = Encoder_GetLastGapRight(obj->encoder) * DRIVE_FRONT_RIGHT_DIR;
+  // 各輪の増分は、読みの鏡像を直した値 (UpdateFrontDirection)
+  float gap_left = obj->front_step_left_m / DRIVE_FRONT_WHEEL_RADIUS_M;
+  float gap_right = obj->front_step_right_m / DRIVE_FRONT_WHEEL_RADIUS_M;
   gap_left += TWO_PI * roundf((expected_rad - gap_left) / TWO_PI);
   gap_right += TWO_PI * roundf((expected_rad - gap_right) / TWO_PI);
+  // 上位へ報告する前輪の走行距離 (TELEMETRY の odom_dist) も、鏡像と折り返しを直したこの増分で積む。
+  // Encoder の累積 (生の向き) のままだと、会場の試走で鏡像の間に距離が逆に減り、走行距離より 9〜10% 短かった
+  AccumulateOdom(&obj->front_odom_left_0p1mm, &obj->front_odom_carry_left, gap_left * DRIVE_FRONT_WHEEL_RADIUS_M);
+  AccumulateOdom(&obj->front_odom_right_0p1mm, &obj->front_odom_carry_right, gap_right * DRIVE_FRONT_WHEEL_RADIUS_M);
   SpeedKf_UpdateDistance(&obj->speed_kf, 0.5f * (gap_left + gap_right) * DRIVE_FRONT_WHEEL_RADIUS_M * cos_steer);
 
   // 加速度は IMU のサンプル (約200Hz) が新しいときだけ。IMU が使えない間は走行距離だけで推定する
@@ -75,7 +107,7 @@ static void UpdateSpeedKf(Drive* obj) {
     const ImuData* imu = Imu_GetData(obj->imu);
     if (imu->sample_seq != obj->kf_imu_seq) {
       obj->kf_imu_seq = imu->sample_seq;
-      // 旋回で乗る -k·ω² を補正してから使う (control_params.h の kf_lever_arm_m。speed_kf.h の SPEED_KF_LEVER_ARM_M)
+      // 旋回で乗る -k·ω² を補正してから使う (control_params.h の kf_lever_arm_m)
       const float gz_rad_s = Radians(imu->gyro_z);
       SpeedKf_UpdateAccel(&obj->speed_kf, imu->accel_x_raw + obj->params.kf_lever_arm_m * gz_rad_s * gz_rad_s);
     }
@@ -84,6 +116,7 @@ static void UpdateSpeedKf(Drive* obj) {
 
 // dt_s は前回からの実際の経過時間 (呼び出しが飛んだ周期も含む。ローパスの係数に使う)
 static void UpdateObservations(Drive* obj, float dt_s) {
+  UpdateFrontDirection(obj);
   UpdateFrontWheelSpeeds(obj, dt_s);
   UpdateSpeedKf(obj);
   // 車体の車速 = カルマンフィルタ。PID・TC のスリップの基準・自動停止の前後判定のすべてがこれを使う
@@ -102,8 +135,7 @@ static void UpdateObservations(Drive* obj, float dt_s) {
 
   // 旋回中は内輪と外輪で本来の速度が違う。ここを車体速度で共通化すると外輪が常時「空転」と
   // 判定されてTCが誤介入するため、ヨーレートから各輪の基準速度を作る。
-  // 基準速度はカルマンフィルタの車速 (遅れがほぼ無い。以前の前輪LPFは τ10ms の遅れが加速で基準を低く見せ、
-  // スリップ率に偏りを入れていた)
+  // 基準速度はカルマンフィルタの車速 (遅れがほぼ無い。遅れた車速だと加速でスリップ率に偏りが入る)
   float half_track = DRIVE_REAR_TRACK_M * 0.5f;
   obj->slip_ref_left_m_s = obj->vehicle_speed_m_s - obj->yaw_rate_rad_s * half_track;
   obj->slip_ref_right_m_s = obj->vehicle_speed_m_s + obj->yaw_rate_rad_s * half_track;
@@ -263,13 +295,20 @@ static float SlipSpeedTarget(float slip_target, float reference_speed_m_s, float
 static void ResetAbs(Drive* obj) {
   ResetSlipLimiter(&obj->abs);
   obj->abs_limit_nm = DRIVE_MAX_BRAKE_TORQUE_NM;
+  obj->abs_request_nm = 0.0f;
+  obj->abs_in_speed_pi = false;
   obj->abs_floor_time_s = 0.0f;
   obj->abs_fallback_latched = false;
 }
 
+static void ResetTractionLimiter(TractionLimiter* st) {
+  st->integral_nm = DRIVE_MAX_TORQUE_NM;
+  st->slipping = false;
+}
+
 static void ResetTraction(Drive* obj) {
-  ResetSlipLimiter(&obj->tc_left);
-  ResetSlipLimiter(&obj->tc_right);
+  ResetTractionLimiter(&obj->tc_left);
+  ResetTractionLimiter(&obj->tc_right);
   obj->tc_limit_left_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limit_right_nm = DRIVE_MAX_TORQUE_NM;
   obj->tc_limiting = false;
@@ -280,6 +319,7 @@ static void ResetTraction(Drive* obj) {
 // 合わせる (select-low)。MD の制動は車輪の回転を妨げる向きに掛かるので、ロック傾向は
 // 「車輪が路面より遅い」= 進行方向を基準にしたスリップ速度の負側
 static float ApplyAbs(Drive* obj, float requested_nm, float dt_s) {
+  obj->abs_request_nm = requested_nm;
   if (obj->abs_fallback_latched) return requested_nm;
 
   const ControlParams* p = &obj->params;
@@ -309,6 +349,28 @@ static float ApplyAbs(Drive* obj, float requested_nm, float dt_s) {
   return obj->abs_limit_nm < requested_nm ? obj->abs_limit_nm : requested_nm;
 }
 
+// 車速PIの減速に ABS を掛ける。前進中 (車速 > DRIVE_STANDSTILL_SPEED_M_S) に PI が減速トルク (負) を
+// 要求している周期だけ真を返し、*left_nm・*right_nm を ABS の上限で絞る (TC の代わり)。
+//
+// 減速に駆動用の TC を使うと上限が 0 と満額を往復し、後輪が大きく滑ってスピンした。
+// ABS は左右共通の上限 (select-low) で、制動の場面に合わせて調整してある (abs_*)。後退中の減速は対象外
+// (ApplyAbs は前進の制動の向きだけを見ている。後退は低速の手動だけ)
+static bool ApplySpeedPiAbs(Drive* obj, float* left_nm, float* right_nm, float dt_s) {
+  const bool braking = obj->abs_enabled && obj->vehicle_speed_m_s > DRIVE_STANDSTILL_SPEED_M_S &&
+                       *left_nm < 0.0f && *right_nm < 0.0f;
+  if (!braking) {
+    if (obj->abs_in_speed_pi) ResetAbs(obj);
+    return false;
+  }
+  obj->abs_in_speed_pi = true;
+  // 強く減速したい方の輪を要求にする。ABS は select-low の共通の上限なので、両輪をそれで絞る
+  const float request_nm = -(*left_nm < *right_nm ? *left_nm : *right_nm);
+  const float limit_nm = ApplyAbs(obj, request_nm, dt_s);
+  if (*left_nm < -limit_nm) *left_nm = -limit_nm;
+  if (*right_nm < -limit_nm) *right_nm = -limit_nm;
+  return true;
+}
+
 // TC + 片輪浮き対策: 1輪ぶんのトルク上限を更新する。
 //   request_nm       この周期にその輪へ掛けたいトルク (符号つき。TV の差を載せた後)
 //   applied_nm       前の周期に実際に掛けたトルク (符号つき)
@@ -316,13 +378,13 @@ static float ApplyAbs(Drive* obj, float requested_nm, float dt_s) {
 //   lead_m_s         その輪が反対の輪よりトルクの向きへ先走っている速度 (ヨーレートぶんを除く)
 //   reference_m_s    その輪の基準速度
 // lift_limited には、片輪浮き対策の偏差の方が効いていたかを返す
-static float UpdateWheelLimit(Drive* obj, SlipLimiter* st, float request_nm, float applied_nm,
+static float UpdateWheelLimit(Drive* obj, TractionLimiter* st, float request_nm, float applied_nm,
                               float slip_m_s, float lead_m_s, float reference_m_s, float dt_s,
                               bool* lift_limited) {
   const ControlParams* p = &obj->params;
   *lift_limited = false;
   if (!obj->tc_enabled && !obj->wheel_lift_guard_enabled) {
-    ResetSlipLimiter(st);
+    ResetTractionLimiter(st);
     return DRIVE_MAX_TORQUE_NM;
   }
 
@@ -340,9 +402,15 @@ static float UpdateWheelLimit(Drive* obj, SlipLimiter* st, float request_nm, flo
   }
   // 掛けていたトルクと掛けたいトルクの向きが違う (駆動→減速の切り替わり) なら、覚えているのは
   // 逆向きのグリップなので持ち越さない
-  if (st->active && request_nm * applied_nm < 0.0f) ResetSlipLimiter(st);
-  return UpdateSlipLimiter(st, error, Abs(request_nm), Abs(applied_nm), p->tc_kp_nm_per_m_s,
-                           p->tc_ki_nm_per_m, p->tc_min_torque_nm, DRIVE_MAX_TORQUE_NM, dt_s);
+  if (request_nm * applied_nm < 0.0f) ResetTractionLimiter(st);
+
+  // PI (手順は drive.h の「制限のしかた」)。滑らなければ積分が最大値まで戻り、上限 = 最大値 = 制限なし
+  const float min_nm = p->tc_min_torque_nm;
+  const bool slipping = error < 0.0f;
+  if (slipping && !st->slipping && st->integral_nm > Abs(applied_nm)) st->integral_nm = Abs(applied_nm);
+  st->slipping = slipping;
+  st->integral_nm = Constrain(st->integral_nm + p->tc_ki_nm_per_m * error * dt_s, min_nm, DRIVE_MAX_TORQUE_NM);
+  return Constrain(st->integral_nm + p->tc_kp_nm_per_m_s * error, min_nm, DRIVE_MAX_TORQUE_NM);
 }
 
 // 総駆動トルクと左右差を各輪へ配り、トルクの絶対上限 (DRIVE_MAX_TORQUE_NM) に各輪ごとに収める。
@@ -356,8 +424,8 @@ static void AllocateTorque(float total_nm, float diff_nm, float* left_nm, float*
 
 // 車速フィードバックが壊れて積分が振り切れても、実速度が上限を超えたら加速させない
 static float ApplyOverspeedLimit(const Drive* obj, float torque_nm) {
-  if (obj->vehicle_speed_m_s > DRIVE_MAX_SPEED_M_S && torque_nm > 0.0f) return 0.0f;
-  if (obj->vehicle_speed_m_s < -DRIVE_MAX_SPEED_M_S && torque_nm < 0.0f) return 0.0f;
+  if (obj->vehicle_speed_m_s > DRIVE_OVERSPEED_GUARD_M_S && torque_nm > 0.0f) return 0.0f;
+  if (obj->vehicle_speed_m_s < -DRIVE_OVERSPEED_GUARD_M_S && torque_nm < 0.0f) return 0.0f;
   return torque_nm;
 }
 
@@ -433,6 +501,15 @@ void Drive_Init(Drive* obj, Motors* motors, Encoder* encoder, Steering* steering
   ApplySensorParams(obj);
   obj->kf_encoder_seq = Encoder_GetUpdateSeq(encoder);  // 起動前の更新は取り込まない
   obj->kf_imu_seq = 0;
+  EncoderDirection_Init(&obj->front_dir_left);
+  EncoderDirection_Init(&obj->front_dir_right);
+  obj->dir_encoder_seq = Encoder_GetUpdateSeq(encoder);
+  obj->front_step_left_m = 0.0f;
+  obj->front_step_right_m = 0.0f;
+  obj->front_odom_left_0p1mm = 0;
+  obj->front_odom_right_0p1mm = 0;
+  obj->front_odom_carry_left = 0.0f;
+  obj->front_odom_carry_right = 0.0f;
 
   obj->enabled = false;
   obj->tc_enabled = false;  // 上位が送る (ras_link.c と同じ。毎周期 Drive_SetTractionControlEnabled で上書きされる)
@@ -484,8 +561,10 @@ void Drive_Update(Drive* obj) {
   // ローパスは長く空いた後は新しい値をそのまま採るのが正しいので、丸める前の経過時間を渡す
   UpdateObservations(obj, elapsed_s);
 
-  // ABSの状態は制動モードの間だけ持ち越す。離したら次の制動を全量から始め、フォールバックも解く
-  if (!(obj->enabled && !obj->side_brake_active && obj->brake_active && obj->abs_enabled)) {
+  // ABSの状態は制動の間 (制動モードと、車速PIの減速 = ApplySpeedPiAbs) だけ持ち越す。離したら次の制動を
+  // 全量から始め、フォールバックも解く
+  if (!(obj->enabled && !obj->side_brake_active && obj->abs_enabled &&
+        (obj->brake_active || (obj->abs_in_speed_pi && !obj->torque_mode_active)))) {
     ResetAbs(obj);
   }
 
@@ -587,18 +666,25 @@ void Drive_Update(Drive* obj) {
 
   bool lift_left = false;
   bool lift_right = false;
-  obj->tc_limit_left_nm = UpdateWheelLimit(obj, &obj->tc_left, request_left_nm, obj->torque_left_nm,
-                                           slip_left_m_s, lead_left_m_s, obj->slip_ref_left_m_s, dt_s,
-                                           &lift_left);
-  obj->tc_limit_right_nm = UpdateWheelLimit(obj, &obj->tc_right, request_right_nm, obj->torque_right_nm,
-                                            slip_right_m_s, lead_right_m_s, obj->slip_ref_right_m_s, dt_s,
-                                            &lift_right);
-
-  // 片輪を絞っても反対の輪は要求のまま (絞った分を載せない)
-  float left_nm = Constrain(request_left_nm, -obj->tc_limit_left_nm, obj->tc_limit_left_nm);
-  float right_nm = Constrain(request_right_nm, -obj->tc_limit_right_nm, obj->tc_limit_right_nm);
-  bool limited_left = left_nm != request_left_nm;
-  bool limited_right = right_nm != request_right_nm;
+  float left_nm = request_left_nm;
+  float right_nm = request_right_nm;
+  // 車速PIの減速は ABS で絞る (ApplySpeedPiAbs)。その間 TC は使わない (覚えている駆動側のグリップも捨てる)
+  const bool pi_abs = !obj->torque_mode_active && !launching && ApplySpeedPiAbs(obj, &left_nm, &right_nm, dt_s);
+  if (pi_abs) {
+    ResetTraction(obj);
+  } else {
+    obj->tc_limit_left_nm = UpdateWheelLimit(obj, &obj->tc_left, request_left_nm, obj->torque_left_nm,
+                                             slip_left_m_s, lead_left_m_s, obj->slip_ref_left_m_s, dt_s,
+                                             &lift_left);
+    obj->tc_limit_right_nm = UpdateWheelLimit(obj, &obj->tc_right, request_right_nm, obj->torque_right_nm,
+                                              slip_right_m_s, lead_right_m_s, obj->slip_ref_right_m_s, dt_s,
+                                              &lift_right);
+    // 片輪を絞っても反対の輪は要求のまま (絞った分を載せない)
+    left_nm = Constrain(request_left_nm, -obj->tc_limit_left_nm, obj->tc_limit_left_nm);
+    right_nm = Constrain(request_right_nm, -obj->tc_limit_right_nm, obj->tc_limit_right_nm);
+  }
+  bool limited_left = !pi_abs && left_nm != request_left_nm;
+  bool limited_right = !pi_abs && right_nm != request_right_nm;
 
   // 後輪周速が物理的にあり得ない値まで来たら、判定に関係なくその輪のトルクを0にする (最終防波堤)
   if (obj->wheel_lift_guard_enabled) {
@@ -701,8 +787,8 @@ void Drive_SetAbsEnabled(Drive* obj, bool enabled) {
 }
 
 bool Drive_IsAbsActive(const Drive* obj) {
-  return obj->enabled && !obj->side_brake_active && obj->brake_active && obj->abs_enabled &&
-         !obj->abs_fallback_latched && obj->abs_limit_nm < obj->brake_torque_nm;
+  return obj->enabled && !obj->side_brake_active && (obj->brake_active || obj->abs_in_speed_pi) &&
+         obj->abs_enabled && !obj->abs_fallback_latched && obj->abs_limit_nm < obj->abs_request_nm;
 }
 
 void Drive_Enable(Drive* obj) {
@@ -753,6 +839,18 @@ float Drive_GetAccelBiasKf(const Drive* obj) {
 
 uint32_t Drive_GetKfGatedCount(const Drive* obj) {
   return obj->speed_kf.gated_count;
+}
+
+int32_t Drive_GetFrontOdom0p1mm(const Drive* obj, bool right) {
+  return right ? obj->front_odom_right_0p1mm : obj->front_odom_left_0p1mm;
+}
+
+uint32_t Drive_GetFrontReversalCount(const Drive* obj) {
+  return EncoderDirection_GetFlips(&obj->front_dir_left) + EncoderDirection_GetFlips(&obj->front_dir_right);
+}
+
+float Drive_GetFrontEncoderSign(const Drive* obj, bool right) {
+  return EncoderDirection_GetSign(right ? &obj->front_dir_right : &obj->front_dir_left);
 }
 
 float Drive_GetSlipLeft(const Drive* obj) {
