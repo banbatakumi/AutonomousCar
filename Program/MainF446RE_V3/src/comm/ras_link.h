@@ -24,7 +24,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x001Du
+#define RAS_PROTOCOL_VERSION 0x001Eu
 // COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
 // (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
 #define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
@@ -117,6 +117,9 @@ typedef enum {
 // 「ローンチコントロール」の節)。brake・torque_mode・side_brake の間は意味を持たない。
 // 実際に発進中かは TELEMETRY.flags の RAS_FLAG_LAUNCH_ACTIVE
 #define RAS_CMD_FLAG2_LAUNCH (1u << 3)
+// ウィンカーの点滅パターン。0 は互換性のためモード2（滑らか）として扱う。
+#define RAS_CMD_FLAG2_WINKER_MODE_MASK (0x03u << 4)
+#define RAS_CMD_FLAG2_WINKER_MODE_SHIFT 4u
 
 // COMMAND.flags bit3-4 (前照灯モード)
 typedef enum {

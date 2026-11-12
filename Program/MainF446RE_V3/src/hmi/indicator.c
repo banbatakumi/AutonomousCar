@@ -90,7 +90,9 @@ void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
   BreathLed_Init(&obj->breath_drive, drive_led);
 }
 
-void Indicator_Update(Indicator* obj, bool estop_active, LightingWinkerState winker_request) {
+void Indicator_Update(Indicator* obj, bool estop_active, LightingWinkerState winker_request,
+                      LightingWinkerMode winker_mode) {
+  Lighting_SetWinkerMode(obj->lighting, winker_mode);
   UpdateFaultIndication(obj, estop_active, winker_request);
   UpdatePowerIndication(obj);
   UpdateUndervoltageWarning(obj);

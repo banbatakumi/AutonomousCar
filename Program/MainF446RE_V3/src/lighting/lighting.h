@@ -14,6 +14,12 @@ typedef enum {
   LIGHTING_WINKER_HAZARD,
 } LightingWinkerState;
 
+typedef enum {
+  LIGHTING_WINKER_MODE_NORMAL = 1,
+  LIGHTING_WINKER_MODE_SMOOTH = 2,
+  LIGHTING_WINKER_MODE_BULB = 3,
+} LightingWinkerMode;
+
 // 前照灯の点灯パターン
 typedef enum {
   LIGHTING_HEADLIGHT_OFF = 0,
@@ -37,6 +43,7 @@ typedef struct {
   float rear_light_duty;   // rear_light に直近書き込んだ duty (ウィンカー減光判定に使う)
 
   LightingWinkerState winker_state;
+  LightingWinkerMode winker_mode;
   Timer winker_timer;
 } Lighting;
 
@@ -85,6 +92,7 @@ void Lighting_SetBrakeFlashing(Lighting* obj, bool on);
  * @brief ウィンカー/ハザードの状態を設定する。
  */
 void Lighting_SetWinker(Lighting* obj, LightingWinkerState state);
+void Lighting_SetWinkerMode(Lighting* obj, LightingWinkerMode mode);
 
 /**
  * @brief 直近に設定したウィンカー/ハザードの状態を取得する。

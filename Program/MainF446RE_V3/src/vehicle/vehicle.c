@@ -330,6 +330,10 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool launch_requested = (command->flags2 & RAS_CMD_FLAG2_LAUNCH) != 0;
   bool winker_left = (command->flags2 & RAS_CMD_FLAG2_WINKER_LEFT) != 0;
   bool winker_right = (command->flags2 & RAS_CMD_FLAG2_WINKER_RIGHT) != 0;
+  uint8_t winker_mode = (uint8_t)((command->flags2 & RAS_CMD_FLAG2_WINKER_MODE_MASK) >> RAS_CMD_FLAG2_WINKER_MODE_SHIFT);
+  obj->winker_mode = winker_mode >= 1u && winker_mode <= 3u
+                         ? (LightingWinkerMode)winker_mode
+                         : LIGHTING_WINKER_MODE_SMOOTH;
   if (winker_left && winker_right) {
     obj->winker_request = LIGHTING_WINKER_HAZARD;
   } else if (winker_left) {
@@ -504,6 +508,7 @@ static void ApplyFailsafe(Vehicle* obj) {
   Lighting_SetPassing(obj->lighting, false);
   SetHorn(obj, false);
   obj->winker_request = LIGHTING_WINKER_OFF;
+  obj->winker_mode = LIGHTING_WINKER_MODE_SMOOTH;
   obj->auto_stop_active = false;
   obj->auto_stop_lidar_valid = false;
 }
@@ -680,6 +685,7 @@ bool Vehicle_IsHeartbeatMissing(const Vehicle* obj) {
 bool Vehicle_IsAutoStopBlind(const Vehicle* obj) { return obj->auto_stop_blind; }
 
 LightingWinkerState Vehicle_GetWinkerRequest(const Vehicle* obj) { return obj->winker_request; }
+LightingWinkerMode Vehicle_GetWinkerMode(const Vehicle* obj) { return obj->winker_mode; }
 
 bool Vehicle_IsWinkerLeftActive(const Vehicle* obj) {
   LightingWinkerState state = Lighting_GetWinkerState(obj->lighting);

@@ -71,6 +71,7 @@ void Indicator_Init(Indicator* obj, Power* power, Lighting* lighting,
  * (ウィンカーとハザードは Lighting 上で表現を共有するため、優先度の調停をここに集約している)。
  * Lighting_Update より前に呼ぶこと。
  */
-void Indicator_Update(Indicator* obj, bool estop_active, LightingWinkerState winker_request);
+void Indicator_Update(Indicator* obj, bool estop_active, LightingWinkerState winker_request,
+                     LightingWinkerMode winker_mode);
 
 #endif  // INDICATOR_H_

@@ -42,6 +42,28 @@ static float Lighting_WinkerDutyAt(uint32_t elapsed_ms) {
   return 0.0f;
 }
 
+static uint32_t Lighting_WinkerPeriod(const Lighting* obj) {
+  if (obj->winker_mode == LIGHTING_WINKER_MODE_NORMAL) return 1000u;
+  if (obj->winker_mode == LIGHTING_WINKER_MODE_BULB) return 1000u;
+  return LIGHTING_WINKER_PERIOD_MS;
+}
+
+static float Lighting_ModeDutyAt(const Lighting* obj, uint32_t elapsed_ms) {
+  if (obj->winker_mode == LIGHTING_WINKER_MODE_NORMAL)
+    return elapsed_ms < 500u ? 1.0f : 0.0f;
+  if (obj->winker_mode == LIGHTING_WINKER_MODE_BULB) {
+    // Incandescent filament has a slower thermal rise and a quicker decay than LED PWM.
+    if (elapsed_ms < 140u) {
+      float x = (float)elapsed_ms / 140.0f;
+      return x * x;
+    }
+    if (elapsed_ms < 500u) return 1.0f;
+    if (elapsed_ms < 590u) return 1.0f - (float)(elapsed_ms - 500u) / 90.0f;
+    return 0.0f;
+  }
+  return Lighting_WinkerDutyAt(elapsed_ms);
+}
+
 // 前後灯 (前照灯・尾灯/ブレーキ灯) が眩しく点いている間はウィンカーが埋もれないよう、
 // その実効 duty に合わせて底上げする。左右ウィンカーは前後共有の1灯のため前後どちらの
 // duty が高くても埋もれ得るので、両方の大きい方を見る。両方とも暗いとき (前照灯 OFF かつ
@@ -108,6 +130,7 @@ void Lighting_Init(Lighting* obj, TIM_HandleTypeDef* front_htim, uint32_t front_
   obj->brake_flashing = false;
   obj->brake_dimmed = false;
   obj->winker_state = LIGHTING_WINKER_OFF;
+  obj->winker_mode = LIGHTING_WINKER_MODE_SMOOTH;
   obj->front_light_duty = 0.0f;
   obj->rear_light_duty = 0.0f;
 
@@ -168,6 +191,13 @@ void Lighting_SetWinker(Lighting* obj, LightingWinkerState state) {
   }
 }
 
+void Lighting_SetWinkerMode(Lighting* obj, LightingWinkerMode mode) {
+  if (mode < LIGHTING_WINKER_MODE_NORMAL || mode > LIGHTING_WINKER_MODE_BULB) return;
+  if (obj->winker_mode == mode) return;
+  obj->winker_mode = mode;
+  Timer_Reset(&obj->winker_timer);
+}
+
 void Lighting_Update(Lighting* obj) {
   if (obj->brake_on && obj->brake_flashing) {
     Lighting_ApplyRearLight(obj);
@@ -178,11 +208,12 @@ void Lighting_Update(Lighting* obj) {
   }
 
   uint32_t elapsed_ms = Timer_ReadMs(&obj->winker_timer);
-  if (elapsed_ms >= LIGHTING_WINKER_PERIOD_MS) {
+  uint32_t period_ms = Lighting_WinkerPeriod(obj);
+  if (elapsed_ms >= period_ms) {
     Timer_Reset(&obj->winker_timer);
     elapsed_ms = 0;
   }
-  float duty = Lighting_WinkerDutyAt(elapsed_ms) * Lighting_WinkerPeakDuty(obj);
+  float duty = Lighting_ModeDutyAt(obj, elapsed_ms) * Lighting_WinkerPeakDuty(obj);
 
   float left_duty = 0.0f;
   float right_duty = 0.0f;

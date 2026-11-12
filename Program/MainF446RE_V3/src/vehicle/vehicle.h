@@ -192,6 +192,7 @@ typedef struct {
   // Lighting へ直接反映せず、フォールト時のハザード優先の調停は Indicator (src/hmi/indicator.c)
   // に委ねる (Lighting_SetWinker を呼ぶのは Indicator だけ)
   LightingWinkerState winker_request;
+  LightingWinkerMode winker_mode;
 
   // ARMが外れている(=走らせる予定がない)時間を計り、LiDAR電源の遅延OFFに使う
   Timer lidar_idle_timer;
@@ -333,6 +334,7 @@ bool Vehicle_IsAutoStopBlind(const Vehicle* obj);
  * あくまで上位の「要求」であって実際の点灯状態と一致するとは限らない。
  */
 LightingWinkerState Vehicle_GetWinkerRequest(const Vehicle* obj);
+LightingWinkerMode Vehicle_GetWinkerMode(const Vehicle* obj);
 
 /**
  * @brief 左/右ウィンカーが実際に点滅中かどうかを取得する (TELEMETRY.flags の

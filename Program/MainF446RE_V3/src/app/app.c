@@ -306,7 +306,8 @@ void MainApp() {
     Watchdog_Refresh();
 
     Power_Update(&power);
-    Indicator_Update(&indicator, Vehicle_IsEstopLatched(&vehicle), Vehicle_GetWinkerRequest(&vehicle));
+    Indicator_Update(&indicator, Vehicle_IsEstopLatched(&vehicle), Vehicle_GetWinkerRequest(&vehicle),
+                     Vehicle_GetWinkerMode(&vehicle));
     Lighting_Update(&lighting);
     Buzzer_Update(&buzzer);
     UpdateSensors();

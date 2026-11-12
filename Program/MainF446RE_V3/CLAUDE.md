@@ -23,7 +23,7 @@ make run      # make -j12 後、SWDFlash.sh (ST-Link, STM32_Programmer_CLI) で 
 
 書き込み・実機確認の状況は上位側リポジトリの `surge_mk2/PROGRESS.md`「現在の状態」が正 (ここに複製しない)。
 
-- プロトコル: `RAS_PROTOCOL_VERSION` = 0x001D (v0.29)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。
+- プロトコル: `RAS_PROTOCOL_VERSION` = 0x001E (v0.30)。上位と必ず一緒に入れ替える (上位は版が合わない STM32 を ARM しない)。
 - 書き込まれたビルドは起動時の LOG と VERSION の `build_epoch` で確かめる (`src/comm/build_info.c`。Makefile が git のコミットを埋め込む。★CubeMX で Makefile を作り直したら規則を書き足す)。Flash の控えは Mac の `~/stm32_backup_*/`。
 - 前輪エンコーダ (AS5600) の読みが「2π − 本来の角度」に鏡像化することがある → 後輪と前周期の KF の向きで前輪の増分の向きを直す (`src/control/encoder_direction.c`。反転したら LOG WARN)。TELEMETRY の `odom_dist` もこの補正後の増分から積む (`Drive_GetFrontOdom0p1mm`。`Encoder` の累積は生の向きのまま)。車速 KF はゲートが `SPEED_KF_RESYNC_S` 続いたら走行距離から測り直し、|車速| > 20m/s で初期化する (`speed_kf.c`)。
 - 車速は前輪の走行距離と加速度計のカルマンフィルタ (`src/control/speed_kf.c`)。前輪エンコーダの校正 (`lib/encoder_cal`、`enc_*`)・KF の調整値 (`kf_*`)・ジャイロ z の感度 (`imu_gyro_z_scale`)・制動の減速度 (`brake_decel_m_s2`)・MD のトルクの遅れ (`md_torque_lag_s`) は `CONFIG_SET` で上位 (`vehicle.toml`) が送る。TELEMETRY の `front_angle` は校正前の生の読み。
