@@ -132,6 +132,28 @@
 // LiDARの結果に関わらず、超音波がこの距離未満を検知したら常に停止する (至近距離の保険。
 // LiDARの最短測距距離や取付高さの死角を補う) [cm]
 #define VEHICLE_AUTO_STOP_ULTRASONIC_NEAR_CM 5.0f
+// ステレオ (Pi が送る障害物の点、stereo_obstacle.h) を自動停止に足す。LiDAR・超音波とは OR で、
+// ステレオは「止める条件を足すだけ」にする (途絶すれば LiDAR・超音波だけで判定する)。
+// 誤検知 (床の取り違え・車体の映り込みは単発が多い) を避けるため、直近 2 フレームの両方で
+// 予想進路に MIN_POINTS 点以上あるときだけ当たりにする。
+// 点は撮影から Pi の処理 (約50ms) + 通信 + 受信後の経過だけ古く、その間に車が進んだ分と、2 フレーム確認の
+// 1 フレーム (CONFIRM_PERIOD) を、予想進路の長さに足す (v × 古さ)。
+// MAX_AGE はこれを超えて届かないフレームを使わない時間 (ステレオ 10Hz の 3 周期)。どれも机上値で、実機で詰める
+//
+// 値は実走行ログ 2 本 (衝突 4 回のコース走行 43 秒と、衝突なしの周回 120 秒) の再生で決めた
+// (最小点数 {3,4,5,6,8} × 確認 {2,3} × 自車除外の広さ)。点数 3 だと周回中に LiDAR と無関係なステレオ単独の検出が
+// 32 区間 (0.08 秒前後) 出て、作動したら止まるまで解除しないため完全停止になる。5 点にすると 8 区間に減る。
+// 確認フレームを 3 にすると衝突前の検出リードが大きく縮むので 2 のまま。
+// 自車除外は、車体の外に出ている前輪・ナックルをステレオが拾う (x≈0.31m, y≈-0.10m を両ログで確認) のを避ける。
+// 除外の手前は LiDAR・超音波の近接 (5cm) が受け持つ。広げるほど誤検出は減るが、その分だけ衝突前の検出が遅れる
+#define VEHICLE_AUTO_STOP_STEREO_MIN_POINTS 5
+#define VEHICLE_AUTO_STOP_STEREO_CONFIRM_FRAMES 2
+#define VEHICLE_AUTO_STOP_STEREO_SELF_EXT_FRONT_M 0.05f
+#define VEHICLE_AUTO_STOP_STEREO_SELF_EXT_SIDE_M 0.04f
+#define VEHICLE_AUTO_STOP_STEREO_MAX_AGE_S 0.3f
+// ステレオ (10Hz) のフレーム間隔。確認フレームの遅れは (CONFIRM_FRAMES - 1) 枚ぶんをこれで足す
+#define VEHICLE_AUTO_STOP_STEREO_FRAME_PERIOD_S 0.1f
+#define VEHICLE_AUTO_STOP_STEREO_COMM_DELAY_S 0.01f
 
 // 超音波センサの車体先端(バンパー)からの後退量 [cm]。車体の寸法・センサの取付位置 (上の VEHICLE_BODY_*・
 // VEHICLE_*_X_M) から求める。
@@ -236,6 +258,13 @@ typedef struct {
   // 直近の周期で自動停止 (RAS_CMD_FLAG_AUTO_STOP) が実際に制動へ介入したか。
   // テレメトリの RAS_FLAG_AUTO_STOP_ACTIVE に使う
   bool auto_stop_active;
+  // 今の介入のきっかけにステレオの点が含まれるか (介入が終わると偽に戻る)。RAS_FLAG_AUTO_STOP_STEREO に使う
+  bool auto_stop_stereo;
+  // ステレオの判定結果と出した時刻 (LiDAR と同じ理由で VEHICLE_AUTO_STOP_LIDAR_PERIOD_S ごとに出し直す。Micros)
+  bool stereo_hit;
+  bool stereo_eval_valid;
+  bool stereo_eval_forward;
+  uint32_t stereo_eval_us;
   // LiDAR の予想進路の判定の結果と、それを出した向き・時刻 (VEHICLE_AUTO_STOP_LIDAR_PERIOD_S ごとに出し直す)
   LidarRoiResult auto_stop_lidar_roi;
   bool auto_stop_lidar_forward;
@@ -327,6 +356,16 @@ bool Vehicle_IsHeartbeatMissing(const Vehicle* obj);
  * TELEMETRY の RAS_FLAG_AUTO_STOP_BLIND に使う。
  */
 bool Vehicle_IsAutoStopBlind(const Vehicle* obj);
+
+/**
+ * @brief ステレオの障害物が使えるか (300ms 以内に届いているか)。TELEMETRY の RAS_FLAG_STEREO_OK に使う。
+ */
+bool Vehicle_IsStereoOk(const Vehicle* obj);
+
+/**
+ * @brief 今の自動停止の介入のきっかけにステレオの点が含まれるか。TELEMETRY の RAS_FLAG_AUTO_STOP_STEREO に使う。
+ */
+bool Vehicle_IsAutoStopStereo(const Vehicle* obj);
 
 /**
  * @brief 上位から要求されたウィンカー/ハザード状態を取得する。フォールト時のハザード優先など

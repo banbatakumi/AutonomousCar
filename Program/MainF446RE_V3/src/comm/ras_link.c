@@ -36,6 +36,7 @@
 #define RAS_LEN_COMMAND 15
 #define RAS_LEN_CONFIG_SET 6
 #define RAS_LEN_PING 4
+#define RAS_LEN_STEREO_OBS 162
 #define RAS_LEN_CONFIG_GET 2
 #define RAS_LEN_VERSION_REQ 0
 #define RAS_LEN_LIMITS_REQ 0
@@ -448,6 +449,13 @@ static void HandleCommand(RasLink* obj, const uint8_t* p, uint32_t now_us) {
   obj->command_alive = true;
 }
 
+// STEREO_OBS: age_ms(1) + count(1) + xy(i16 × 80)。count が最大を超えても Push が切る
+static void HandleStereoObs(RasLink* obj, const uint8_t* p, uint32_t now_us) {
+  int16_t xy[2 * STEREO_OBS_MAX_POINTS];
+  for (uint8_t i = 0; i < 2 * STEREO_OBS_MAX_POINTS; i++) xy[i] = GetI16(&p[2 + 2 * i]);
+  StereoObstacles_Push(&obj->stereo, now_us, p[0], p[1], xy);
+}
+
 static void HandlePing(RasLink* obj, const uint8_t* p, uint32_t rx_time_us) {
   uint8_t payload[RAS_LEN_PONG];
   uint16_t pos = 0;
@@ -552,6 +560,9 @@ static void DispatchPacket(RasLink* obj, uint32_t frame_end_us) {
     case RAS_TYPE_PING:
       HandlePing(obj, p, frame_end_us);
       break;
+    case RAS_TYPE_STEREO_OBS:
+      HandleStereoObs(obj, p, frame_end_us);
+      break;
     case RAS_TYPE_CONFIG_SET: {
       uint16_t param_id = GetU16(&p[0]);
       float applied = 0.0f;
@@ -586,6 +597,8 @@ static int ExpectedPayloadLen(uint8_t type) {
       return RAS_LEN_CONFIG_SET;
     case RAS_TYPE_PING:
       return RAS_LEN_PING;
+    case RAS_TYPE_STEREO_OBS:
+      return RAS_LEN_STEREO_OBS;
     case RAS_TYPE_CONFIG_GET:
       return RAS_LEN_CONFIG_GET;
     case RAS_TYPE_VERSION_REQ:
@@ -728,6 +741,7 @@ static void ParseByte(RasLink* obj, uint8_t byte) {
 void RasLink_Init(RasLink* obj, Serial* serial) {
   memset(obj, 0, sizeof(*obj));
   obj->serial = serial;
+  StereoObstacles_Init(&obj->stereo);
 
   QueueInit(&obj->tx_queue[RAS_TXQ_PONG], obj->tx_pong_storage, sizeof(obj->tx_pong_storage));
   QueueInit(&obj->tx_queue[RAS_TXQ_TELEMETRY], obj->tx_telemetry_storage, sizeof(obj->tx_telemetry_storage));
@@ -834,6 +848,10 @@ bool RasLink_HasCommand(const RasLink* obj) {
 bool RasLink_IsCommandAlive(const RasLink* obj) {
   if (!obj->has_command || !obj->command_alive) return false;
   return (uint32_t)(Micros() - obj->last_command_us) < RAS_COMMAND_TIMEOUT_US;
+}
+
+const StereoObstacles* RasLink_GetStereo(const RasLink* obj) {
+  return &obj->stereo;
 }
 
 const RasConfig* RasLink_GetConfig(const RasLink* obj) {

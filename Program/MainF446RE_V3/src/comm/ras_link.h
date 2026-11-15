@@ -6,6 +6,7 @@
 
 #include "control_params.h"
 #include "serial.h"
+#include "stereo_obstacle.h"
 #include "timer.h"
 
 // ===========================================================================
@@ -24,7 +25,7 @@
 // Serial_WriteAsync でフレーム単位に送出する。
 // ===========================================================================
 
-#define RAS_PROTOCOL_VERSION 0x001Eu
+#define RAS_PROTOCOL_VERSION 0x001Fu
 // COMMAND.accel_limit (u16 × 0.001 m/s^2) で表せる最大。LIMITS.max_accel_m_s2 はこの値を返す
 // (STM32 側に加速度上限は無い。「上限なし」をワイヤ上の最大で伝える)
 #define RAS_ACCEL_LIMIT_WIRE_MAX_M_S2 65.535f
@@ -71,6 +72,7 @@ typedef enum {
   RAS_TYPE_CONFIG_GET = 0x13,
   RAS_TYPE_VERSION_REQ = 0x14,
   RAS_TYPE_LIMITS_REQ = 0x15,
+  RAS_TYPE_STEREO_OBS = 0x16,  // ステレオの障害物の点 (自動停止の入力)
 } RasPacketType;
 
 // COMMAND.mode / TELEMETRY.flags bit0-1
@@ -177,6 +179,10 @@ typedef enum {
 #define RAS_FLAG_NO_HEARTBEAT (1u << 25)
 // ARM 中に LiDAR も前後の超音波も使えない状態が続いている。自動停止が何も検知できない
 #define RAS_FLAG_AUTO_STOP_BLIND (1u << 26)
+// ステレオの障害物 (STEREO_OBS) が 300ms 以内に届いている
+#define RAS_FLAG_STEREO_OK (1u << 27)
+// 自動停止の介入のきっかけにステレオの点が含まれる (LiDAR・超音波と同時でも立つ)
+#define RAS_FLAG_AUTO_STOP_STEREO (1u << 28)
 
 // TELEMETRY.md_status[i]
 // bit0 は MD が「受理済みの指令を実行中」(停止モードでない) で、回転中かどうかではない
@@ -393,6 +399,8 @@ typedef struct {
   bool command_alive;
   RasConfig config;
   RasTelemetry telemetry;
+  // Pi が送るステレオの障害物の点 (STEREO_OBS)。判定は Vehicle が StereoObstacles_Evaluate で行う
+  StereoObstacles stereo;
 
   bool telemetry_ready;  // RasLink_SetTelemetry で新しいスナップショットが届き、まだ送っていない
   uint32_t last_stats_us;
@@ -458,6 +466,11 @@ bool RasLink_HasCommand(const RasLink* obj);
  * 偽になったら自動ブレーキへ落とすこと。
  */
 bool RasLink_IsCommandAlive(const RasLink* obj);
+
+/**
+ * @brief Pi から受けたステレオの障害物の点を取得する。
+ */
+const StereoObstacles* RasLink_GetStereo(const RasLink* obj);
 
 /**
  * @brief LIMITS を送り直す。可動範囲 (max_steer_rad) が変わったとき (ステアのリンクの換算を適用したとき)

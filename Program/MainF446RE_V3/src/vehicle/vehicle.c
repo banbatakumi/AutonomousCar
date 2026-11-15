@@ -193,7 +193,40 @@ static bool IsAutoStopObstacleAhead(Vehicle* obj, const RasConfig* config,
   bool us_fallback_hit = !lidar_fresh && us_dist_cm >= 0.0f &&
                          us_dist_cm < (d_stop_cm + us_offset_cm);
 
-  return lidar_hit || us_near_hit || us_fallback_hit;
+  // ステレオ (前進のみ)。LiDAR と同じ式の停止距離に、撮影からの古さ・確認の遅れを足して予想進路を延ばす
+  // (stereo_obstacle.h)。判定は LiDAR と同じ周期に間引く
+  uint32_t now_us = Micros();
+  if (!forward) {
+    obj->stereo_eval_valid = false;
+    obj->stereo_hit = false;
+  } else if (!obj->stereo_eval_valid || obj->stereo_eval_forward != forward ||
+             (uint32_t)(now_us - obj->stereo_eval_us) >=
+                 (uint32_t)(VEHICLE_AUTO_STOP_LIDAR_PERIOD_S * 1000000.0f)) {
+    StereoEvalParams sp = {
+        .body_front_x_m = VEHICLE_BODY_FRONT_X_M,
+        .body_rear_x_m = VEHICLE_BODY_REAR_X_M,
+        .body_half_width_m = VEHICLE_BODY_HALF_WIDTH_M,
+        .path_half_width_m = VEHICLE_AUTO_STOP_HALF_WIDTH_M,
+        .curvature_1_m = AutoStopPath_Curvature(Steering_GetRoadWheelAngleRad(obj->steering),
+                                                DRIVE_WHEELBASE_M),
+        .d_stop_m = d_stop_cm * 0.01f,
+        .speed_abs_m_s = abs_speed,
+        .confirm_period_s = VEHICLE_AUTO_STOP_STEREO_FRAME_PERIOD_S,
+        .comm_delay_s = VEHICLE_AUTO_STOP_STEREO_COMM_DELAY_S,
+        .max_age_s = VEHICLE_AUTO_STOP_STEREO_MAX_AGE_S,
+        .min_points = VEHICLE_AUTO_STOP_STEREO_MIN_POINTS,
+        .confirm_frames = VEHICLE_AUTO_STOP_STEREO_CONFIRM_FRAMES,
+        .self_ext_front_m = VEHICLE_AUTO_STOP_STEREO_SELF_EXT_FRONT_M,
+        .self_ext_side_m = VEHICLE_AUTO_STOP_STEREO_SELF_EXT_SIDE_M,
+    };
+    obj->stereo_hit = StereoObstacles_Evaluate(RasLink_GetStereo(obj->ras_link), now_us, forward, &sp);
+    obj->stereo_eval_forward = forward;
+    obj->stereo_eval_valid = true;
+    obj->stereo_eval_us = now_us;
+  }
+  obj->auto_stop_stereo = obj->stereo_hit;
+
+  return lidar_hit || us_near_hit || us_fallback_hit || obj->stereo_hit;
 }
 
 // ブレーキホールドの条件 (制動中に停止が続いている) を更新して返す。毎周期1回だけ呼ぶこと
@@ -356,7 +389,12 @@ static void ApplyRasCommand(Vehicle* obj) {
   obj->auto_stop_active = armed && auto_stop_enabled &&
                           (!auto_stop_check || IsAutoStopObstacleAhead(obj, config, desired_direction));
   // 判定しなかった周期のあとに古い LiDAR の結果を使い回さない (Timer は約24秒で一周する)
-  if (!auto_stop_check) obj->auto_stop_lidar_valid = false;
+  if (!auto_stop_check) {
+    obj->auto_stop_lidar_valid = false;
+    obj->stereo_eval_valid = false;
+  }
+  // ステレオが介入のきっかけだったかは、介入が続いている間だけ保つ
+  if (!obj->auto_stop_active) obj->auto_stop_stereo = false;
   bool braking = cmd_braking || obj->auto_stop_active || forced_braking;
 
   float target_speed_m_s = 0.0f;
@@ -536,6 +574,11 @@ void Vehicle_Init(Vehicle* obj, RasLink* ras_link, Drive* drive, Motors* motors,
   obj->horn_on = false;
   obj->winker_request = LIGHTING_WINKER_OFF;
   obj->auto_stop_active = false;
+  obj->auto_stop_stereo = false;
+  obj->stereo_hit = false;
+  obj->stereo_eval_valid = false;
+  obj->stereo_eval_forward = true;
+  obj->stereo_eval_us = 0;
   obj->auto_stop_lidar_valid = false;
   obj->auto_stop_lidar_forward = true;
   obj->auto_stop_lidar_roi = (LidarRoiResult){0, 0};
@@ -683,6 +726,13 @@ bool Vehicle_IsHeartbeatMissing(const Vehicle* obj) {
 }
 
 bool Vehicle_IsAutoStopBlind(const Vehicle* obj) { return obj->auto_stop_blind; }
+
+bool Vehicle_IsStereoOk(const Vehicle* obj) {
+  return StereoObstacles_IsFresh(RasLink_GetStereo(obj->ras_link), Micros(),
+                                 VEHICLE_AUTO_STOP_STEREO_MAX_AGE_S);
+}
+
+bool Vehicle_IsAutoStopStereo(const Vehicle* obj) { return obj->auto_stop_stereo; }
 
 LightingWinkerState Vehicle_GetWinkerRequest(const Vehicle* obj) { return obj->winker_request; }
 LightingWinkerMode Vehicle_GetWinkerMode(const Vehicle* obj) { return obj->winker_mode; }
