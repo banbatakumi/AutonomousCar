@@ -37,8 +37,12 @@
 #define RAS_SYNC2 0x55u
 #define RAS_FRAME_OVERHEAD 7  // SYNC(2) + TYPE + SEQ + LEN + CRC16(2)
 #define RAS_PAYLOAD_MAX 255
-// 受信で受け付ける最長のフレーム (SYNC2 + TYPE/SEQ/LEN 3 + 最長ペイロード + CRC2) に余裕を足した長さ
-#define RAS_RX_RAW_MAX 32
+// 再同期のために控える生バイトの上限。受信で受け付ける最長のフレーム (STEREO_OBS: SYNC2 + TYPE/SEQ/LEN 3 +
+// ペイロード 162 + CRC2 = 169 バイト) に余裕を足した長さ。短いと、STEREO_OBS の途中で 1 バイト欠けたときに
+// 控えきれなかった後ろの COMMAND を拾い直せない
+#define RAS_RX_RAW_MAX 192
+// 再同期で読み直すバイトの置き場 (捨てたフレームの控え + まだ読み直していない残り。RasLink.rx_replay)
+#define RAS_RX_REPLAY_MAX (2 * RAS_RX_RAW_MAX)
 #define RAS_FRAME_MAX (RAS_FRAME_OVERHEAD + RAS_PAYLOAD_MAX)
 
 // LiDAR 1セクタあたりの点数 (1周360点を12分割)
@@ -374,6 +378,11 @@ typedef struct {
   // 消費済みのバイトの中に次のフレームの SYNC があれば拾い直すために持つ
   uint8_t rx_raw[RAS_RX_RAW_MAX];
   uint8_t rx_raw_len;
+  // 再同期で読み直す待ちのバイト ([rx_replay_pos, rx_replay_len))。再帰で読み直すとスタックに控えを積む
+  // (控えが長いと深さ×長さでスタックを食う) ので、ここに置いて RasLink_Receive が順に通す
+  uint8_t rx_replay[RAS_RX_REPLAY_MAX];
+  uint16_t rx_replay_len;
+  uint16_t rx_replay_pos;
   uint8_t rx_state;
   uint8_t rx_type;
   uint8_t rx_seq;

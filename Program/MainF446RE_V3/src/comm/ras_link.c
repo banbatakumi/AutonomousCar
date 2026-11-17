@@ -614,15 +614,30 @@ static void ParseByte(RasLink* obj, uint8_t byte);
 
 // 読み進めたフレームを捨てるとき、先頭の SYNC1 を除いた消費済みバイトをもう一度通して、
 // その中に始まっている次のフレームを拾う。捨てたフレームの中身が実は途中で切れた前のフレームの
-// 残りで、その後ろに本物のフレームが続いていた場合に、本物まで失わないため
-// (再帰は消費済みの長さずつ短くなるので、深さは RAS_RX_RAW_MAX 以内)
+// 残りで、その後ろに本物のフレームが続いていた場合に、本物まで失わないため。
+// その場で再帰して読み直すと控え (最大 RAS_RX_RAW_MAX) を深さぶんスタックに積むので、読み直し待ち
+// (rx_replay) の先頭に置くだけにして、RasLink_Receive が次の受信バイトより先に通す。読み直しの途中で
+// また捨てたら、その控えを残りの手前に置き直す (順序は受信のまま)
 static void ResyncFromRaw(RasLink* obj) {
-  uint8_t buf[RAS_RX_RAW_MAX];
-  uint8_t n = obj->rx_raw_len;
-  memcpy(buf, obj->rx_raw, n);
+  uint16_t head = (obj->rx_raw_len > 1) ? (uint16_t)(obj->rx_raw_len - 1) : 0u;
+  uint16_t rest = (uint16_t)(obj->rx_replay_len - obj->rx_replay_pos);
+  if (head > RAS_RX_REPLAY_MAX) head = RAS_RX_REPLAY_MAX;
+  if (head + rest > RAS_RX_REPLAY_MAX) rest = (uint16_t)(RAS_RX_REPLAY_MAX - head);  // 溢れた末尾は捨てる
+  memmove(&obj->rx_replay[head], &obj->rx_replay[obj->rx_replay_pos], rest);
+  memcpy(obj->rx_replay, &obj->rx_raw[1], head);
+  obj->rx_replay_pos = 0;
+  obj->rx_replay_len = (uint16_t)(head + rest);
   obj->rx_raw_len = 0;
   obj->rx_state = RX_SYNC1;
-  for (uint8_t i = 1; i < n; i++) ParseByte(obj, buf[i]);
+}
+
+// 1 バイトを通し、再同期で読み直し待ちになったバイトがあれば続けて通す
+static void FeedByte(RasLink* obj, uint8_t byte) {
+  ParseByte(obj, byte);
+  while (obj->rx_replay_pos < obj->rx_replay_len) {
+    ParseByte(obj, obj->rx_replay[obj->rx_replay_pos++]);
+  }
+  obj->rx_replay_pos = obj->rx_replay_len = 0;
 }
 
 static void ParseStep(RasLink* obj, uint8_t byte) {
@@ -788,7 +803,7 @@ void RasLink_OnUartIdle(RasLink* obj) {
 
 void RasLink_Receive(RasLink* obj) {
   while (Serial_Available(obj->serial)) {
-    ParseByte(obj, Serial_Read(obj->serial));
+    FeedByte(obj, Serial_Read(obj->serial));
   }
   if (obj->command_alive &&
       (uint32_t)(Micros() - obj->last_command_us) >= RAS_COMMAND_TIMEOUT_US) {
