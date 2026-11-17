@@ -450,12 +450,6 @@ static void ApplyRasCommand(Vehicle* obj) {
   bool brake_hold = UpdateBrakeHold(obj, armed && braking) && config->brake_hold_enabled;
   Drive_SetSideBrake(obj->drive,
                      armed && ((side_brake_requested && !forced_braking) || brake_hold));
-  Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
-  Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
-  Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
-  Drive_SetAbsEnabled(obj->drive, config->abs_enabled);
-  Drive_SetParams(obj->drive, &config->control);
-
   // 上位が生きている間の制動は常に全光量 (減光はフェイルセーフの停車保持だけ)
   Lighting_SetBrakeDimmed(obj->lighting, false);
   ApplyBrakeLight(obj, braking);
@@ -663,7 +657,20 @@ static void UpdateSteeringLinkage(Vehicle* obj) {
   RasLink_SendLimits(obj->ras_link);
 }
 
+// 上位の設定 (機能の ON/OFF・調整パラメータ) を Drive へ写す。COMMAND を受けている間だけでなく、
+// 緊急停止・COMMAND 途絶のフェイルセーフ中も毎周期写す (CONFIG_SET の ACK は「受けた」の意味なので、
+// フェイルセーフ中に受けた KF・校正・ジャイロの感度・制動の減速度も、その時点から効かせる。軽い代入だけ)
+static void ApplyConfig(Vehicle* obj) {
+  const RasConfig* config = RasLink_GetConfig(obj->ras_link);
+  Drive_SetTractionControlEnabled(obj->drive, config->tc_enabled);
+  Drive_SetTorqueVectoringEnabled(obj->drive, config->tv_enabled);
+  Drive_SetWheelLiftGuardEnabled(obj->drive, config->wheel_lift_guard_enabled);
+  Drive_SetAbsEnabled(obj->drive, config->abs_enabled);
+  Drive_SetParams(obj->drive, &config->control);
+}
+
 static void UpdateInner(Vehicle* obj) {
+  ApplyConfig(obj);
   UpdateEstop(obj);
   UpdateSteeringLinkage(obj);
   UpdateMdHealth(obj);

@@ -151,8 +151,9 @@
 #define VEHICLE_AUTO_STOP_STEREO_SELF_EXT_FRONT_M 0.05f
 #define VEHICLE_AUTO_STOP_STEREO_SELF_EXT_SIDE_M 0.04f
 #define VEHICLE_AUTO_STOP_STEREO_MAX_AGE_S 0.3f
-// ステレオ (10Hz) のフレーム間隔。確認フレームの遅れは (CONFIRM_FRAMES - 1) 枚ぶんをこれで足す
-#define VEHICLE_AUTO_STOP_STEREO_FRAME_PERIOD_S 0.1f
+// ステレオの照合のフレーム間隔 (Pi の telemetry_node.STEREO_DEPTH_FPS_ARMED = 15Hz)。確認フレームの遅れは
+// (CONFIRM_FRAMES - 1) 枚ぶんをこれで足す
+#define VEHICLE_AUTO_STOP_STEREO_FRAME_PERIOD_S (1.0f / 15.0f)
 #define VEHICLE_AUTO_STOP_STEREO_COMM_DELAY_S 0.01f
 
 // 超音波センサの車体先端(バンパー)からの後退量 [cm]。車体の寸法・センサの取付位置 (上の VEHICLE_BODY_*・
