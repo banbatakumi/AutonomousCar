@@ -211,7 +211,7 @@ typedef enum {
   RAS_CONFIG_OK = 0,
   RAS_CONFIG_UNKNOWN_PARAM = 1,
   RAS_CONFIG_OUT_OF_RANGE = 2,  // applied にクランプ後の値が入る
-  RAS_CONFIG_MODE_LOCKED = 3,
+  RAS_CONFIG_MODE_LOCKED = 3,  // 予約 (今は返さない。走行中に変えてはいけない項目は保持して停車時に適用する: steer_link_*)
 } RasConfigResult;
 
 // ここに定義するのは機能の ON/OFF など RasConfig の直下の項目だけ。調整パラメータ (TC・ABS・
