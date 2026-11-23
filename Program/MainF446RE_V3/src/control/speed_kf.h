@@ -96,7 +96,7 @@
 #ifndef SPEED_KF_RESYNC_S
 #define SPEED_KF_RESYNC_S 0.02f
 #endif
-// これを超える車速は物理的にありえない (DRIVE_MAX_SPEED_M_S は 5) ので初期化し直す [m/s]。最後の砦。
+// これを超える車速は物理的にありえない (DRIVE_MAX_SPEED_M_S は 6) ので初期化し直す [m/s]。最後の砦。
 // 1 周期に半回転を超えて回る車速 (2kHz で 188m/s) まで外れると、折り返しの補正で測定が外れた推定に合ってしまい
 // 上の測り直しが効かないため
 #define SPEED_KF_MAX_SPEED_M_S 20.0f

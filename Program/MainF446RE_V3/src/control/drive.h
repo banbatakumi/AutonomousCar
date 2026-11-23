@@ -79,7 +79,7 @@
 //   vehicle.toml の speed_torque_max_nm = これ×2 は tools/fwsim/tests/test_fw_constants.py が突き合わせる)
 #define DRIVE_MAX_TORQUE_NM 0.15f
 // 上位が指令できる車速の上限 [m/s] (COMMAND.target_speed をここでクランプし、LIMITS で上位へ通知する)
-#define DRIVE_MAX_SPEED_M_S 5.0f
+#define DRIVE_MAX_SPEED_M_S 6.0f
 // 実車速がこれを超えたら正トルクを出さない (暴走時の最終防壁)。指令の上限と同じ値にすると、上限ちょうどを
 // 指令したときに車速の揺れで正トルクが入切を繰り返して上限を保てないので、1割上に置く。
 // 後輪 MD のトルクモードの過速度保護 (BLDC/ProgramV4 の OVERSPEED_DIRECT_IQ_RAD_S = 270 rad/s = 8.1m/s) より下
@@ -152,7 +152,7 @@
 // 目標のこれだけ手前で終える。車速推定の遅れと MD の遅れのぶん、全開の
 // 加速度 (約2.5m/s^2) では実車速が読みより 0.05m/s ほど先にいる
 #define DRIVE_LAUNCH_END_MARGIN_M_S 0.05f
-#define DRIVE_LAUNCH_TIMEOUT_S 3.0f  // 最高速 (5m/s) まで約2秒
+#define DRIVE_LAUNCH_TIMEOUT_S 3.0f  // 最高速 (6m/s) まで約2.5秒
 
 // 上位から指令できる制動トルクの上限 [Nm]。MD側のトルク上限 (DRIVE_MAX_TORQUE_NM) を
 // 超える値を送っても MD 側で頭打ちになるだけなので、指令の時点で同じ値に揃えておく
@@ -208,8 +208,10 @@
 // ===========================================================================
 
 // 後輪周速がこれを超えたら、基準速度・左右差に関係なく即座にトルクを0にする (最終防波堤。
-// 片輪浮き対策の一部として ON/OFF される)。7.5m/s
-#define DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S (DRIVE_MAX_SPEED_M_S * 1.5f)
+// 片輪浮き対策の一部として ON/OFF される)。最高速に連動させず 7.5m/s の固定値にする:
+// 最高速 6m/s の 1.5 倍 (9m/s = 300 rad/s) だと MD の過速度トリップ (OVERSPEED_DIRECT_IQ_RAD_S = 270 rad/s
+// = 8.1m/s) が先に働いてラッチしてしまう。MD のしきい値より下に置く。空転比 1.25 (6m/s のとき 7.5m/s)
+#define DRIVE_WHEEL_LIFT_MAX_WHEEL_SPEED_M_S 7.5f
 
 // ABS のフォールバック: 上限が要求の DRIVE_ABS_FALLBACK_LIMIT_RATIO 以下に張り付いたまま
 // DRIVE_ABS_FALLBACK_TIME_S 続いたら、ブレーキを離すまで ABS を止めて要求どおりに制動する。
